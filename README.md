@@ -1,0 +1,2 @@
+# cronicle
+Opinionated workflow scheduler.
