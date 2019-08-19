@@ -34,6 +34,8 @@ This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("run called")
+		git.RunExample()
+		cron.RunSchedule()
 	},
 }
 
@@ -49,6 +51,4 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// runCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-	git.RunExample()
-	cron.RunSchedule()
 }
