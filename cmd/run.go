@@ -17,8 +17,8 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/jshiv/cronicle/pkg/cron"
-	"github.com/jshiv/cronicle/pkg/git"
+	"github.com/jshiv/cronicle/internal/cron"
+	"github.com/jshiv/cronicle/internal/git"
 	"github.com/spf13/cobra"
 )
 
