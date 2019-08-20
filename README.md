@@ -38,4 +38,33 @@ Cronicle `will be` a tool for managing and scheduling workflows that leans on th
   * https://github.com/contribsys/faktory_worker_go
   * by uber: https://github.com/uber/cherami-server
   * distributed configuration managment codebase: https://github.com/purpleidea/mgmt/
+  * raft based key value store:(used as backend by kubernetties) https://github.com/etcd-io/etcd
+    *https://github.com/etcd-io/etcd/tree/master/clientv3
 
+## Interesting and potentially useful librarys
+  * Code generatoin
+    * https://github.com/clipperhouse/gen
+
+
+Usage[Vision]
+
+The tool will use a Cronicle file to maintain `schedule as code`.
+A simple job scheulder could look like:
+```yaml
+#Cronicle.yaml 
+job: 
+  name: Schedule A
+  owner: cronicle
+  start_date: 2015-06-01
+  end_date: 2019-09-09
+  retries: 1
+  retry_delay: 5 min
+    task: 
+      name: First Task
+      repo: github.com/jshiv/cronicle
+      commit: 29lsjlw09lskjglkalkjgoij2lkj
+      command: bash run.sh
+
+```
+
+Initilization of the system is managed by the `.cronicle.yaml` file
