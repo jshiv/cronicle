@@ -106,7 +106,12 @@ the run command starts the scheduler.
 cronicle run
 ```
 
-the history command displays the history of the runnin scheduler
+The history command displays the history of the running scheduler
 ```bash
 cronicle history
+```
+
+The init command sets up a new schedule repository with a sample Conicle.yml file
+```bash
+cronicle init
 ```
