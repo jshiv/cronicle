@@ -41,6 +41,9 @@ Cronicle `will be` a tool for managing and scheduling workflows that leans on th
   * raft based key value store:(used as backend by kubernetties) https://github.com/etcd-io/etcd
     *https://github.com/etcd-io/etcd/tree/master/clientv3
   * Simply use git remote for state management.
+* Distributed messaging que
+  * https://github.com/nsqio/nsq
+  * https://github.com/RichardKnop/machinery
 
 ## Interesting and potentially useful librarys
   * Code generatoin
