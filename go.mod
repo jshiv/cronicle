@@ -3,7 +3,6 @@ module github.com/jshiv/cronicle
 go 1.12
 
 require (
-	github.com/carlescere/scheduler v0.0.0-20170109141437-ee74d2f83d82
 	github.com/juju/errors v0.0.0-20190806202954-0232dcc7464d
 	github.com/juju/loggo v0.0.0-20190526231331-6e530bcce5d8 // indirect
 	github.com/juju/testing v0.0.0-20190723135506-ce30eb24acd2 // indirect
