@@ -18,9 +18,9 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
+	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/git"
-
+	"github.com/spf13/cobra"
 )
 
 // initCmd represents the init command
@@ -35,6 +35,8 @@ This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("init called")
+		bashReturn := bash.Bash("ls -la /tmp/")
+		bash.LogStdout(bashReturn)
 		r := git.Init("/tmp/testrepo/")
 		fmt.Println(r)
 	},
