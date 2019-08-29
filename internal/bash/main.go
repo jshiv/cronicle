@@ -57,8 +57,11 @@ func Bash(command string) Data {
 }
 
 func LogStdout(data Data) {
+	log.SetFormatter(&log.TextFormatter{
+		DisableColors: false,
+		FullTimestamp: true,
+	})
 	log.WithFields(log.Fields{
 		"bash": data.Command,
 	}).Info(data.Stdout)
-	// fmt.Println(data.Stdout)
 }
