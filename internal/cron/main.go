@@ -10,10 +10,6 @@ import (
 
 //RunSchedule starts cron
 func RunSchedule() {
-	log.SetFormatter(&log.TextFormatter{
-		DisableColors: false,
-		FullTimestamp: true,
-	})
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
 	c := cron.New()

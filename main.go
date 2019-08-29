@@ -18,5 +18,5 @@ package main
 import "github.com/jshiv/cronicle/cmd"
 
 func main() {
-  cmd.Execute()
+	cmd.Execute()
 }
