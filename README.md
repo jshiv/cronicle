@@ -44,6 +44,9 @@ Cronicle `will be` a tool for managing and scheduling workflows that leans on th
 * Distributed messaging que
   * https://github.com/nsqio/nsq
   * https://github.com/RichardKnop/machinery
+* DAG 
+  * https://github.com/hashicorp/terraform/tree/master/dag
+  * https://github.com/goombaio/dag
 
 ## Interesting and potentially useful librarys
   * Code generatoin
