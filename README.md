@@ -47,6 +47,11 @@ Cronicle `will be` a tool for managing and scheduling workflows that leans on th
 * DAG 
   * https://github.com/hashicorp/terraform/tree/master/dag
   * https://github.com/goombaio/dag
+* Configuration Language
+  * json
+  * yaml
+  * https://github.com/hashicorp/hcl
+  * https://github.com/hashicorp/hcl2
 
 ## Interesting and potentially useful librarys
   * Code generatoin
