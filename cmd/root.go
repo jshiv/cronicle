@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/juju/errors"
 	"github.com/spf13/cobra"
 
 	homedir "github.com/mitchellh/go-homedir"
@@ -48,7 +47,7 @@ to quickly create a Cobra application.`,
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
+		log.Fatal(err)
 		os.Exit(1)
 	}
 }
@@ -91,8 +90,7 @@ func initConfig() {
 		// Find home directory.
 		home, err := homedir.Dir()
 		if err != nil {
-			errors.Trace(err)
-			os.Exit(1)
+			panic(err)
 		}
 
 		// Search config in home directory with name ".cronicle" (without extension).

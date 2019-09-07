@@ -20,6 +20,8 @@ import (
 
 	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/git"
+	"github.com/jshiv/cronicle/internal/config"
+
 	"github.com/spf13/cobra"
 )
 
@@ -41,6 +43,8 @@ to quickly create a Cobra application.`,
 		bash.LogStdout(bashReturn)
 		bashReturn = bash.Bash("ls -la /tmp/testrepo/")
 		bash.LogStdout(bashReturn)
+		cfg, _ := config.ParseFile("./Cronicle.hcl")
+		fmt.Println(cfg)
 	},
 }
 
