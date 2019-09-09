@@ -48,9 +48,6 @@ Cronicle `will be` a tool for managing and scheduling workflows that leans on th
   * https://github.com/hashicorp/terraform/tree/master/dag
   * https://github.com/goombaio/dag
 * Configuration Language
-  * json
-  * yaml
-  * https://github.com/hashicorp/hcl
   * https://github.com/hashicorp/hcl2
 
 ## Interesting and potentially useful librarys
@@ -58,53 +55,78 @@ Cronicle `will be` a tool for managing and scheduling workflows that leans on th
     * https://github.com/clipperhouse/gen
 
 
-Usage[Vision]
+Usage[Vision] 
 
 The tool will use a Cronicle file to maintain `schedule as code`.
 A bash job scheulder could look like:
-```yaml
-#Cronicle.yaml 
-job: 
-  name: Schedule A
-  owner: cronicle
-  start_date: 2015-06-01
-  end_date: 2019-09-09
-  retries: 1
-  git: github.com/jshiv/cronicle-sample
-  retry_delay: 5 min
-  command: echo "Hello World"
+```hcl
+#Cronicle.hcl 
+version = "0.0.1"
+
+/* The schedule contains the details 
+for timing of the job as well as any 
+commands and tasks that make up the job. */
+schedule "job" "core" {
+  owner = "cronicle"
+  cron = "every 5 minutes"
+  
+  start_date = "2015-06-01"
+  end_date = "2019-09-09"
+  
+  retries = 3
+  
+  git = "github.com/jshiv/cronicle-sample"
+  retry_delay = "5 min"
+  
+  command = ["/bin/echo", "Hello World"]
+}
+
 ```
 
 The tool will use a Cronicle file to maintain `schedule as code`.
 A More complete example might look like:
-```yaml
-#Cronicle.yaml 
-job: 
-  name: Schedule A
-  owner: cronicle
-  start_date: 2015-06-01
-  end_date: 2019-09-09
-  retries: 1
-  git: github.com/jshiv/cronicle-sample
-  retry_delay: 5 min
-    task: 
-      name: First Task
-      git: github.com/jshiv/cronicle-sample
-      path: scripts/
-      commit: 29lsjlw09lskjglkalkjgoij2lkj
-      command: bash run.sh
-    task:
-      name: Second Task
-      git: github.com/jshiv/cronicle-sample
-      command: echo "Second Task"
-    task:
-      name: Third Task
-      git: github.com/jshiv/cronicle-sample
-      path: scripts/
-      command: echo "Completed All Tasks"
-      depends:
-        - First Task
-        - Second Task
+```hcl
+#Cronicle.hcl
+version = "0.0.1"
+
+/* git is a list of remote repositorys 
+that will be added to the job scheduler. */
+git = [
+    "github.com/jshiv/cronicle-sample1",
+    "github.com/jshiv/cronicle-sample2",
+    "github.com/jshiv/cronicle-sample3"
+]
+
+schedule "job" "core" {
+  owner = "cronicle"
+  email = "core@cronicle.com"
+  cron = "every 5 minutes"
+  
+  start_date = "2015-06-01"
+  end_date = "2019-09-09"
+  
+  retries = 3
+  
+  git = "github.com/jshiv/cronicle-sample"
+  retry_delay = "5 min"
+  
+  task "run" {
+    remote = "github.com/jshiv/cronicle-sample"
+    path = "scripts/"
+    commit = "29lsjlw09lskjglkalkjgoij2lkj"
+    command = ["/bin/bash", "run.sh"]
+  }
+
+  task "echo" {
+    command = ["/bin/echo", "Second Task"]
+  }
+  
+  task "finish" {
+    command =  ["/bin/echo", "Completed"]
+    depends = ["run", "echo"]
+  }
+}
+
 ```
 
 # Init
