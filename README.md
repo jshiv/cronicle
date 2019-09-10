@@ -66,7 +66,7 @@ version = "0.0.1"
 /* The schedule contains the details 
 for timing of the job as well as any 
 commands and tasks that make up the job. */
-schedule "job" "core" {
+schedule "job" "root" {
   owner = "cronicle"
   cron = "every 5 minutes"
   
@@ -97,9 +97,9 @@ git = [
     "github.com/jshiv/cronicle-sample3"
 ]
 
-schedule "job" "core" {
+schedule "job" "root" {
   owner = "cronicle"
-  email = "core@cronicle.com"
+  email = "root@cronicle.com"
   cron = "every 5 minutes"
   
   start_date = "2015-06-01"
@@ -155,5 +155,52 @@ The history command displays the history of the running scheduler
 cronicle history
 ```
 
+# Internal Flow
+`cronicle init`
+1. creates or reads the `Cronicle.hcl` file
+2. generate a `config` and validate the hcl file
+3. identify remote repositories in the `config` and clone them to the `repos` directory
+`cronicle run`
+1. create a `dag` from the config, arranging any tasks based on the `depends` flag
+2. populate the `dag` with partial bash and git methods
+3. loop over the `dag` and add `cron` functions for each `command`
+4. start the scheduler 
+5. function start, exit status, stdout, stderr, git commit/repo information is passed to the logger
+6. `git diff commitA commitB` for the root or any sub repos can be used to investigate changes that happened between different runs of the scheduler for a given job or task. 
 
+
+
+## POC requirements
+* `cronicle init` should create a Cronicle scheduler directory at `./` with reasonable defaults.
+* `cronicle run` should read the local `Cronicle.hcl` file and start executing on the schedule.
+* `cronicle run > cronicle.log` will write meaningful logs including timestamp, job/task info, success/failure and commit.
+* 
+
+## Open Questions
+* Does `cronicle init` put the `root` schedule in the repos folder?
+* Does the `root` scheduler commit and push to remote?
+* Where do logs go? Are they broken out for each repo?
+* Are logs committed and pushed to the root remote?
+
+
+## TODO: Items to complete the POC
+* Update `internal/config/config.go` with config, schedule, and task structs
+* Stop using bash(use os) to create files and folder in `init`
+* Add functionality to `internal/cron/main.go` to add bash, logging functions to cron
+* Add internal library that integrates config, git, cron, and bash
+* `init` should check for the existence of `Cronicle` file before creating a template
+* Architect approach 
+  * for populating config/dag with bash and git functions
+  * for passing config/dag to the cron scheduler 
+  * for passing result data(stderr, commits, ect...) to the logger
+
+## TODO
+* Write unit tests and use test driven development
+* Use proper go error handling
+* Fix poor logic in `internal/git/main.go:L14`
+* Fix argument to take []string vs string in `internal/git/main.go:Bash()`
+* Add [dag](https://github.com/hashicorp/terraform/tree/master/dag) internal library
+* Figure out how we can use the dag in the context of a config
+* add dag from dependent tasks to config
+* Integrate with distributed message que for resilience
 
