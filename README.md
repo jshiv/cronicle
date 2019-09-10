@@ -181,6 +181,7 @@ cronicle history
 * Does the `root` scheduler commit and push to remote?
 * Where do logs go? Are they broken out for each repo?
 * Are logs committed and pushed to the root remote?
+* Can git client ui tools be used to visualize the scheduler?
 
 
 ## TODO: Items to complete the POC
