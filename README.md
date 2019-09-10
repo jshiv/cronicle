@@ -160,6 +160,7 @@ cronicle history
 1. creates or reads the `Cronicle.hcl` file
 2. generate a `config` and validate the hcl file
 3. identify remote repositories in the `config` and clone them to the `repos` directory
+
 `cronicle run`
 1. create a `dag` from the config, arranging any tasks based on the `depends` flag
 2. populate the `dag` with partial bash and git methods
@@ -174,7 +175,7 @@ cronicle history
 * `cronicle init` should create a Cronicle scheduler directory at `./` with reasonable defaults.
 * `cronicle run` should read the local `Cronicle.hcl` file and start executing on the schedule.
 * `cronicle run > cronicle.log` will write meaningful logs including timestamp, job/task info, success/failure and commit.
-* 
+
 
 ## Open Questions
 * Does `cronicle init` put the `root` schedule in the repos folder?
