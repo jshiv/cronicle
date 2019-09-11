@@ -228,21 +228,18 @@ else .git not exists:
 
 
 ## TODO: Items to complete the POC
-* Update `internal/config/config.go` with config, schedule, and task struct's
+* Update `internal/config/config.go` with repos argument and write logic to clone repos.
+* Update git internal to return Git struct with repo metadata
 * Stop using bash(use os) to create files and folder in `init`
-* Add functionality to `internal/cron/main.go` to add bash, logging functions to cron
-* Add internal library that integrates config, git, cron, and bash
 * `init` should check for the existence of `Cronicle` file before creating a template
 * Architect approach 
-  * for populating config/dag with bash and git functions
-  * for passing config/dag to the cron scheduler 
+  * for populating config with dag
+  * for iterating over the tasks dag
   * for passing result data(stderr, commits, ect...) to the logger
 
 ## TODO
 * Write unit tests and use test driven development
 * Use proper go error handling
-* Fix poor logic in `internal/git/main.go:L14`
-* Fix argument to take []string vs string in `internal/git/main.go:Bash()`
 * Add [dag](https://github.com/hashicorp/terraform/tree/master/dag) internal library
 * Figure out how we can use the dag in the context of a config
 * add dag from dependent tasks to config
