@@ -164,6 +164,38 @@ cronicle history
 2. generate a `config` and validate the hcl file
 3. identify remote repositories in the `config` and clone them to the `repos` directory
 
+```flow
+cronicle init
+if .git exists:
+  if Cronicle.hcl not exists:
+   -> Read remote git url `git config --get remote.origin.url`
+   -> Create Cronicle.hcl file including `git="<remote url>"
+   -> git commit "Cronicle Initial Commit" -> git push origin 
+   -> Report config validation
+  elif Cronicle.hcl exists:
+   -> Load config from Cronicle.hcl
+   -> Check for `git="<remote url>"
+   if .git has remote:
+      -> git commit -> git push origin 
+   -> Recursivly clone any repos specified in Cronicle.hcl to ./repos/
+   -> Append new schedules to Config.Schedules
+   -> Report config validation
+else .git not exists:
+  if Cronicle.hcl not exists:
+   -> Initilize a local .git repository
+   -> Create Cronicle.hcl
+   -> git commit "Cronicle Initial Commit"
+   -> Report config validation
+  elif Cronicle.hcl exists:
+   -> Load config from Cronicle.hcl
+   -> Recursivly clone any repos specified in Cronicle.hcl to ./repos/
+   -> Check for `git="<remote url>"
+   if .git has remote:
+      -> git commit -> git push origin 
+   -> Append new schedules to Config.Schedules
+   -> Report config validation
+```
+
 `cronicle run`
 1. create a `dag` from the config, arranging any tasks based on the `depends` flag
 2. populate the `dag` with partial bash and git methods
