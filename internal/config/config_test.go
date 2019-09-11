@@ -1,7 +1,6 @@
 package config_test
 
 import (
-	"fmt"
 	"github.com/hashicorp/hcl2/gohcl"
 	"github.com/hashicorp/hcl2/hclwrite"
 	. "github.com/onsi/ginkgo"
@@ -12,30 +11,43 @@ import (
 
 var _ = Describe("Config", func() {
 
-	It("Should return an error if the sides don't make up a triangle", func() {
-
-		testSchedule := config.Schedule{
-			Name:      "My-Schedule",
-			Cron:      "test",
-			StartDate: "blah",
-			EndDate:   "blah",
-			Tasks: []config.Task{
+	It("Should be configurable from hcl", func() {
+		// not testing anything, just an informative dummy
+		testConfig := config.Config{
+			Version: "0.1",
+			Git: "github.com/myname/schedule1",
+			Schedules: []config.Schedule{
 				{
-					Name: "task1",
+					Name:      "My-Schedule",
+					Cron:      "@hourly",
+					StartDate: "2019-09-10",
+					EndDate:   "2019-09-12",
 					Owner: &config.Owner{
-						Name: "paul",
-						Email: "paul.cho@udemy.com",
+						Name: "bob",
+						Email: "bob@email.com",
 					},
-				},
-				{
-					Name: "task2",
+					Tasks: []config.Task{
+						{
+							Name: "task1",
+							Owner: &config.Owner{
+								Name: "bobby",
+								Email: "bobby@email.com",
+							},
+						},
+						{
+							Name: "task2",
+							Command: []string{"/bin/bash", "job.sh",},
+							Depends: []string{"task1",},
+							Repo: "github.com/myname/schedulerepo1",
+						},
+					},
+
 				},
 			},
 		}
 
 		f := hclwrite.NewEmptyFile()
-		gohcl.EncodeIntoBody(&testSchedule, f.Body())
-		fmt.Printf("%s", f.Bytes())
-		Expect("blah").To(Equal("blah"))
+		gohcl.DecodeBody(&x, f.Body())
+		Expect(string(f.Bytes())).To(Equal(x))
 	})
 })
