@@ -62,11 +62,14 @@ A bash job scheulder could look like:
 ```hcl
 #Cronicle.hcl 
 version = "0.0.1"
+  
+// root remote schedule repository (optional)
+git = "github.com/jshiv/cronicle-sample"
 
 /* The schedule contains the details 
 for timing of the job as well as any 
 commands and tasks that make up the job. */
-schedule "job" "root" {
+schedule "example" {
   owner = "cronicle"
   cron = "every 5 minutes"
   
@@ -74,8 +77,6 @@ schedule "job" "root" {
   end_date = "2019-09-09"
   
   retries = 3
-  
-  git = "github.com/jshiv/cronicle-sample"
   retry_delay = "5 min"
   
   command = ["/bin/echo", "Hello World"]
@@ -91,13 +92,16 @@ version = "0.0.1"
 
 /* git is a list of remote repositorys 
 that will be added to the job scheduler. */
-git = [
+repos = [
     "github.com/jshiv/cronicle-sample1",
     "github.com/jshiv/cronicle-sample2",
     "github.com/jshiv/cronicle-sample3"
 ]
 
-schedule "job" "root" {
+// root remote schedule repository (optional)
+git = "github.com/jshiv/cronicle-sample"
+
+schedule "example" {
   owner = "cronicle"
   email = "root@cronicle.com"
   cron = "every 5 minutes"
@@ -107,11 +111,10 @@ schedule "job" "root" {
   
   retries = 3
   
-  git = "github.com/jshiv/cronicle-sample"
   retry_delay = "5 min"
   
   task "run" {
-    remote = "github.com/jshiv/cronicle-sample"
+    repo = "github.com/jshiv/cronicle-sample2"
     path = "scripts/"
     commit = "29lsjlw09lskjglkalkjgoij2lkj"
     command = ["/bin/bash", "run.sh"]
