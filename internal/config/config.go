@@ -5,7 +5,7 @@ package config
 type Config struct {
 	Version  string `hcl:"version,optional"`
 	Git string `hcl:"git"`
-	Schedules []Schedule `hcl:"schedule,optional"`
+	Schedules []Schedule `hcl:"schedule,block"`
 }
 
 // Schedule is the configuration structure that defines a cron job consisting of tasks.
@@ -17,7 +17,7 @@ type Schedule struct {
 	Cron    string `hcl:"cron,optional"`
 	StartDate string `hcl:"start_date,optional"`
 	EndDate string `hcl:"end_date,optional"`
-	// Owner Owner `hcl:"owner"`
+	Owner *Owner `hcl:"owner,block"`
 	Tasks []Task `hcl:"task,block"`
 }
 
