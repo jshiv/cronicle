@@ -16,6 +16,8 @@ limitations under the License.
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/jshiv/cronicle/internal/cron"
 	"github.com/spf13/cobra"
 )
@@ -30,13 +32,17 @@ and usage of using your command. For example:
 Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
+	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
-		cron.Run()
+		target, _ := cmd.Flags().GetString("target")
+		fmt.Println("Reading from: " + target)
+		cron.Run(target)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(runCmd)
+	runCmd.Flags().String("target", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
 
 	// Here you will define your flags and configuration settings.
 

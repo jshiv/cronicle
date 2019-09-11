@@ -37,8 +37,7 @@ This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("init called")
-		r := git.Init("/tmp/testrepo/")
-		fmt.Println(r)
+		git.GitInit("/tmp/testrepo/")
 		bashReturn := bash.Bash([]string{"touch /tmp/testrepo/Cronicle.yml"})
 		bash.LogStdout(bashReturn)
 		bashReturn = bash.Bash([]string{"ls -la /tmp/testrepo/"})
