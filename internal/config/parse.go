@@ -89,3 +89,20 @@ func parseJSON(r io.Reader, filename string) (*Config, error) {
 
 	return &config, nil
 }
+
+func MarshallHcl(conf Config, path string) string {
+	f := hclwrite.NewEmptyFile()
+	gohcl.EncodeIntoBody(&conf, f.Body())
+	fmt.Printf("%s", f.Bytes())
+	fmt.Println("writing to file")
+	destination, err := os.Create(path)
+	if err != nil {
+		fmt.Printf("error")
+	}
+	_, writeErr := f.WriteTo(destination)
+	if writeErr != nil {
+		fmt.Printf("write error")
+	}
+	destination.Close()
+	return path
+}
