@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"log"
-	// "os"
+	"os"
+	"time"
 
 	"gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/plumbing/object"
 )
 
 // Init returns a new repository using the .git folder, if the fixture
@@ -25,6 +28,21 @@ func Init(path string) *git.Repository {
 
 }
 
+// CheckIfError should be used to naively panics if an error is not nil.
+func CheckIfError(err error) {
+	if err == nil {
+		return
+	}
+
+	fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("error: %s", err))
+	os.Exit(1)
+}
+
+// Info should be used to describe the example commands that are about to run.
+func Info(format string, args ...interface{}) {
+	fmt.Printf("\x1b[34;1m%s\x1b[0m\n", fmt.Sprintf(format, args...))
+}
+
 func clone(gitURL string, dir string) {
 	// Clones the repository into the given dir, just as a normal git clone does
 	_, err := git.PlainClone(dir, false, &git.CloneOptions{
@@ -36,8 +54,42 @@ func clone(gitURL string, dir string) {
 	}
 }
 
+func commit(worktreeDir string, msg string) {
+	// Opens an already existing repository.
+	r, err := git.PlainOpen(worktreeDir)
+	CheckIfError(err)
+
+	w, err := r.Worktree()
+	CheckIfError(err)
+
+	Info("git add .")
+	_, err = w.Add(".")
+
+	// We can verify the current status of the worktree using the method Status.
+	Info("git status --porcelain")
+	status, err := w.Status()
+	CheckIfError(err)
+
+	fmt.Println(status)
+
+	Info("git commit -m with message")
+	commit, err := w.Commit(msg, &git.CommitOptions{
+		Author: &object.Signature{
+			Name: "Cronicle user",
+			When: time.Now(),
+		},
+	})
+
+	Info("git show -s")
+	obj, err := r.CommitObject(commit)
+	CheckIfError(err)
+
+	fmt.Println(obj)
+}
+
 func main() {
-	clone("https://github.com/src-d/go-git.git", "/tmp/foo")
+	// clone("https://github.com/src-d/go-git.git", "/tmp/foo")
+	commit("/Users/jessicas/work/cronicle", "example go-git commit")
 }
 
 // // RunExample of how to:
