@@ -112,6 +112,7 @@ func Push(worktreeDir string) {
 	CheckIfError(err)
 }
 
+// Gets remote URL
 func Remote(worktreeDir string) {
 	repo, err := git.PlainOpen(worktreeDir)
 	CheckIfError(err)
