@@ -11,7 +11,7 @@ import (
 	"gopkg.in/robfig/cron.v2"
 )
 
-// Run is the main function of the run package
+// Run is the main function of the cron package
 func Run() {
 	var conf config.Config
 
