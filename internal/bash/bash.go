@@ -12,16 +12,23 @@ import (
 // and //https://gist.github.com/mchirico/6045501
 
 type Data struct {
-	Command    string
+	Command    []string
 	Stdout     string
 	Stderr     string
 	ExitStatus int
 }
 
-func Bash(command string) Data {
+func Bash(command []string) Data {
 	var data Data
 	data.Command = command
-	cmd := exec.Command("/bin/bash", "-c", command)
+	var cmd *exec.Cmd
+	switch len(command) {
+	case 1:
+		cmd = exec.Command(command[0])
+	default:
+		cmd = exec.Command(command[0], command[1:]...)
+	}
+	// cmd := exec.Command("/bin/bash", "-c", command)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Fatal(err)
