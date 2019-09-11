@@ -15,38 +15,62 @@ import (
 func Run() {
 	var conf config.Config
 
-	fmt.Println("run called")
-	fmt.Println("This is something else.")
-	conf.Version = "1.2.3"
-	conf.Schedule.Cron = "@every 2s"
-	conf.Schedule.Command = "echo Hello World"
+	testSchedule1 := config.Schedule{
+		Name: "schedule-1",
+		Cron: "@every 2s",
+		Tasks: []config.Task{
+			{
+				Name:    "task1",
+				Command: []string{"/bin/echo", "Hello World"},
+			},
+			{
+				Name:    "task2",
+				Command: []string{"/bin/echo", "This is Task2"},
+			},
+		},
+	}
+	testSchedule2 := config.Schedule{
+		Name: "schedule-2",
+		Cron: "@every 5s",
+		Tasks: []config.Task{
+			{
+				Name:    "dice",
+				Command: []string{"python", "-c", "import random; print(random.randint(1, 6))"},
+			},
+		},
+	}
+	conf.Schedules = []config.Schedule{testSchedule1, testSchedule2}
 	fmt.Println(conf)
 
-	RunSchedule(conf.Schedule)
+	RunConfig(conf)
 }
 
-//RunSchedule starts cron
-func RunSchedule(schedule config.Schedule) {
+//RunConfig starts cron
+func RunConfig(conf config.Config) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
 	c := cron.New()
-	c.AddFunc("@every 1s", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
-	c.AddFunc(schedule.Cron, AddSchedule(schedule))
+	c.AddFunc("@every 10s", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
+	for _, schedule := range conf.Schedules {
+		c.AddFunc(schedule.Cron, AddSchedule(schedule))
+	}
 	c.Start()
 	runtime.Goexit()
 }
 
 // AddSchedule retuns a function primed with the given schedules commands
 func AddSchedule(schedule config.Schedule) func() {
+	log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Running...")
+
 	return func() {
-		log.WithFields(log.Fields{"command": schedule.Command}).Info("Start")
-		out := bash.Bash(schedule.Command)
-		log.WithFields(log.Fields{
-			"command":     out.Command,
-			"exit-status": out.ExitStatus,
-			"stderr":      out.Stderr,
-			"stdout":      out.Stdout,
-		}).Info("End")
+		for _, task := range schedule.Tasks {
+			log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
+			result := bash.Bash(task.Command)
+			log.WithFields(log.Fields{
+				"task": task.Name,
+				"exit": result.ExitStatus,
+			}).Info(result.Stdout)
+		}
 	}
 }
 

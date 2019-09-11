@@ -19,8 +19,8 @@ import (
 	"fmt"
 
 	"github.com/jshiv/cronicle/internal/bash"
-	"github.com/jshiv/cronicle/internal/git"
 	"github.com/jshiv/cronicle/internal/config"
+	"github.com/jshiv/cronicle/internal/git"
 
 	"github.com/spf13/cobra"
 )
@@ -39,9 +39,9 @@ to quickly create a Cobra application.`,
 		fmt.Println("init called")
 		r := git.Init("/tmp/testrepo/")
 		fmt.Println(r)
-		bashReturn := bash.Bash("touch /tmp/testrepo/Cronicle.yml")
+		bashReturn := bash.Bash([]string{"touch /tmp/testrepo/Cronicle.yml"})
 		bash.LogStdout(bashReturn)
-		bashReturn = bash.Bash("ls -la /tmp/testrepo/")
+		bashReturn = bash.Bash([]string{"ls -la /tmp/testrepo/"})
 		bash.LogStdout(bashReturn)
 		cfg, _ := config.ParseFile("./Cronicle.hcl")
 		fmt.Println(cfg)
