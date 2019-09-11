@@ -1,4 +1,4 @@
-package main
+package git
 
 import (
 	"fmt"
@@ -126,12 +126,12 @@ func Remote(worktreeDir string) {
 	fmt.Println(list[0].Config().URLs[0])
 }
 
-func main() {
-	// Example usages:
-	// Clone("https://github.com/src-d/go-git.git", "/tmp/foo")
-	// Commit("/Users/jessicas/work/cronicle", "example go-git commit")
-	// GitLog("/Users/jessicas/work/cronicle")
-	// Push("/Users/jessicas/work/cronicle")
-	// GitInit("/tmp/foo")
-	Remote("/Users/jessicas/work/cronicle")
-}
+// func main() {
+// 	// Example usages:
+// 	// Clone("https://github.com/src-d/go-git.git", "/tmp/foo")
+// 	// Commit("/Users/jessicas/work/cronicle", "example go-git commit")
+// 	// GitLog("/Users/jessicas/work/cronicle")
+// 	// Push("/Users/jessicas/work/cronicle")
+// 	// GitInit("/tmp/foo")
+// 	Remote("/Users/jessicas/work/cronicle")
+// }
