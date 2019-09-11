@@ -1,4 +1,4 @@
-package git
+package main
 
 import (
 	"fmt"
@@ -112,9 +112,25 @@ func Push(worktreeDir string) {
 	CheckIfError(err)
 }
 
-// Example usages:
-// Clone("https://github.com/src-d/go-git.git", "/tmp/foo")
-// Commit("/Users/jessicas/work/cronicle", "example go-git commit")
-// GitLog("/Users/jessicas/work/cronicle")
-// Push("/Users/jessicas/work/cronicle")
-// GitInit("/tmp/foo")
+func Remote(worktreeDir string) {
+	repo, err := git.PlainOpen(worktreeDir)
+	CheckIfError(err)
+
+	// List remotes from a repository
+	Info("git remotes -v")
+
+	// Assumes one remote URL
+	list, err := repo.Remotes()
+	CheckIfError(err)
+	fmt.Println(list[0].Config().URLs[0])
+}
+
+func main() {
+	// Example usages:
+	// Clone("https://github.com/src-d/go-git.git", "/tmp/foo")
+	// Commit("/Users/jessicas/work/cronicle", "example go-git commit")
+	// GitLog("/Users/jessicas/work/cronicle")
+	// Push("/Users/jessicas/work/cronicle")
+	// GitInit("/tmp/foo")
+	Remote("/Users/jessicas/work/cronicle")
+}
