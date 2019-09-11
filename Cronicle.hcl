@@ -1,7 +1,7 @@
 version = "0.0.1alpha"
 git     = ""
 
-schedule "schedule-1" {
+schedule "schedule A" {
   cron       = "@every 2s"
   start_date = ""
   end_date   = ""
@@ -19,7 +19,7 @@ schedule "schedule-1" {
   }
 }
 
-schedule "schedule-2" {
+schedule "schedule B" {
   cron       = "@every 5s"
 
   task "dice" {
