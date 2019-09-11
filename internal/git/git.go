@@ -87,9 +87,36 @@ func Commit(worktreeDir string, msg string) {
 	fmt.Println(obj)
 }
 
+func GitLog(worktreeDir string) {
+	// Opens an already existing repository.
+	r, err := git.PlainOpen(worktreeDir)
+	CheckIfError(err)
+
+	// w, err := r.Worktree()
+	// CheckIfError(err)
+
+	// Gets the HEAD history from HEAD, just like this command:
+	Info("git log")
+
+	// ... retrieves the branch pointed by HEAD
+	ref, err := r.Head()
+	CheckIfError(err)
+
+	cIter, err := r.Log(&git.LogOptions{From: ref.Hash()})
+	CheckIfError(err)
+
+	// ... just iterates over the commits, printing it
+	err = cIter.ForEach(func(c *object.Commit) error {
+		fmt.Println(c)  // commit as struct https://godoc.org/gopkg.in/src-d/go-git.v4/plumbing/object#Commit 
+		return nil
+	})
+	CheckIfError(err)
+}
+
 func main() {
-	// clone("https://github.com/src-d/go-git.git", "/tmp/foo")
-	commit("/Users/jessicas/work/cronicle", "example go-git commit")
+	// Clone("https://github.com/src-d/go-git.git", "/tmp/foo")
+	// Commit("/Users/jessicas/work/cronicle", "example go-git commit")
+	GitLog("/Users/jessicas/work/cronicle")
 }
 
 // // RunExample of how to:
