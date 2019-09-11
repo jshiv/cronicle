@@ -43,7 +43,7 @@ func Info(format string, args ...interface{}) {
 	fmt.Printf("\x1b[34;1m%s\x1b[0m\n", fmt.Sprintf(format, args...))
 }
 
-func clone(gitURL string, dir string) {
+func Clone(gitURL string, dir string) {
 	// Clones the repository into the given dir, just as a normal git clone does
 	_, err := git.PlainClone(dir, false, &git.CloneOptions{
 		URL: gitURL,
@@ -54,7 +54,7 @@ func clone(gitURL string, dir string) {
 	}
 }
 
-func commit(worktreeDir string, msg string) {
+func Commit(worktreeDir string, msg string) {
 	// Opens an already existing repository.
 	r, err := git.PlainOpen(worktreeDir)
 	CheckIfError(err)
