@@ -1,6 +1,9 @@
-package git
+package main
 
 import (
+	"log"
+	// "os"
+
 	"gopkg.in/src-d/go-git.v4"
 )
 
@@ -9,17 +12,32 @@ import (
 // memfs filesystem is used as worktree.
 func Init(path string) *git.Repository {
 
-	repo, err := git.PlainOpen(path)//
-		if err != nil {
-			//this feels wrong :-(
-			repo, initErr := git.PlainInit(path, false)
-			if initErr != nil {
-				panic(initErr)
-			}
-			return repo
+	repo, err := git.PlainOpen(path) //
+	if err != nil {
+		//this feels wrong :-(
+		repo, initErr := git.PlainInit(path, false)
+		if initErr != nil {
+			panic(initErr)
 		}
+		return repo
+	}
 	return repo
 
+}
+
+func clone(gitURL string, dir string) {
+	// Clones the repository into the given dir, just as a normal git clone does
+	_, err := git.PlainClone(dir, false, &git.CloneOptions{
+		URL: gitURL,
+	})
+
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func main() {
+	clone("https://github.com/src-d/go-git.git", "/tmp/foo")
 }
 
 // // RunExample of how to:
@@ -55,4 +73,3 @@ func Init(path string) *git.Repository {
 // 	})
 // 	CheckIfError(err)
 // }
-
