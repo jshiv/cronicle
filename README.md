@@ -70,7 +70,10 @@ git = "github.com/jshiv/cronicle-sample"
 for timing of the job as well as any 
 commands and tasks that make up the job. */
 schedule "example" {
-  owner = "cronicle"
+  owner = {
+    name = "cronicle"
+    email = "root@cronicle.com"
+  }
   cron = "every 5 minutes"
   
   start_date = "2015-06-01"
@@ -79,7 +82,9 @@ schedule "example" {
   retries = 3
   retry_delay = "5 min"
   
-  command = ["/bin/echo", "Hello World"]
+  task "mytask" = {
+    command = ["/bin/echo", "Hello World"]
+  }
 }
 
 ```
@@ -102,8 +107,10 @@ repos = [
 git = "github.com/jshiv/cronicle-sample"
 
 schedule "example" {
-  owner = "cronicle"
-  email = "root@cronicle.com"
+  owner = {
+    name = "cronicle"
+    email = "root@cronicle.com"
+  }
   cron = "every 5 minutes"
   
   start_date = "2015-06-01"
