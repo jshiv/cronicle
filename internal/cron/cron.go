@@ -74,17 +74,6 @@ func AddSchedule(schedule config.Schedule) func() {
 	}
 }
 
-// // AddTask returns a function primed with the given schedules commands
-// func AddTask(task config.Task) func() {
-// 	return func() {
-// 		log.WithFields(log.Fields{"task": task.Name}).Info(task)
-// 		result := bash.Bash(task.Command)
-// 		log.WithFields(log.Fields{
-// 			"task": task.Name,
-// 		}).Info(result)
-// 	}
-// }
-
 func Dummy(in string) string {
 	return in
 }
