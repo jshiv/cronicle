@@ -82,21 +82,21 @@ func AddSchedule(schedule config.Schedule) func() {
 					"task":   task.Name,
 					"exit":   result.ExitStatus,
 					"commit": commit.Hash.String()[:11],
-					"author": commit.Author,
+					"email":  commit.Author.Email,
 				}).Info(result.Stdout)
 			} else if result.ExitStatus == 1 {
 				log.WithFields(log.Fields{
 					"task":   task.Name,
 					"exit":   result.ExitStatus,
 					"commit": commit.Hash.String()[:11],
-					"author": commit.Author,
+					"email":  commit.Author.Email,
 				}).Error(result.Stderr)
 			} else {
 				log.WithFields(log.Fields{
 					"task":   task.Name,
 					"exit":   result.ExitStatus,
 					"commit": commit.Hash.String()[:11],
-					"author": commit.Author,
+					"email":  commit.Author.Email,
 				}).Error(result.Stderr)
 			}
 		}
