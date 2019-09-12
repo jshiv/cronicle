@@ -15,6 +15,7 @@ type Schedule struct {
 	// i.e. ["@hourly", "@every 1h30m", "0 30 * * * *", "TZ=Asia/Tokyo 30 04 * * * *"]
 	Name      string `hcl:"name,label"`
 	Cron      string `hcl:"cron,optional"`
+	Repo      string `hcl:"cron,optional"`
 	StartDate string `hcl:"start_date,optional"`
 	EndDate   string `hcl:"end_date,optional"`
 	Owner     *Owner `hcl:"owner,block"`
