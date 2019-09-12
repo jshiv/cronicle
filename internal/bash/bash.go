@@ -18,7 +18,7 @@ type Result struct {
 	ExitStatus int
 }
 
-func Bash(command []string) Result {
+func Bash(command []string, dir string) Result {
 	var result Result
 	result.Command = command
 	var cmd *exec.Cmd
@@ -28,6 +28,7 @@ func Bash(command []string) Result {
 	default:
 		cmd = exec.Command(command[0], command[1:]...)
 	}
+	cmd.Dir = dir
 	// cmd := exec.Command("/bin/bash", "-c", command)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

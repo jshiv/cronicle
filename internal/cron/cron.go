@@ -6,6 +6,7 @@ import (
 
 	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/config"
+	"github.com/jshiv/cronicle/internal/create"
 	"github.com/jshiv/cronicle/internal/git"
 
 	"path/filepath"
@@ -19,20 +20,26 @@ func Run(cronicleFile string) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
 	conf, err := config.ParseFile(cronicleFileAbs)
-
-	for _, schedule := range conf.Schedules {
-		for _, task := range schedule.Tasks {
-			task.Path = croniclePath
-		}
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	if err != nil {
-		panic(err)
+	for sdx, schedule := range conf.Schedules {
+
+		for tdx, task := range schedule.Tasks {
+			if task.Repo != "" {
+				conf.Schedules[sdx].Tasks[tdx].Path, _ = create.LocalRepoDir(croniclePath, task.Repo)
+			} else if schedule.Repo != "" {
+				conf.Schedules[sdx].Tasks[tdx].Path, _ = create.LocalRepoDir(croniclePath, schedule.Repo)
+			} else {
+				conf.Schedules[sdx].Tasks[tdx].Path = croniclePath
+			}
+		}
 	}
 
 	RunConfig(*conf)
@@ -48,7 +55,7 @@ func RunConfig(conf config.Config) {
 		_, err := c.AddFunc(schedule.Cron, AddSchedule(schedule))
 		if err != nil {
 			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
-			panic(err)
+			log.Fatal(err)
 		}
 	}
 	c.Start()
@@ -62,8 +69,10 @@ func AddSchedule(schedule config.Schedule) func() {
 	return func() {
 		for _, task := range schedule.Tasks {
 			log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
-			result := bash.Bash(task.Command)
+
+			result := bash.Bash(task.Command, task.Path)
 			fmt.Println(result)
+			fmt.Println(task.Path)
 			commit, err := git.GetCommit(task.Path)
 			if err != nil {
 				log.WithFields(log.Fields{
