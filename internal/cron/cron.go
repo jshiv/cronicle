@@ -71,8 +71,6 @@ func AddSchedule(schedule config.Schedule) func() {
 			log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
 
 			result := bash.Bash(task.Command, task.Path)
-			fmt.Println(result)
-			fmt.Println(task.Path)
 			commit, err := git.GetCommit(task.Path)
 			if err != nil {
 				log.WithFields(log.Fields{
@@ -83,21 +81,21 @@ func AddSchedule(schedule config.Schedule) func() {
 				log.WithFields(log.Fields{
 					"task":   task.Name,
 					"exit":   result.ExitStatus,
-					"commit": commit.Hash,
+					"commit": commit.Hash.String()[:11],
 					"author": commit.Author,
 				}).Info(result.Stdout)
 			} else if result.ExitStatus == 1 {
 				log.WithFields(log.Fields{
 					"task":   task.Name,
 					"exit":   result.ExitStatus,
-					"commit": commit.Hash,
+					"commit": commit.Hash.String()[:11],
 					"author": commit.Author,
 				}).Error(result.Stderr)
 			} else {
 				log.WithFields(log.Fields{
 					"task":   task.Name,
 					"exit":   result.ExitStatus,
-					"commit": commit.Hash,
+					"commit": commit.Hash.String()[:11],
 					"author": commit.Author,
 				}).Error(result.Stderr)
 			}
