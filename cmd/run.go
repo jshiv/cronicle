@@ -25,13 +25,14 @@ import (
 // runCmd represents the run command
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Short: "Cronicle run reads in the Cronicle.hcl scheule and starts running tasks",
+	Long: `The cronicle run command starts the cron scheduler for the specified Cronicle.hcl file.
+For example:
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+cronicle init --path cronicle
+cronicle run --path cronicle/Cronicle.hcl
+
+The run command will log schedule information to stdout including git commit info.`,
 	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
 		path, _ := cmd.Flags().GetString("path")

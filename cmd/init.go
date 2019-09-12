@@ -27,12 +27,19 @@ import (
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Creates a Cronicle git repo including a default Cronicle.hcl file and repos folder.",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Long: `The cronicle init command will instantiate a Cronicle repository in the current directory
+For example:
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+cronicle init --path ./cronicle
+tree -a cronicle
+├── .git
+├── Cronicle.hcl
+└── repos
+
+This directory will contain the root Cronicle.hcl file and git repository. This is where
+the main schedule will be defined and run. Subsequent schedules will be cloned into the 
+repos folder.
+`,
 	Run: func(cmd *cobra.Command, args []string) {
 		croniclePath, _ := cmd.Flags().GetString("path")
 		fmt.Println("Initialize Cronicle: " + croniclePath)
@@ -42,7 +49,7 @@ to quickly create a Cobra application.`,
 
 func init() {
 	rootCmd.AddCommand(initCmd)
-	initCmd.Flags().String("path", "./cronicle/", "new cronicle repo location")
+	initCmd.Flags().String("path", "./", "new cronicle path")
 
 	// Here you will define your flags and configuration settings.
 
