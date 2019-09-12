@@ -30,6 +30,7 @@ type Task struct {
 	Repo    string   `hcl:"repo,optional"`
 	Branch  string   `hcl:"branch,optional"`
 	Commit  string   `hcl:"commit,optional"`
+	Path    string
 }
 
 // Owner is the configuration structure that defines an owner of a schedule or task

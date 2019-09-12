@@ -70,8 +70,6 @@ github.com/hashicorp/errwrap v0.0.0-20180715044906-d6c0cd880357/go.mod h1:YH+1FK
 github.com/hashicorp/go-multierror v0.0.0-20180717150148-3d5d8f294aa0/go.mod h1:JMRHfdO9jKNzS/+BTlxCjKNQHg/jZAft8U7LloJvN7I=
 github.com/hashicorp/hcl v1.0.0 h1:0Anlzjpi4vEasTeNFn2mLJgTSwt0+6sfsiTG8qcWGx4=
 github.com/hashicorp/hcl v1.0.0/go.mod h1:E5yfLk+7swimpb2L/Alb/PJmXilQ/rhwaUYs4T20WEQ=
-github.com/hashicorp/hcl2 v0.0.0-20190821123243-0c888d1241f6 h1:JImQpEeUQ+0DPFMaWzLA0GdUNPaUlCXLpfiqkSZBUfc=
-github.com/hashicorp/hcl2 v0.0.0-20190821123243-0c888d1241f6/go.mod h1:Cxv+IJLuBiEhQ7pBYGEuORa0nr4U994pE8mYLuFd7v0=
 github.com/hashicorp/hcl2 v0.0.0-20190909202536-66c59f909e25 h1:hP3bdZpTEdjGFXQZyeeRsYH1oJgOBGx5sMLYPqZuqOU=
 github.com/hashicorp/hcl2 v0.0.0-20190909202536-66c59f909e25/go.mod h1:Cxv+IJLuBiEhQ7pBYGEuORa0nr4U994pE8mYLuFd7v0=
 github.com/hpcloud/tail v1.0.0 h1:nfCOvKYfkgYP8hkirhJocXT2+zOD8yUNjXaWfTlyFKI=

@@ -126,6 +126,27 @@ func Remote(worktreeDir string) {
 	fmt.Println(list[0].Config().URLs[0])
 }
 
+//GetCommit retrieves a commit object from HEAD
+func GetCommit(worktreeDir string) (*object.Commit, error) {
+	// Opens an already existing repository.
+	r, err := git.PlainOpen(worktreeDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	cIter, err := r.Log(&git.LogOptions{})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	commit, err := cIter.Next()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return commit, err
+
+}
+
 // func main() {
 // 	// Example usages:
 // 	// Clone("https://github.com/src-d/go-git.git", "/tmp/foo")

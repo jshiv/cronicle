@@ -6,15 +6,31 @@ import (
 
 	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/config"
+	"github.com/jshiv/cronicle/internal/git"
+
+	"path/filepath"
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/robfig/cron.v2"
 )
 
 // Run is the main function of the cron package
-func Run(filename string) {
+func Run(cronicleFile string) {
 
-	conf, err := config.ParseFile(filename)
+	cronicleFileAbs, err := filepath.Abs(cronicleFile)
+	if err != nil {
+		panic(err)
+	}
+	croniclePath := filepath.Dir(cronicleFileAbs)
+
+	conf, err := config.ParseFile(cronicleFileAbs)
+
+	for _, schedule := range conf.Schedules {
+		for _, task := range schedule.Tasks {
+			task.Path = croniclePath
+		}
+	}
+
 	if err != nil {
 		panic(err)
 	}
@@ -47,15 +63,24 @@ func AddSchedule(schedule config.Schedule) func() {
 		for _, task := range schedule.Tasks {
 			log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
 			result := bash.Bash(task.Command)
+			commit, err := git.GetCommit(task.Path)
+			if err != nil {
+				log.Error(err)
+			}
+
 			if result.ExitStatus == 0 {
 				log.WithFields(log.Fields{
-					"task": task.Name,
-					"exit": result.ExitStatus,
+					"task":   task.Name,
+					"exit":   result.ExitStatus,
+					"commit": commit.Hash,
+					"author": commit.Author,
 				}).Info(result.Stdout)
 			} else if result.ExitStatus == 1 {
 				log.WithFields(log.Fields{
-					"task": task.Name,
-					"exit": result.ExitStatus,
+					"task":   task.Name,
+					"exit":   result.ExitStatus,
+					"commit": commit.Hash,
+					"author": commit.Author,
 				}).Error(result.Stderr)
 			}
 		}
