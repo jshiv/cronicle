@@ -35,6 +35,7 @@ func Init(croniclePath string) {
 		if err != nil {
 			panic(parseErr)
 		}
+		// If not, create it from config.Default() and commit
 	} else if os.IsNotExist(err) {
 		// path/to/whatever does *not* exist
 		config.MarshallHcl(config.Default(), cronicleFile)
@@ -46,9 +47,4 @@ func Init(croniclePath string) {
 	// config.
 	fmt.Println(conf)
 
-	// bash.LogStdout(bashReturn)
-	// bashReturn = bash.Bash([]string{"ls -la /tmp/testrepo/"})
-	// bash.LogStdout(bashReturn)
-	// cfg, _ := config.ParseFile("./Cronicle.hcl")
-	// fmt.Println(cfg)
 }
