@@ -18,9 +18,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/jshiv/cronicle/internal/bash"
-	"github.com/jshiv/cronicle/internal/config"
-	"github.com/jshiv/cronicle/internal/git"
+	"github.com/jshiv/cronicle/internal/create"
 
 	"github.com/spf13/cobra"
 )
@@ -28,7 +26,7 @@ import (
 // initCmd represents the init command
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "A brief description of your command",
+	Short: "Creates a Cronicle git repo including a default Cronicle.hcl file and repos folder.",
 	Long: `A longer description that spans multiple lines and likely contains examples
 and usage of using your command. For example:
 
@@ -36,19 +34,15 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("init called")
-		git.GitInit("/tmp/testrepo/")
-		bashReturn := bash.Bash([]string{"touch /tmp/testrepo/Cronicle.yml"})
-		bash.LogStdout(bashReturn)
-		bashReturn = bash.Bash([]string{"ls -la /tmp/testrepo/"})
-		bash.LogStdout(bashReturn)
-		cfg, _ := config.ParseFile("./Cronicle.hcl")
-		fmt.Println(cfg)
+		croniclePath, _ := cmd.Flags().GetString("path")
+		fmt.Println("Initialize Cronicle: " + croniclePath)
+		create.Init(croniclePath)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(initCmd)
+	initCmd.Flags().String("path", "./cronicle/", "new cronicle repo location")
 
 	// Here you will define your flags and configuration settings.
 

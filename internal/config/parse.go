@@ -98,7 +98,7 @@ func MarshallHcl(conf Config, path string) string {
 	fmt.Println("writing to file")
 	destination, err := os.Create(path)
 	if err != nil {
-		fmt.Printf("error")
+		panic(err)
 	}
 	_, writeErr := f.WriteTo(destination)
 	if writeErr != nil {
