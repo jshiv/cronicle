@@ -1,7 +1,6 @@
 package cron
 
 import (
-	"fmt"
 	"runtime"
 
 	"github.com/jshiv/cronicle/internal/bash"
@@ -12,37 +11,14 @@ import (
 )
 
 // Run is the main function of the cron package
-func Run() {
-	var conf config.Config
+func Run(filename string) {
 
-	testSchedule1 := config.Schedule{
-		Name: "schedule-1",
-		Cron: "@every 2s",
-		Tasks: []config.Task{
-			{
-				Name:    "task1",
-				Command: []string{"/bin/echo", "Hello World"},
-			},
-			{
-				Name:    "task2",
-				Command: []string{"/bin/echo", "This is Task2"},
-			},
-		},
+	conf, err := config.ParseFile(filename)
+	if err != nil {
+		panic(err)
 	}
-	testSchedule2 := config.Schedule{
-		Name: "schedule-2",
-		Cron: "@every 5s",
-		Tasks: []config.Task{
-			{
-				Name:    "dice",
-				Command: []string{"python", "-c", "import random; print(random.randint(1, 6))"},
-			},
-		},
-	}
-	conf.Schedules = []config.Schedule{testSchedule1, testSchedule2}
-	fmt.Println(conf)
 
-	RunConfig(conf)
+	RunConfig(*conf)
 }
 
 //RunConfig starts cron
@@ -66,10 +42,17 @@ func AddSchedule(schedule config.Schedule) func() {
 		for _, task := range schedule.Tasks {
 			log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
 			result := bash.Bash(task.Command)
-			log.WithFields(log.Fields{
-				"task": task.Name,
-				"exit": result.ExitStatus,
-			}).Info(result.Stdout)
+			if result.ExitStatus == 0 {
+				log.WithFields(log.Fields{
+					"task": task.Name,
+					"exit": result.ExitStatus,
+				}).Info(result.Stdout)
+			} else if result.ExitStatus == 1 {
+				log.WithFields(log.Fields{
+					"task": task.Name,
+					"exit": result.ExitStatus,
+				}).Error(result.Stderr)
+			}
 		}
 	}
 }

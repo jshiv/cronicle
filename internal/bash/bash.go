@@ -48,9 +48,9 @@ func Bash(command []string) Result {
 
 	var waitStatus syscall.WaitStatus
 	if err := cmd.Wait(); err != nil {
-		if err != nil {
-			log.Fatal(err)
-		}
+		// if err != nil {
+		// 	log.Warn(err)
+		// }
 		if exitError, ok := err.(*exec.ExitError); ok {
 			waitStatus = exitError.Sys().(syscall.WaitStatus)
 			result.ExitStatus = waitStatus.ExitStatus()
