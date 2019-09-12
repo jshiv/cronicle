@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/jshiv/cronicle/internal/config"
 	"github.com/jshiv/cronicle/internal/git"
@@ -21,7 +22,8 @@ func Init(croniclePath string) {
 		panic(err)
 	}
 	fmt.Println(abs)
-	os.MkdirAll(path.Join(abs, "repos"), 0777)
+	reposDir := path.Join(abs, "repos")
+	os.MkdirAll(reposDir, 0777)
 	_, err = gogit.PlainInit(abs, false)
 	if err != nil {
 		fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("git: %s", err))
@@ -35,6 +37,7 @@ func Init(croniclePath string) {
 		if err != nil {
 			panic(parseErr)
 		}
+		CloneRepos(reposDir, conf)
 		// If not, create it from config.Default() and commit
 	} else if os.IsNotExist(err) {
 		// path/to/whatever does *not* exist
@@ -47,4 +50,26 @@ func Init(croniclePath string) {
 	// config.
 	fmt.Println(conf)
 
+}
+
+//CloneRepos clones all repositories configured in Cronicle.hcl
+func CloneRepos(reposDir string, conf *config.Config) {
+	repos := map[string]bool{}
+	for _, sched := range conf.Schedules {
+		schedRepo := sched.Repo
+		if schedRepo != "" {
+			repos[schedRepo] = true
+		}
+		for _, task := range sched.Tasks {
+			taskRepo := task.Repo
+			if taskRepo != "" {
+				repos[taskRepo] = true
+			} 
+		}
+	}
+	for repo := range repos {
+		repoClean := strings.Replace(strings.Replace(repo, "github.com/", "", 1), "https:", "", 1)
+		fullRepoDir := path.Join(reposDir, repoClean)
+		git.Clone(repo, fullRepoDir)
+	}
 }
