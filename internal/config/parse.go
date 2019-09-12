@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/hcl2/hcl"
 	"github.com/hashicorp/hcl2/hcl/hclsyntax"
 	"github.com/hashicorp/hcl2/hcl/json"
+	"github.com/hashicorp/hcl2/hclwrite"
 )
 
 // ParseFile parses the given file for a configuration. The syntax of the
