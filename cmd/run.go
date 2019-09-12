@@ -34,15 +34,15 @@ This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
-		target, _ := cmd.Flags().GetString("target")
-		fmt.Println("Reading from: " + target)
-		cron.Run(target)
+		path, _ := cmd.Flags().GetString("path")
+		fmt.Println("Reading from: " + path)
+		cron.Run(path)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(runCmd)
-	runCmd.Flags().String("target", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
+	runCmd.Flags().String("path", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
 
 	// Here you will define your flags and configuration settings.
 

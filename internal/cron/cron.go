@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"fmt"
 	"runtime"
 
 	"github.com/jshiv/cronicle/internal/bash"
@@ -28,7 +29,11 @@ func RunConfig(conf config.Config) {
 	c := cron.New()
 	c.AddFunc("@every 10s", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
 	for _, schedule := range conf.Schedules {
-		c.AddFunc(schedule.Cron, AddSchedule(schedule))
+		_, err := c.AddFunc(schedule.Cron, AddSchedule(schedule))
+		if err != nil {
+			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
+			panic(err)
+		}
 	}
 	c.Start()
 	runtime.Goexit()
