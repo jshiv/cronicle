@@ -34,7 +34,7 @@ func Init(croniclePath string) {
 	if _, err := os.Stat(cronicleFile); err == nil {
 		var parseErr error
 		conf, parseErr = config.ParseFile(cronicleFile)
-		if err != nil {
+		if parseErr != nil {
 			panic(parseErr)
 		}
 		CloneRepos(reposDir, conf)
@@ -64,7 +64,7 @@ func CloneRepos(reposDir string, conf *config.Config) {
 			taskRepo := task.Repo
 			if taskRepo != "" {
 				repos[taskRepo] = true
-			} 
+			}
 		}
 	}
 	for repo := range repos {
