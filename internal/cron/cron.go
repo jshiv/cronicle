@@ -69,7 +69,7 @@ func AddSchedule(schedule config.Schedule) func() {
 	return func() {
 		for _, task := range schedule.Tasks {
 			log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
-
+			git.Pull(task.Path)
 			result := bash.Bash(task.Command, task.Path)
 			commit, err := git.GetCommit(task.Path)
 			if err != nil {

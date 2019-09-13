@@ -112,6 +112,20 @@ func Push(worktreeDir string) {
 	CheckIfError(err)
 }
 
+func Pull(worktreeDir string) error {
+	// We instantiate a new repository targeting the given path (the .git folder)
+	r, err := git.PlainOpen(worktreeDir)
+	CheckIfError(err)
+
+	worktree, err := r.Worktree()
+	CheckIfError(err)
+
+	// Info("git pull")
+	// push using default options
+	err = worktree.Pull(&git.PullOptions{}) // TODO: add auth
+	return err
+}
+
 // Gets remote URL
 func Remote(worktreeDir string) {
 	repo, err := git.PlainOpen(worktreeDir)
