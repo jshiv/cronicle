@@ -41,6 +41,8 @@ Cronicle `will be` a tool for managing and scheduling workflows that leans on th
   * raft based key value store:(used as backend by kubernetties) https://github.com/etcd-io/etcd
     *https://github.com/etcd-io/etcd/tree/master/clientv3
   * Simply use git remote for state management.
+  * Go channels at horizontal scale (powered by message queues)
+    * https://github.com/matryer/vice
 * Distributed messaging que
   * https://github.com/nsqio/nsq
   * https://github.com/RichardKnop/machinery
@@ -53,6 +55,10 @@ Cronicle `will be` a tool for managing and scheduling workflows that leans on th
 ## Interesting and potentially useful librarys
   * Code generatoin
     * https://github.com/clipperhouse/gen
+
+## Potential production integrations
+  * Log parsing and hosting
+    * https://github.com/grafana/loki
 
 
 Usage[Vision] 
