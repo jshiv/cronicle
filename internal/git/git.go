@@ -126,6 +126,20 @@ func Pull(worktreeDir string) error {
 	return err
 }
 
+// GetWorktree returns the git.Worktree struct from the given path
+func GetWorktree(worktreeDir string) (*git.Worktree, error) {
+	// We instantiate a new repository targeting the given path (the .git folder)
+	r, err := git.PlainOpen(worktreeDir)
+	if err != nil {
+		return nil, err
+	}
+	worktree, err := r.Worktree()
+	if err != nil {
+		return nil, err
+	}
+	return worktree, nil
+}
+
 // Gets remote URL
 func Remote(worktreeDir string) {
 	repo, err := git.PlainOpen(worktreeDir)

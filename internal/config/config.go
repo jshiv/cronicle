@@ -6,6 +6,8 @@ type Config struct {
 	Version   string     `hcl:"version,optional"`
 	Git       string     `hcl:"git"`
 	Schedules []Schedule `hcl:"schedule,block"`
+	// Repos points at external dependent repos that maintain their own schedules remotly.
+	Repos []string `hcl:"repos,optional"`
 }
 
 // Schedule is the configuration structure that defines a cron job consisting of tasks.

@@ -3,6 +3,7 @@ package create
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -51,23 +52,30 @@ func Init(croniclePath string) {
 
 }
 
-//CloneRepos clones all repositories configured in Cronicle.hcl
-func CloneRepos(croniclePath string, conf *config.Config) {
+// GetRepos collects the set of repos associated to a given config
+func GetRepos(conf *config.Config) (map[string]bool, error) {
 	repos := map[string]bool{}
 	for _, sched := range conf.Schedules {
-		schedRepo := sched.Repo
-		if schedRepo != "" {
-			repos[schedRepo] = true
+		if sched.Repo != "" {
+			repos[sched.Repo] = true
 		}
 		for _, task := range sched.Tasks {
-			taskRepo := task.Repo
-			if taskRepo != "" {
-				repos[taskRepo] = true
+			if task.Repo != "" {
+				repos[task.Repo] = true
 			}
 		}
 	}
+	return repos, errors.New("could not extract repos from Config")
+}
+
+//CloneRepos clones all repositories configured in Cronicle.hcl
+func CloneRepos(croniclePath string, conf *config.Config) {
+	repos, err := GetRepos(conf)
+	if err != nil {
+		log.Fatal(err)
+	}
 	for repo := range repos {
-		fullRepoDir , _ := LocalRepoDir(croniclePath, repo)
+		fullRepoDir, _ := LocalRepoDir(croniclePath, repo)
 		git.Clone(repo, fullRepoDir)
 	}
 }
@@ -79,4 +87,60 @@ func LocalRepoDir(croniclePath string, repo string) (string, error) {
 	repoClean := strings.Replace(strings.Replace(repo, "github.com/", "", 1), "https:", "", 1)
 	localRepoDir := path.Join(reposDir, repoClean)
 	return localRepoDir, nil
+}
+
+// GetConfig returns the Config specified by the given Cronicle.hcl file
+// Including any Cronicle files specified by in the repos directory.
+func GetConfig(cronicleFile string) (*config.Config, error) {
+	cronicleFileAbs, err := filepath.Abs(cronicleFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	croniclePath := filepath.Dir(cronicleFileAbs)
+
+	conf, err := config.ParseFile(cronicleFileAbs)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Assign the path for each task or schedule repo
+	for sdx, schedule := range conf.Schedules {
+		for tdx, task := range schedule.Tasks {
+			if task.Repo != "" {
+				conf.Schedules[sdx].Tasks[tdx].Path, _ = LocalRepoDir(croniclePath, task.Repo)
+			} else if schedule.Repo != "" {
+				conf.Schedules[sdx].Tasks[tdx].Path, _ = LocalRepoDir(croniclePath, schedule.Repo)
+			} else {
+				conf.Schedules[sdx].Tasks[tdx].Path = croniclePath
+			}
+		}
+	}
+
+	// Collect any sub level Cronicle files if they exist
+	// then append all schedules to conf.Schedules
+	// Explicitly ignore any information that is not in a schedule.
+	repos, _ := GetRepos(conf)
+	for repo := range repos {
+		repoPath, _ := LocalRepoDir(croniclePath, repo)
+		repoCronicleFile := filepath.Join(repoPath, "Chronicle.hcl")
+		if fileExists(repoCronicleFile) {
+			repoConf, _ := GetConfig(repoCronicleFile)
+			for _, repoSched := range repoConf.Schedules {
+				conf.Schedules = append(conf.Schedules, repoSched)
+			}
+		}
+
+	}
+
+	return conf, errors.New("Failed to Get Config for " + cronicleFile)
+}
+
+// fileExists checks if a file exists and is not a directory before we
+// try using it to prevent further errors.
+func fileExists(filename string) bool {
+	info, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
 }
