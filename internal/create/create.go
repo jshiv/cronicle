@@ -1,13 +1,13 @@
 package create
 
 import (
-	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/fatih/color"
 
 	"github.com/jshiv/cronicle/internal/config"
 	"github.com/jshiv/cronicle/internal/git"
@@ -22,39 +22,54 @@ func Init(croniclePath string) {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(absCroniclePath)
+	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
+	// errors.New("could not extract repos from " + slantedRed("Config"))
+	fmt.Println("Init Cronicle: " + slantyedCyan(absCroniclePath))
 	os.MkdirAll(path.Join(absCroniclePath, "repos"), 0777)
 	_, err = gogit.PlainInit(absCroniclePath, false)
 	if err != nil {
 		fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("git: %s", err))
 	}
 	cronicleFile := path.Join(absCroniclePath, "Cronicle.hcl")
-	var conf *config.Config
-	// Does the Cronicle.hcl file exist?
-	if _, err := os.Stat(cronicleFile); err == nil {
-		var parseErr error
-		conf, parseErr = config.ParseFile(cronicleFile)
-		if parseErr != nil {
-			panic(parseErr)
-		}
+	if fileExists(cronicleFile) {
+		conf, _ := GetConfig(cronicleFile)
+		hcl := config.GetHcl(*conf)
+		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes())))
 		CloneRepos(absCroniclePath, conf)
-		// If not, create it from config.Default() and commit
-	} else if os.IsNotExist(err) {
-		// path/to/whatever does *not* exist
+	} else {
 		config.MarshallHcl(config.Default(), cronicleFile)
 		git.Commit(absCroniclePath, "Cronicle Initial Commit")
-
-	} else {
-		panic(errors.New("cronicle.hcl does not exist and was not created"))
 	}
-	// config.
-	fmt.Println(conf)
+	// var conf *config.Config
+	// // Does the Cronicle.hcl file exist?
+	// if _, err := os.Stat(cronicleFile); err == nil {
+	// 	var parseErr error
+	// 	conf, parseErr = config.ParseFile(cronicleFile)
+	// 	if parseErr != nil {
+	// 		panic(parseErr)
+	// 	}
+	// 	CloneRepos(absCroniclePath, conf)
+	// 	// If not, create it from config.Default() and commit
+	// } else if os.IsNotExist(err) {
+	// 	// path/to/whatever does *not* exist
+	// 	config.MarshallHcl(config.Default(), cronicleFile)
+	// 	git.Commit(absCroniclePath, "Cronicle Initial Commit")
+
+	// } else {
+	// 	panic(errors.New("cronicle.hcl does not exist and was not created"))
+	// }
+	// // config.
+	// fmt.Println(conf)
 
 }
 
 // GetRepos collects the set of repos associated to a given config
-func GetRepos(conf *config.Config) (map[string]bool, error) {
+func GetRepos(conf *config.Config) map[string]bool {
 	repos := map[string]bool{}
+	for _, repo := range conf.Repos {
+		fmt.Println(repo)
+		repos[repo] = true
+	}
 	for _, sched := range conf.Schedules {
 		if sched.Repo != "" {
 			repos[sched.Repo] = true
@@ -65,15 +80,13 @@ func GetRepos(conf *config.Config) (map[string]bool, error) {
 			}
 		}
 	}
-	return repos, errors.New("could not extract repos from Config")
+
+	return repos
 }
 
 //CloneRepos clones all repositories configured in Cronicle.hcl
 func CloneRepos(croniclePath string, conf *config.Config) {
-	repos, err := GetRepos(conf)
-	if err != nil {
-		log.Fatal(err)
-	}
+	repos := GetRepos(conf)
 	for repo := range repos {
 		fullRepoDir, _ := LocalRepoDir(croniclePath, repo)
 		git.Clone(repo, fullRepoDir)
@@ -94,13 +107,13 @@ func LocalRepoDir(croniclePath string, repo string) (string, error) {
 func GetConfig(cronicleFile string) (*config.Config, error) {
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println(err)
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
 	conf, err := config.ParseFile(cronicleFileAbs)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println(err)
 	}
 
 	// Assign the path for each task or schedule repo
@@ -119,10 +132,13 @@ func GetConfig(cronicleFile string) (*config.Config, error) {
 	// Collect any sub level Cronicle files if they exist
 	// then append all schedules to conf.Schedules
 	// Explicitly ignore any information that is not in a schedule.
-	repos, _ := GetRepos(conf)
+	repos := GetRepos(conf)
 	for repo := range repos {
 		repoPath, _ := LocalRepoDir(croniclePath, repo)
-		repoCronicleFile := filepath.Join(repoPath, "Chronicle.hcl")
+		fmt.Println("sub repo path:  " + repoPath)
+		repoCronicleFile := filepath.Join(repoPath, "Cronicle.hcl")
+		fmt.Println("sub repo file:  " + repoCronicleFile)
+		fmt.Println(fileExists(repoCronicleFile))
 		if fileExists(repoCronicleFile) {
 			repoConf, _ := GetConfig(repoCronicleFile)
 			for _, repoSched := range repoConf.Schedules {
@@ -131,8 +147,8 @@ func GetConfig(cronicleFile string) (*config.Config, error) {
 		}
 
 	}
-
-	return conf, errors.New("Failed to Get Config for " + cronicleFile)
+	// fmt.Println(conf)
+	return conf, nil //errors.New("Failed to Get Config for " + cronicleFile)
 }
 
 // fileExists checks if a file exists and is not a directory before we

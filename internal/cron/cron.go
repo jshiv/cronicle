@@ -9,6 +9,8 @@ import (
 	"github.com/jshiv/cronicle/internal/create"
 	"github.com/jshiv/cronicle/internal/git"
 
+	"github.com/fatih/color"
+
 	"path/filepath"
 
 	log "github.com/sirupsen/logrus"
@@ -22,25 +24,12 @@ func Run(cronicleFile string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	croniclePath := filepath.Dir(cronicleFileAbs)
+	// croniclePath := filepath.Dir(cronicleFileAbs)
 
-	conf, err := config.ParseFile(cronicleFileAbs)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for sdx, schedule := range conf.Schedules {
-
-		for tdx, task := range schedule.Tasks {
-			if task.Repo != "" {
-				conf.Schedules[sdx].Tasks[tdx].Path, _ = create.LocalRepoDir(croniclePath, task.Repo)
-			} else if schedule.Repo != "" {
-				conf.Schedules[sdx].Tasks[tdx].Path, _ = create.LocalRepoDir(croniclePath, schedule.Repo)
-			} else {
-				conf.Schedules[sdx].Tasks[tdx].Path = croniclePath
-			}
-		}
-	}
+	conf, _ := create.GetConfig(cronicleFileAbs)
+	hcl := config.GetHcl(*conf)
+	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
+	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes())))
 
 	RunConfig(*conf)
 }

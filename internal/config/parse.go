@@ -107,3 +107,9 @@ func MarshallHcl(conf Config, path string) string {
 	destination.Close()
 	return path
 }
+
+func GetHcl(conf Config) *hclwrite.File {
+	f := hclwrite.NewEmptyFile()
+	gohcl.EncodeIntoBody(&conf, f.Body())
+	return f
+}
