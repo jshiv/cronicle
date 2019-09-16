@@ -1,4 +1,4 @@
-package create
+package config
 
 import (
 	"fmt"
@@ -9,7 +9,6 @@ import (
 
 	"github.com/fatih/color"
 
-	"github.com/jshiv/cronicle/internal/config"
 	"github.com/jshiv/cronicle/internal/git"
 
 	gogit "gopkg.in/src-d/go-git.v4"
@@ -33,38 +32,18 @@ func Init(croniclePath string) {
 	cronicleFile := path.Join(absCroniclePath, "Cronicle.hcl")
 	if fileExists(cronicleFile) {
 		conf, _ := GetConfig(cronicleFile)
-		hcl := config.GetHcl(*conf)
+		hcl := GetHcl(*conf)
 		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes())))
 		CloneRepos(absCroniclePath, conf)
 	} else {
-		config.MarshallHcl(config.Default(), cronicleFile)
+		MarshallHcl(Default(), cronicleFile)
 		git.Commit(absCroniclePath, "Cronicle Initial Commit")
 	}
-	// var conf *config.Config
-	// // Does the Cronicle.hcl file exist?
-	// if _, err := os.Stat(cronicleFile); err == nil {
-	// 	var parseErr error
-	// 	conf, parseErr = config.ParseFile(cronicleFile)
-	// 	if parseErr != nil {
-	// 		panic(parseErr)
-	// 	}
-	// 	CloneRepos(absCroniclePath, conf)
-	// 	// If not, create it from config.Default() and commit
-	// } else if os.IsNotExist(err) {
-	// 	// path/to/whatever does *not* exist
-	// 	config.MarshallHcl(config.Default(), cronicleFile)
-	// 	git.Commit(absCroniclePath, "Cronicle Initial Commit")
-
-	// } else {
-	// 	panic(errors.New("cronicle.hcl does not exist and was not created"))
-	// }
-	// // config.
-	// fmt.Println(conf)
 
 }
 
 // GetRepos collects the set of repos associated to a given config
-func GetRepos(conf *config.Config) map[string]bool {
+func GetRepos(conf *Config) map[string]bool {
 	repos := map[string]bool{}
 	for _, repo := range conf.Repos {
 		fmt.Println(repo)
@@ -85,7 +64,7 @@ func GetRepos(conf *config.Config) map[string]bool {
 }
 
 //CloneRepos clones all repositories configured in Cronicle.hcl
-func CloneRepos(croniclePath string, conf *config.Config) {
+func CloneRepos(croniclePath string, conf *Config) {
 	repos := GetRepos(conf)
 	for repo := range repos {
 		fullRepoDir, _ := LocalRepoDir(croniclePath, repo)
@@ -104,14 +83,14 @@ func LocalRepoDir(croniclePath string, repo string) (string, error) {
 
 // GetConfig returns the Config specified by the given Cronicle.hcl file
 // Including any Cronicle files specified by in the repos directory.
-func GetConfig(cronicleFile string) (*config.Config, error) {
+func GetConfig(cronicleFile string) (*Config, error) {
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
 		fmt.Println(err)
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
-	conf, err := config.ParseFile(cronicleFileAbs)
+	conf, err := ParseFile(cronicleFileAbs)
 	if err != nil {
 		fmt.Println(err)
 	}

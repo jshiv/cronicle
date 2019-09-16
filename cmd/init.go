@@ -18,7 +18,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/jshiv/cronicle/internal/create"
+	"github.com/jshiv/cronicle/internal/config"
 
 	"github.com/spf13/cobra"
 )
@@ -43,7 +43,7 @@ repos folder.
 	Run: func(cmd *cobra.Command, args []string) {
 		croniclePath, _ := cmd.Flags().GetString("path")
 		fmt.Println("Initialize Cronicle: " + croniclePath)
-		create.Init(croniclePath)
+		config.Init(croniclePath)
 	},
 }
 

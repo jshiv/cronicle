@@ -6,7 +6,6 @@ import (
 
 	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/config"
-	"github.com/jshiv/cronicle/internal/create"
 	"github.com/jshiv/cronicle/internal/git"
 
 	"github.com/fatih/color"
@@ -26,7 +25,7 @@ func Run(cronicleFile string) {
 	}
 	// croniclePath := filepath.Dir(cronicleFileAbs)
 
-	conf, _ := create.GetConfig(cronicleFileAbs)
+	conf, _ := config.GetConfig(cronicleFileAbs)
 	hcl := config.GetHcl(*conf)
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes())))
