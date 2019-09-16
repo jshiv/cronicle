@@ -91,6 +91,7 @@ func parseJSON(r io.Reader, filename string) (*Config, error) {
 	return &config, nil
 }
 
+//MarshallHcl writes a given Config to an hcl file at path
 func MarshallHcl(conf Config, path string) string {
 	f := hclwrite.NewEmptyFile()
 	gohcl.EncodeIntoBody(&conf, f.Body())
@@ -108,6 +109,7 @@ func MarshallHcl(conf Config, path string) string {
 	return path
 }
 
+// GetHcl returns a hcl File object from a given Config
 func GetHcl(conf Config) *hclwrite.File {
 	f := hclwrite.NewEmptyFile()
 	gohcl.EncodeIntoBody(&conf, f.Body())
