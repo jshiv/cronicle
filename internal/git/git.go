@@ -7,8 +7,18 @@ import (
 	"time"
 
 	"gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
 )
+
+// Git is the struct which associates common data structures from the go-git library.
+type Git struct {
+	Worktree   git.Worktree
+	Repository git.Repository
+	Head       plumbing.Reference
+	Hash       plumbing.Hash
+	Commit     object.Commit
+}
 
 // CheckIfError should be used to naively panics if an error is not nil.
 func CheckIfError(err error) {

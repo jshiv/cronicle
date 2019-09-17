@@ -6,7 +6,7 @@ import (
 
 	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/config"
-	"github.com/jshiv/cronicle/internal/git"
+	ingit "github.com/jshiv/cronicle/internal/git"
 
 	"github.com/fatih/color"
 
@@ -14,6 +14,10 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/robfig/cron.v2"
+
+	"gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/plumbing"
+	"gopkg.in/src-d/go-git.v4/plumbing/object"
 )
 
 // Run is the main function of the cron package
@@ -57,9 +61,9 @@ func AddSchedule(schedule config.Schedule) func() {
 	return func() {
 		for _, task := range schedule.Tasks {
 			log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
-			git.Pull(task.Path)
+			ingit.Pull(task.Path)
 			result := bash.Bash(task.Command, task.Path)
-			commit, err := git.GetCommit(task.Path)
+			commit, err := ingit.GetCommit(task.Path)
 			if err != nil {
 				log.WithFields(log.Fields{
 					"task": task.Name,
@@ -90,6 +94,52 @@ func AddSchedule(schedule config.Schedule) func() {
 		}
 	}
 }
+
+type TaskMeta struct {
+	config.Task
+	Result     bash.Result
+	Worktree   git.Worktree
+	Repository git.Repository
+	Head       plumbing.Reference
+	Hash       plumbing.Hash
+	Commit     object.Commit
+}
+
+func (task *TaskMeta) GitTask() {
+	r, _ := git.PlainOpen(task.Path)
+	task.Repository = *r
+
+	h, _ := r.Head()
+	task.Head = *h
+
+	wt, _ := r.Worktree()
+	task.Worktree = *wt
+
+	task.Hash = h.Hash()
+
+	cIter, _ := r.Log(&git.LogOptions{From: task.Hash})
+	commit, _ := cIter.Next()
+	task.Commit = *commit
+
+}
+
+func ExecuteTask(task *TaskMeta) TaskMeta {
+	log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
+	task.GitTask()
+	task.Worktree.Pull(&git.PullOptions{ReferenceName: task.Head.Name()})
+	// ingit.Pull(task.Path)
+	result := bash.Bash(task.Command, task.Path)
+	task.Result = result
+
+	return *task
+}
+
+// func LogTask(task *config.Task) {
+// 	log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
+// 	ingit.Pull(task.Path)
+// 	result := bash.Bash(task.Command, task.Path)
+// 	commit, err := ingit.GetCommit(task.Path)
+// }
 
 func Dummy(in string) string {
 	return in
