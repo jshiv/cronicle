@@ -13,11 +13,27 @@ import (
 
 // Git is the struct which associates common data structures from the go-git library.
 type Git struct {
-	Worktree   git.Worktree
-	Repository git.Repository
-	Head       plumbing.Reference
-	Hash       plumbing.Hash
-	Commit     object.Commit
+	Worktree   *git.Worktree
+	Repository *git.Repository
+	Head       *plumbing.Reference
+	Hash       *plumbing.Hash
+	Commit     *object.Commit
+}
+
+// GetGit returns a git struct populated with git useful repo pointers
+func GetGit(worktreePath string) Git {
+	var g Git
+	r, _ := git.PlainOpen(worktreePath)
+	g.Repository = r
+
+	h, _ := r.Head()
+	g.Head = h
+
+	wt, _ := r.Worktree()
+	g.Worktree = wt
+
+	return g
+
 }
 
 // CheckIfError should be used to naively panics if an error is not nil.
@@ -162,6 +178,26 @@ func Remote(worktreeDir string) {
 	list, err := repo.Remotes()
 	CheckIfError(err)
 	fmt.Println(list[0].Config().URLs[0])
+}
+
+//Checkout checks out a branch specificed by CheckoutOptions
+func Checkout(worktreeDir string, opts *git.CheckoutOptions) error {
+	// Opens an already existing repository.
+	r, err := git.PlainOpen(worktreeDir)
+	if err != nil {
+		return err
+	}
+	worktree, err := r.Worktree()
+	if err != nil {
+		return err
+	}
+
+	err = worktree.Checkout(opts)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 //GetCommit retrieves a commit object from HEAD

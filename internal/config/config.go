@@ -1,5 +1,7 @@
 package config
 
+import "github.com/jshiv/cronicle/internal/git"
+
 // Config is the configuration structure for the cronicle checker.
 // https://raw.githubusercontent.com/mitchellh/golicense/master/config/config.go
 type Config struct {
@@ -34,6 +36,7 @@ type Task struct {
 	Branch  string   `hcl:"branch,optional"`
 	Commit  string   `hcl:"commit,optional"`
 	Path    string
+	Git     git.Git
 }
 
 // Owner is the configuration structure that defines an owner of a schedule or task

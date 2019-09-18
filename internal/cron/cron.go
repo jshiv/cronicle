@@ -6,7 +6,6 @@ import (
 
 	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/config"
-	ingit "github.com/jshiv/cronicle/internal/git"
 
 	"github.com/fatih/color"
 
@@ -17,7 +16,6 @@ import (
 
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
-	"gopkg.in/src-d/go-git.v4/plumbing/object"
 )
 
 // Run is the main function of the cron package
@@ -61,85 +59,88 @@ func AddSchedule(schedule config.Schedule) func() {
 	return func() {
 		for _, task := range schedule.Tasks {
 			log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
-			ingit.Pull(task.Path)
-			result := bash.Bash(task.Command, task.Path)
-			commit, err := ingit.GetCommit(task.Path)
-			if err != nil {
-				log.WithFields(log.Fields{
-					"task": task.Name,
-					"exit": result.ExitStatus,
-				}).Error(err)
-			} else if result.ExitStatus == 0 {
-				log.WithFields(log.Fields{
-					"task":   task.Name,
-					"exit":   result.ExitStatus,
-					"commit": commit.Hash.String()[:11],
-					"email":  commit.Author.Email,
-				}).Info(result.Stdout)
-			} else if result.ExitStatus == 1 {
-				log.WithFields(log.Fields{
-					"task":   task.Name,
-					"exit":   result.ExitStatus,
-					"commit": commit.Hash.String()[:11],
-					"email":  commit.Author.Email,
-				}).Error(result.Stderr)
-			} else {
-				log.WithFields(log.Fields{
-					"task":   task.Name,
-					"exit":   result.ExitStatus,
-					"commit": commit.Hash.String()[:11],
-					"email":  commit.Author.Email,
-				}).Error(result.Stderr)
-			}
+			res := ExecuteTask(&task)
+			LogTask(&task, res)
+			// 		ingit.Pull(task.Path)
+			// 		result := bash.Bash(task.Command, task.Path)
+			// 		commit, err := ingit.GetCommit(task.Path)
+			// 		if err != nil {
+			// 			log.WithFields(log.Fields{
+			// 				"task": task.Name,
+			// 				"exit": result.ExitStatus,
+			// 			}).Error(err)
+			// 		} else if result.ExitStatus == 0 {
+			// 			log.WithFields(log.Fields{
+			// 				"task":   task.Name,
+			// 				"exit":   result.ExitStatus,
+			// 				"commit": commit.Hash.String()[:11],
+			// 				"email":  commit.Author.Email,
+			// 			}).Info(result.Stdout)
+			// 		} else if result.ExitStatus == 1 {
+			// 			log.WithFields(log.Fields{
+			// 				"task":   task.Name,
+			// 				"exit":   result.ExitStatus,
+			// 				"commit": commit.Hash.String()[:11],
+			// 				"email":  commit.Author.Email,
+			// 			}).Error(result.Stderr)
+			// 		} else {
+			// 			log.WithFields(log.Fields{
+			// 				"task":   task.Name,
+			// 				"exit":   result.ExitStatus,
+			// 				"commit": commit.Hash.String()[:11],
+			// 				"email":  commit.Author.Email,
+			// 			}).Error(result.Stderr)
+			// 		}
 		}
 	}
 }
 
-type TaskMeta struct {
-	config.Task
-	Result     bash.Result
-	Worktree   git.Worktree
-	Repository git.Repository
-	Head       plumbing.Reference
-	Hash       plumbing.Hash
-	Commit     object.Commit
-}
-
-func (task *TaskMeta) GitTask() {
-	r, _ := git.PlainOpen(task.Path)
-	task.Repository = *r
-
-	h, _ := r.Head()
-	task.Head = *h
-
-	wt, _ := r.Worktree()
-	task.Worktree = *wt
-
-	task.Hash = h.Hash()
-
-	cIter, _ := r.Log(&git.LogOptions{From: task.Hash})
-	commit, _ := cIter.Next()
-	task.Commit = *commit
-
-}
-
-func ExecuteTask(task *TaskMeta) TaskMeta {
+// ExecuteTask does a git pull, git checkout and exec's the given command
+func ExecuteTask(task *config.Task) bash.Result {
 	log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
-	task.GitTask()
-	task.Worktree.Pull(&git.PullOptions{ReferenceName: task.Head.Name()})
-	// ingit.Pull(task.Path)
+	if task.Branch != "" {
+		bn := plumbing.NewBranchReferenceName(task.Branch)
+		task.Git.Worktree.Pull(&git.PullOptions{ReferenceName: bn})
+		task.Git.Worktree.Checkout(&git.CheckoutOptions{Branch: bn})
+	} else if task.Commit != "" {
+		cn := plumbing.NewHash(task.Commit)
+		task.Git.Worktree.Pull(&git.PullOptions{})
+		task.Git.Worktree.Checkout(&git.CheckoutOptions{Hash: cn})
+	} else {
+		task.Git.Worktree.Pull(&git.PullOptions{})
+	}
+	task.Git.Head, _ = task.Git.Repository.Head()
+	task.Git.Commit, _ = task.Git.Repository.CommitObject(task.Git.Head.Hash())
 	result := bash.Bash(task.Command, task.Path)
-	task.Result = result
 
-	return *task
+	return result
 }
 
-// func LogTask(task *config.Task) {
-// 	log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
-// 	ingit.Pull(task.Path)
-// 	result := bash.Bash(task.Command, task.Path)
-// 	commit, err := ingit.GetCommit(task.Path)
-// }
+//LogTask logs the exit status, stderr, git commit and other logging data.
+func LogTask(task *config.Task, res bash.Result) {
+	if res.ExitStatus == 0 {
+		log.WithFields(log.Fields{
+			"task":   task.Name,
+			"exit":   res.ExitStatus,
+			"commit": task.Git.Commit.Hash.String()[:11],
+			"email":  task.Git.Commit.Author.Email,
+		}).Info(res.Stdout)
+	} else if res.ExitStatus == 1 {
+		log.WithFields(log.Fields{
+			"task":   task.Name,
+			"exit":   res.ExitStatus,
+			"commit": task.Git.Commit.Hash.String()[:11],
+			"email":  task.Git.Commit.Author.Email,
+		}).Error(res.Stderr)
+	} else {
+		log.WithFields(log.Fields{
+			"task":   task.Name,
+			"exit":   res.ExitStatus,
+			"commit": task.Git.Commit.Hash.String()[:11],
+			"email":  task.Git.Commit.Author.Email,
+		}).Error(res.Stderr)
+	}
+}
 
 func Dummy(in string) string {
 	return in

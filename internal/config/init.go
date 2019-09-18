@@ -64,6 +64,7 @@ func GetRepos(conf *Config) map[string]bool {
 }
 
 //CloneRepos clones all repositories configured in Cronicle.hcl
+// TODO: append {schedulename}.{taskname} to each directory in repos to avoid concurancy issues
 func CloneRepos(croniclePath string, conf *Config) {
 	repos := GetRepos(conf)
 	for repo := range repos {
@@ -99,11 +100,17 @@ func GetConfig(cronicleFile string) (*Config, error) {
 	for sdx, schedule := range conf.Schedules {
 		for tdx, task := range schedule.Tasks {
 			if task.Repo != "" {
-				conf.Schedules[sdx].Tasks[tdx].Path, _ = LocalRepoDir(croniclePath, task.Repo)
+				p, _ := LocalRepoDir(croniclePath, task.Repo)
+				conf.Schedules[sdx].Tasks[tdx].Path = p
+				conf.Schedules[sdx].Tasks[tdx].Git = git.GetGit(p)
 			} else if schedule.Repo != "" {
-				conf.Schedules[sdx].Tasks[tdx].Path, _ = LocalRepoDir(croniclePath, schedule.Repo)
+				p, _ := LocalRepoDir(croniclePath, schedule.Repo)
+				conf.Schedules[sdx].Tasks[tdx].Path = p
+				conf.Schedules[sdx].Tasks[tdx].Git = git.GetGit(p)
 			} else {
 				conf.Schedules[sdx].Tasks[tdx].Path = croniclePath
+				conf.Schedules[sdx].Tasks[tdx].Path = croniclePath
+				conf.Schedules[sdx].Tasks[tdx].Git = git.GetGit(croniclePath)
 			}
 		}
 	}
@@ -126,8 +133,8 @@ func GetConfig(cronicleFile string) (*Config, error) {
 		}
 
 	}
-	// fmt.Println(conf)
-	return conf, nil //errors.New("Failed to Get Config for " + cronicleFile)
+
+	return conf, nil
 }
 
 // fileExists checks if a file exists and is not a directory before we
