@@ -9,8 +9,6 @@ import (
 
 	"github.com/fatih/color"
 
-	"github.com/jshiv/cronicle/internal/git"
-
 	gogit "gopkg.in/src-d/go-git.v4"
 )
 
@@ -37,7 +35,7 @@ func Init(croniclePath string) {
 		CloneRepos(absCroniclePath, conf)
 	} else {
 		MarshallHcl(Default(), cronicleFile)
-		git.Commit(absCroniclePath, "Cronicle Initial Commit")
+		Commit(absCroniclePath, "Cronicle Initial Commit")
 	}
 
 }
@@ -69,7 +67,7 @@ func CloneRepos(croniclePath string, conf *Config) {
 	repos := GetRepos(conf)
 	for repo := range repos {
 		fullRepoDir, _ := LocalRepoDir(croniclePath, repo)
-		git.Clone(repo, fullRepoDir)
+		Clone(repo, fullRepoDir)
 	}
 }
 
@@ -102,15 +100,15 @@ func GetConfig(cronicleFile string) (*Config, error) {
 			if task.Repo != "" {
 				p, _ := LocalRepoDir(croniclePath, task.Repo)
 				conf.Schedules[sdx].Tasks[tdx].Path = p
-				conf.Schedules[sdx].Tasks[tdx].Git = git.GetGit(p)
+				conf.Schedules[sdx].Tasks[tdx].Git = GetGit(p)
 			} else if schedule.Repo != "" {
 				p, _ := LocalRepoDir(croniclePath, schedule.Repo)
 				conf.Schedules[sdx].Tasks[tdx].Path = p
-				conf.Schedules[sdx].Tasks[tdx].Git = git.GetGit(p)
+				conf.Schedules[sdx].Tasks[tdx].Git = GetGit(p)
 			} else {
 				conf.Schedules[sdx].Tasks[tdx].Path = croniclePath
 				conf.Schedules[sdx].Tasks[tdx].Path = croniclePath
-				conf.Schedules[sdx].Tasks[tdx].Git = git.GetGit(croniclePath)
+				conf.Schedules[sdx].Tasks[tdx].Git = GetGit(croniclePath)
 			}
 		}
 	}

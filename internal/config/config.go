@@ -1,6 +1,8 @@
 package config
 
-import "github.com/jshiv/cronicle/internal/git"
+import (
+	"errors"
+)
 
 // Config is the configuration structure for the cronicle checker.
 // https://raw.githubusercontent.com/mitchellh/golicense/master/config/config.go
@@ -36,13 +38,29 @@ type Task struct {
 	Branch  string   `hcl:"branch,optional"`
 	Commit  string   `hcl:"commit,optional"`
 	Path    string
-	Git     git.Git
+	Git     Git
 }
 
 // Owner is the configuration structure that defines an owner of a schedule or task
 type Owner struct {
 	Name  string `hcl:"name"`
 	Email string `hcl:"email,optional"`
+}
+
+var (
+	//ErrBranchAndCommitGiven is thrown because commit and branch are mutually exclusive to identify a repo
+	ErrBranchAndCommitGiven = errors.New("branch and commit can not both be populated")
+)
+
+// Validate validates the fields and sets the default values.
+func (t *Task) Validate() error {
+	if t.Branch != "" {
+		if t.Commit != "" {
+			return ErrBranchAndCommitGiven
+		}
+	}
+
+	return nil
 }
 
 //Default returns a basic default Config
