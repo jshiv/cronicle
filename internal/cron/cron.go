@@ -40,9 +40,10 @@ func RunConfig(conf config.Config) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
 	c := cron.New()
-	c.AddFunc("@every 10s", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
+	c.AddFunc("@every 6m", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
 	for _, schedule := range conf.Schedules {
-		_, err := c.AddFunc(schedule.Cron, AddSchedule(schedule))
+		cronID, err := c.AddFunc(schedule.Cron, AddSchedule(schedule))
+		fmt.Println(cronID)
 		if err != nil {
 			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
 			log.Fatal(err)
@@ -56,48 +57,26 @@ func RunConfig(conf config.Config) {
 func AddSchedule(schedule config.Schedule) func() {
 	log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Running...")
 
+	return ExecuteTasks(schedule)
+}
+
+// ExecuteTasks handels the execution of all tasks in a given schedule.
+// By default tasks execute in parallel unless wait_for is given
+func ExecuteTasks(schedule config.Schedule) func() {
 	return func() {
 		for _, task := range schedule.Tasks {
-			log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
-			res := ExecuteTask(&task)
-			LogTask(&task, res)
-			// 		ingit.Pull(task.Path)
-			// 		result := bash.Bash(task.Command, task.Path)
-			// 		commit, err := ingit.GetCommit(task.Path)
-			// 		if err != nil {
-			// 			log.WithFields(log.Fields{
-			// 				"task": task.Name,
-			// 				"exit": result.ExitStatus,
-			// 			}).Error(err)
-			// 		} else if result.ExitStatus == 0 {
-			// 			log.WithFields(log.Fields{
-			// 				"task":   task.Name,
-			// 				"exit":   result.ExitStatus,
-			// 				"commit": commit.Hash.String()[:11],
-			// 				"email":  commit.Author.Email,
-			// 			}).Info(result.Stdout)
-			// 		} else if result.ExitStatus == 1 {
-			// 			log.WithFields(log.Fields{
-			// 				"task":   task.Name,
-			// 				"exit":   result.ExitStatus,
-			// 				"commit": commit.Hash.String()[:11],
-			// 				"email":  commit.Author.Email,
-			// 			}).Error(result.Stderr)
-			// 		} else {
-			// 			log.WithFields(log.Fields{
-			// 				"task":   task.Name,
-			// 				"exit":   result.ExitStatus,
-			// 				"commit": commit.Hash.String()[:11],
-			// 				"email":  commit.Author.Email,
-			// 			}).Error(result.Stderr)
-			// 		}
+			go func(task config.Task) {
+				r := ExecuteTask(&task)
+				LogTask(&task, r)
+			}(task)
+
 		}
 	}
 }
 
 // ExecuteTask does a git pull, git checkout and exec's the given command
 func ExecuteTask(task *config.Task) bash.Result {
-	log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
+	// log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
 	if task.Branch != "" {
 		bn := plumbing.NewBranchReferenceName(task.Branch)
 		task.Git.Worktree.Pull(&git.PullOptions{ReferenceName: bn})
