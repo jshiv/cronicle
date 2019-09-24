@@ -2,14 +2,16 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
+	"gopkg.in/src-d/go-git.v4/plumbing"
 
-	gogit "gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4"
 )
 
 //Init initializes a default croniclePath with a .git repository,
@@ -23,7 +25,7 @@ func Init(croniclePath string) {
 	// errors.New("could not extract repos from " + slantedRed("Config"))
 	fmt.Println("Init Cronicle: " + slantyedCyan(absCroniclePath))
 	os.MkdirAll(path.Join(absCroniclePath, "repos"), 0777)
-	_, err = gogit.PlainInit(absCroniclePath, false)
+	_, err = git.PlainInit(absCroniclePath, false)
 	if err != nil {
 		fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("git: %s", err))
 	}
@@ -32,7 +34,7 @@ func Init(croniclePath string) {
 		conf, _ := GetConfig(cronicleFile)
 		hcl := GetHcl(*conf)
 		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes())))
-		CloneRepos(absCroniclePath, conf)
+		// CloneRepos(absCroniclePath, conf)
 	} else {
 		MarshallHcl(Default(), cronicleFile)
 		Commit(absCroniclePath, "Cronicle Initial Commit")
@@ -61,16 +63,6 @@ func GetRepos(conf *Config) map[string]bool {
 	return repos
 }
 
-//CloneRepos clones all repositories configured in Cronicle.hcl
-// TODO: append {schedulename}.{taskname} to each directory in repos to avoid concurancy issues
-func CloneRepos(croniclePath string, conf *Config) {
-	repos := GetRepos(conf)
-	for repo := range repos {
-		fullRepoDir, _ := LocalRepoDir(croniclePath, repo)
-		Clone(repo, fullRepoDir)
-	}
-}
-
 //LocalRepoDir takes a Cronicle.hcl path and a github repo URL and converts
 //it to the local clone of that repo
 func LocalRepoDir(croniclePath string, repo string) (string, error) {
@@ -97,19 +89,37 @@ func GetConfig(cronicleFile string) (*Config, error) {
 	// Assign the path for each task or schedule repo
 	for sdx, schedule := range conf.Schedules {
 		for tdx, task := range schedule.Tasks {
-			if task.Repo != "" {
-				p, _ := LocalRepoDir(croniclePath, task.Repo)
-				conf.Schedules[sdx].Tasks[tdx].Path = p
-				conf.Schedules[sdx].Tasks[tdx].Git = GetGit(p)
-			} else if schedule.Repo != "" {
-				p, _ := LocalRepoDir(croniclePath, schedule.Repo)
-				conf.Schedules[sdx].Tasks[tdx].Path = p
-				conf.Schedules[sdx].Tasks[tdx].Git = GetGit(p)
-			} else {
-				conf.Schedules[sdx].Tasks[tdx].Path = croniclePath
-				conf.Schedules[sdx].Tasks[tdx].Path = croniclePath
-				conf.Schedules[sdx].Tasks[tdx].Git = GetGit(croniclePath)
+			err := task.Validate()
+			if err != nil {
+				log.Fatal(err)
 			}
+			var path string
+
+			if task.Repo != "" {
+				path, _ = LocalRepoDir(croniclePath, task.Repo)
+			} else if schedule.Repo != "" {
+				path, _ = LocalRepoDir(croniclePath, schedule.Repo)
+			} else {
+				path = croniclePath
+			}
+			taskPath := filepath.Join(path, schedule.Name, task.Name)
+			conf.Schedules[sdx].Tasks[tdx].Path = taskPath
+			if !dirExists(path) {
+				var head plumbing.ReferenceName
+				if task.Branch != "" {
+					head = plumbing.NewBranchReferenceName(task.Branch)
+				} else {
+					head = plumbing.HEAD
+
+				}
+				_, err := git.PlainClone(taskPath, false, &git.CloneOptions{URL: task.Repo,
+					ReferenceName: head,
+					SingleBranch:  true})
+				if err != nil {
+					fmt.Println(err)
+				}
+			}
+			conf.Schedules[sdx].Tasks[tdx].Git = GetGit(taskPath)
 		}
 	}
 
@@ -143,4 +153,12 @@ func fileExists(filename string) bool {
 		return false
 	}
 	return !info.IsDir()
+}
+
+func dirExists(dirname string) bool {
+	info, err := os.Stat(dirname)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return info.IsDir()
 }

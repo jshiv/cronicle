@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	"gopkg.in/src-d/go-git.v4"
@@ -37,17 +36,7 @@ func GetGit(worktreePath string) Git {
 
 }
 
-func Clone(gitURL string, dir string) {
-	// Clones the repository into the given dir, just as a normal git clone does
-	_, err := git.PlainClone(dir, false, &git.CloneOptions{
-		URL: gitURL,
-	})
-
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
+//Commit does a git commit on the repository at worktree
 func Commit(worktreeDir string, msg string) {
 	// Opens an already existing repository.
 	r, _ := git.PlainOpen(worktreeDir)
