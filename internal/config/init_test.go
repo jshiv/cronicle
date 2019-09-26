@@ -16,13 +16,22 @@ var _ = Describe("Init", func() {
 			JustBeforeEach(func() {
 				conf = config.Default()
 			})
-			It("should be populated Path", func() {
+			It("should populate Task.Path with the croniclePath", func() {
 				err := config.SetConfig(&conf, croniclePath)
 				if err != nil {
 					fmt.Println(err)
 				}
 				// Expect(conf).To(Equal("1"))
 				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath))
+			})
+			It("should populate Task.Path with the croniclePath", func() {
+				conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
+				err := config.SetConfig(&conf, croniclePath)
+				if err != nil {
+					fmt.Println(err)
+				}
+				// Expect(conf).To(Equal("1"))
+				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath + "/repos/jshiv/cronicle-sample.git/example/hello"))
 			})
 		})
 	})
