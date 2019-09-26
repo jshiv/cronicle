@@ -29,21 +29,22 @@ func GetGit(worktreePath string) Git {
 
 	g.Repository = r
 
-	h, err := r.Head()
-	if err != nil {
-		fmt.Println("=================")
-		fmt.Println(err)
-		fmt.Println("=================")
+	if r != nil {
+		if h, err := r.Head(); err != nil {
+			fmt.Println("=================")
+			fmt.Println(err)
+			fmt.Println("=================")
 
+		} else {
+			g.Head = h
+		}
+
+		if wt, err := r.Worktree(); err != nil {
+			fmt.Println(err)
+		} else {
+			g.Worktree = wt
+		}
 	}
-	g.Head = h
-
-	wt, err := r.Worktree()
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	g.Worktree = wt
 
 	return g
 
