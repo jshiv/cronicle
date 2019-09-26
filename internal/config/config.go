@@ -2,6 +2,8 @@ package config
 
 import (
 	"errors"
+
+	"gopkg.in/src-d/go-git.v4/plumbing"
 )
 
 // Config is the configuration structure for the cronicle checker.
@@ -53,11 +55,18 @@ var (
 )
 
 // Validate validates the fields and sets the default values.
-func (t *Task) Validate() error {
-	if t.Branch != "" {
-		if t.Commit != "" {
+func (task *Task) Validate() error {
+	if task.Branch != "" {
+		if task.Commit != "" {
 			return ErrBranchAndCommitGiven
 		}
+	}
+
+	if task.Branch != "" {
+		task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
+	} else {
+		task.Git.ReferenceName = plumbing.HEAD
+
 	}
 
 	return nil

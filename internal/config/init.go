@@ -2,14 +2,12 @@ package config
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
-	"gopkg.in/src-d/go-git.v4/plumbing"
 
 	"gopkg.in/src-d/go-git.v4"
 )
@@ -72,26 +70,15 @@ func LocalRepoDir(croniclePath string, repo string) (string, error) {
 	return localRepoDir, nil
 }
 
-// GetConfig returns the Config specified by the given Cronicle.hcl file
-// Including any Cronicle files specified by in the repos directory.
-func GetConfig(cronicleFile string) (*Config, error) {
-	cronicleFileAbs, err := filepath.Abs(cronicleFile)
-	if err != nil {
-		fmt.Println(err)
-	}
-	croniclePath := filepath.Dir(cronicleFileAbs)
-
-	conf, err := ParseFile(cronicleFileAbs)
-	if err != nil {
-		fmt.Println(err)
-	}
-
+//SetConfig populates task repo path, runs git clone for any sub repos,
+//and assigns Git meta data to the task
+func SetConfig(conf *Config, croniclePath string) error {
 	// Assign the path for each task or schedule repo
 	for sdx, schedule := range conf.Schedules {
 		for tdx, task := range schedule.Tasks {
 			err := task.Validate()
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 			var path string
 
@@ -105,22 +92,36 @@ func GetConfig(cronicleFile string) (*Config, error) {
 			taskPath := filepath.Join(path, schedule.Name, task.Name)
 			conf.Schedules[sdx].Tasks[tdx].Path = taskPath
 			if !dirExists(path) {
-				var head plumbing.ReferenceName
-				if task.Branch != "" {
-					head = plumbing.NewBranchReferenceName(task.Branch)
-				} else {
-					head = plumbing.HEAD
 
-				}
 				_, err := git.PlainClone(taskPath, false, &git.CloneOptions{URL: task.Repo,
-					ReferenceName: head,
+					ReferenceName: task.Git.ReferenceName,
 					SingleBranch:  true})
 				if err != nil {
-					fmt.Println(err)
+					return err
 				}
 			}
 			conf.Schedules[sdx].Tasks[tdx].Git = GetGit(taskPath)
 		}
+	}
+	return nil
+}
+
+// GetConfig returns the Config specified by the given Cronicle.hcl file
+// Including any Cronicle files specified by in the repos directory.
+func GetConfig(cronicleFile string) (*Config, error) {
+	cronicleFileAbs, err := filepath.Abs(cronicleFile)
+	if err != nil {
+		return nil, err
+	}
+	croniclePath := filepath.Dir(cronicleFileAbs)
+
+	conf, err := ParseFile(cronicleFileAbs)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := SetConfig(conf, croniclePath); err != nil {
+		return conf, err
 	}
 
 	// Collect any sub level Cronicle files if they exist
