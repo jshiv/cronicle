@@ -20,7 +20,7 @@ func TestConfig(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	croniclePath, _ := filepath.Abs("./testconfig")
+	croniclePath, _ = filepath.Abs("./testconfig/")
 	config.Init(croniclePath)
 })
 
