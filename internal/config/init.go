@@ -116,9 +116,10 @@ func SetConfig(conf *Config, croniclePath string) error {
 			conf.Schedules[sdx].Tasks[tdx].Path = taskPath
 			conf.Schedules[sdx].Tasks[tdx].Repo = repo
 
-			if !dirExists(taskPath) {
+			// Clone the repo if there is no .git directory in taskPath
+			if !DirExists(filepath.Join(taskPath, ".git")) {
 
-				_, err := git.PlainClone(taskPath, false, &git.CloneOptions{URL: task.Repo,
+				_, err := git.PlainClone(taskPath, false, &git.CloneOptions{URL: repo,
 					ReferenceName: task.Git.ReferenceName,
 					SingleBranch:  true})
 				if err != nil {
@@ -181,7 +182,7 @@ func fileExists(filename string) bool {
 	return !info.IsDir()
 }
 
-func dirExists(dirname string) bool {
+func DirExists(dirname string) bool {
 	info, err := os.Stat(dirname)
 	if os.IsNotExist(err) {
 		return false
