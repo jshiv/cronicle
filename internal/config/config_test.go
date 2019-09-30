@@ -1,8 +1,6 @@
 package config_test
 
 import (
-	"fmt"
-
 	"github.com/hashicorp/hcl2/gohcl"
 	"github.com/hashicorp/hcl2/hclwrite"
 	. "github.com/onsi/ginkgo"
@@ -49,7 +47,7 @@ var _ = Describe("Config", func() {
 
 		f := hclwrite.NewEmptyFile()
 		gohcl.EncodeIntoBody(&testConfig, f.Body())
-		fmt.Printf(string(f.Bytes()))
+		// fmt.Printf(string(f.Bytes()))
 		Expect(string(f.Bytes())).ToNot(BeNil())
 	})
 })

@@ -119,14 +119,13 @@ func SetConfig(conf *Config, croniclePath string) error {
 			// Clone the repo if there is no .git directory in taskPath
 			if !DirExists(filepath.Join(taskPath, ".git")) {
 
-				_, err := git.PlainClone(taskPath, false, &git.CloneOptions{URL: repo,
-					ReferenceName: task.Git.ReferenceName,
-					SingleBranch:  true})
+				_, err := git.PlainClone(taskPath, false, &git.CloneOptions{URL: repo})
 				if err != nil {
 					return err
 				}
 			}
 			conf.Schedules[sdx].Tasks[tdx].Git = GetGit(taskPath)
+
 		}
 	}
 	return nil

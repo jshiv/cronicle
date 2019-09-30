@@ -29,6 +29,7 @@ var _ = Describe("Init", func() {
 			It("should clone a sub repo from https://github.com/jshiv/cronicle-sample.git", func() {
 				conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
 				err := config.SetConfig(&conf, croniclePath)
+
 				if err != nil {
 					fmt.Println(err)
 				}
@@ -36,6 +37,15 @@ var _ = Describe("Init", func() {
 				Expect(conf.Schedules[0].Tasks[0].Repo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
 				Expect(conf.Schedules[0].Tasks[0].Git.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))
 				Expect(config.DirExists(croniclePath + "/repos/jshiv/cronicle-sample.git/example/hello/.git")).To(Equal(true))
+
+			})
+			It("should fail if a branch and commit are given from https://github.com/jshiv/cronicle-sample.git", func() {
+				conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
+				conf.Schedules[0].Tasks[0].Branch = "feature/test-branch"
+				conf.Schedules[0].Tasks[0].Commit = "8e9f30a6c3598203c73c0fd393081d2e84961da9"
+
+				err := config.SetConfig(&conf, croniclePath)
+				Expect(err).To(Equal(config.ErrBranchAndCommitGiven))
 
 			})
 		})
