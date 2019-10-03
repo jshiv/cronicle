@@ -5,9 +5,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 
 	"github.com/fatih/color"
+
+	"net/url"
 
 	"gopkg.in/src-d/go-git.v4"
 )
@@ -65,8 +66,12 @@ func GetRepos(conf *Config) map[string]bool {
 //it to the local clone of that repo
 func LocalRepoDir(croniclePath string, repo string) (string, error) {
 	reposDir := path.Join(croniclePath, "repos")
-	repoClean := strings.Replace(strings.Replace(repo, "github.com/", "", 1), "https:", "", 1)
-	localRepoDir := path.Join(reposDir, repoClean)
+	u, err := url.Parse(repo)
+	if err != nil {
+		return "", err
+	}
+	localRepoDir := path.Join(reposDir, u.Path)
+
 	return localRepoDir, nil
 }
 
