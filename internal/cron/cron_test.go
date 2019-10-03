@@ -1,9 +1,11 @@
 package cron_test
 
 import (
+	"fmt"
+
+	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/config"
 	"github.com/jshiv/cronicle/internal/cron"
-	log "github.com/sirupsen/logrus"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -17,15 +19,12 @@ var _ = Describe("Cron", func() {
 	})
 
 	It("Should return an function", func() {
-		var conf config.Config
-
-		conf.Schedule.Cron = "@every 2s"
-		conf.Schedule.Command = "echo Hello World"
-
-		got := cron.AddSchedule(conf.Schedule)
-
-		Expect(got).To(Equal(func() {
-			log.WithFields(log.Fields{"job": "Schedule"}).Info(conf.Schedule.Command)
-		}))
+		conf := config.Default()
+		task := conf.Schedules[0].Tasks[0]
+		task.Command = []string{}
+		err := config.SetConfig(&conf, croniclePath)
+		fmt.Println(err)
+		r := cron.ExecuteTask(&task)
+		Expect(r).To(Equal(bash.Result{}))
 	})
 })

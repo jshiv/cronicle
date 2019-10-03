@@ -77,20 +77,29 @@ func ExecuteTasks(schedule config.Schedule) func() {
 // ExecuteTask does a git pull, git checkout and exec's the given command
 func ExecuteTask(task *config.Task) bash.Result {
 	// log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
-	if task.Branch != "" {
-		bn := plumbing.NewBranchReferenceName(task.Branch)
-		task.Git.Worktree.Pull(&git.PullOptions{ReferenceName: bn})
-		task.Git.Worktree.Checkout(&git.CheckoutOptions{Branch: bn})
-	} else if task.Commit != "" {
-		cn := plumbing.NewHash(task.Commit)
-		task.Git.Worktree.Pull(&git.PullOptions{})
-		task.Git.Worktree.Checkout(&git.CheckoutOptions{Hash: cn})
-	} else {
-		task.Git.Worktree.Pull(&git.PullOptions{})
+
+	if task.Repo != "" {
+		if task.Branch != "" {
+			bn := plumbing.NewBranchReferenceName(task.Branch)
+			task.Git.Worktree.Pull(&git.PullOptions{RemoteName: "origin"})
+			task.Git.Worktree.Checkout(&git.CheckoutOptions{Branch: bn, Force: true})
+		} else if task.Commit != "" {
+			cn := plumbing.NewHash(task.Commit)
+			task.Git.Worktree.Pull(&git.PullOptions{})
+			task.Git.Worktree.Checkout(&git.CheckoutOptions{Hash: cn, Force: true})
+		} else {
+			task.Git.Worktree.Pull(&git.PullOptions{})
+		}
 	}
-	task.Git.Head, _ = task.Git.Repository.Head()
-	task.Git.Commit, _ = task.Git.Repository.CommitObject(task.Git.Head.Hash())
-	result := bash.Bash(task.Command, task.Path)
+	if task.Git.Repository != nil {
+		task.Git.Head, _ = task.Git.Repository.Head()
+		task.Git.Commit, _ = task.Git.Repository.CommitObject(task.Git.Head.Hash())
+	}
+
+	var result bash.Result
+	if len(task.Command) > 0 {
+		result = bash.Bash(task.Command, task.Path)
+	}
 
 	return result
 }
