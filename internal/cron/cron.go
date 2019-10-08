@@ -81,33 +81,38 @@ func ExecuteTask(task *config.Task) (bash.Result, error) {
 	// log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
 
 	if task.Repo != "" {
+		var branch string
 		if task.Branch != "" {
-			bn := plumbing.NewBranchReferenceName(task.Branch)
+			branch = task.Branch
+		} else {
+			branch = "master"
+		}
+		bn := plumbing.NewBranchReferenceName(branch)
 
-			err := task.Git.Repository.Fetch(&git.FetchOptions{
-				RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
-			})
-			if err != nil {
-				switch err {
-				case git.NoErrAlreadyUpToDate:
-				default:
-					return bash.Result{}, err
-				}
-			}
-
-			if err := task.Git.Worktree.Checkout(&git.CheckoutOptions{
-				Create: false, Force: false, Branch: bn,
-			}); err != nil {
+		err := task.Git.Repository.Fetch(&git.FetchOptions{
+			RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
+		})
+		if err != nil {
+			switch err {
+			case git.NoErrAlreadyUpToDate:
+			default:
 				return bash.Result{}, err
 			}
-
-		} else if task.Commit != "" {
-			cn := plumbing.NewHash(task.Commit)
-			task.Git.Worktree.Pull(&git.PullOptions{})
-			task.Git.Worktree.Checkout(&git.CheckoutOptions{Hash: cn, Force: true})
-		} else {
-			task.Git.Worktree.Pull(&git.PullOptions{})
 		}
+
+		if err := task.Git.Worktree.Checkout(&git.CheckoutOptions{
+			Create: false, Force: false, Branch: bn,
+		}); err != nil {
+			return bash.Result{}, err
+		}
+
+		// } else if task.Commit != "" {
+		// 	cn := plumbing.NewHash(task.Commit)
+		// 	task.Git.Worktree.Pull(&git.PullOptions{})
+		// 	task.Git.Worktree.Checkout(&git.CheckoutOptions{Hash: cn, Force: true})
+		// } else {
+		// 	task.Git.Worktree.Pull(&git.PullOptions{})
+		// }
 	}
 
 	if task.Git.Repository != nil {

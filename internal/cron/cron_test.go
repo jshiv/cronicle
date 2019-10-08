@@ -26,8 +26,9 @@ var _ = Describe("Cron", func() {
 		fmt.Println(err)
 		r, err := cron.ExecuteTask(&task)
 		fmt.Println(err)
-		// h, err := task.Git.Repository.Head()
-		// Expect(h.Name().String()).To(Equal("refs/heads/master"))
+		g := config.GetGit(croniclePath)
+		h, err := g.Repository.Head()
+		Expect(h.Name().String()).To(Equal("refs/heads/master"))
 		Expect(r).To(Equal(bash.Result{}))
 	})
 
