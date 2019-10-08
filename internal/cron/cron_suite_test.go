@@ -1,6 +1,7 @@
 package cron_test
 
 import (
+	"os"
 	"testing"
 
 	. "github.com/onsi/ginkgo"
@@ -23,6 +24,6 @@ var _ = BeforeSuite(func() {
 	config.Init(croniclePath)
 })
 
-// var _ = AfterSuite(func() {
-// 	os.RemoveAll("./testconfig")
-// })
+var _ = AfterSuite(func() {
+	os.RemoveAll("./testconfig")
+})
