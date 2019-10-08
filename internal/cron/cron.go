@@ -15,6 +15,7 @@ import (
 	"gopkg.in/robfig/cron.v2"
 
 	"gopkg.in/src-d/go-git.v4"
+	c "gopkg.in/src-d/go-git.v4/config"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 )
 
@@ -66,7 +67,8 @@ func ExecuteTasks(schedule config.Schedule) func() {
 	return func() {
 		for _, task := range schedule.Tasks {
 			go func(task config.Task) {
-				r := ExecuteTask(&task)
+				r, err := ExecuteTask(&task)
+				fmt.Println(err)
 				LogTask(&task, r)
 			}(task)
 
@@ -75,14 +77,30 @@ func ExecuteTasks(schedule config.Schedule) func() {
 }
 
 // ExecuteTask does a git pull, git checkout and exec's the given command
-func ExecuteTask(task *config.Task) bash.Result {
+func ExecuteTask(task *config.Task) (bash.Result, error) {
 	// log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
 
 	if task.Repo != "" {
 		if task.Branch != "" {
 			bn := plumbing.NewBranchReferenceName(task.Branch)
-			task.Git.Worktree.Pull(&git.PullOptions{RemoteName: "origin"})
-			task.Git.Worktree.Checkout(&git.CheckoutOptions{Branch: bn, Force: true})
+
+			err := task.Git.Repository.Fetch(&git.FetchOptions{
+				RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
+			})
+			if err != nil {
+				switch err {
+				case git.NoErrAlreadyUpToDate:
+				default:
+					return bash.Result{}, err
+				}
+			}
+
+			if err := task.Git.Worktree.Checkout(&git.CheckoutOptions{
+				Create: false, Force: false, Branch: bn,
+			}); err != nil {
+				return bash.Result{}, err
+			}
+
 		} else if task.Commit != "" {
 			cn := plumbing.NewHash(task.Commit)
 			task.Git.Worktree.Pull(&git.PullOptions{})
@@ -91,6 +109,7 @@ func ExecuteTask(task *config.Task) bash.Result {
 			task.Git.Worktree.Pull(&git.PullOptions{})
 		}
 	}
+
 	if task.Git.Repository != nil {
 		task.Git.Head, _ = task.Git.Repository.Head()
 		task.Git.Commit, _ = task.Git.Repository.CommitObject(task.Git.Head.Hash())
@@ -101,7 +120,7 @@ func ExecuteTask(task *config.Task) bash.Result {
 		result = bash.Bash(task.Command, task.Path)
 	}
 
-	return result
+	return result, nil
 }
 
 //LogTask logs the exit status, stderr, git commit and other logging data.
