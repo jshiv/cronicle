@@ -87,7 +87,11 @@ func ExecuteTask(task *config.Task) (bash.Result, error) {
 		} else {
 			branch = "master"
 		}
-		bn := plumbing.NewBranchReferenceName(branch)
+
+		var commit string
+		if task.Commit != "" {
+			commit = task.Commit
+		}
 
 		err := task.Git.Repository.Fetch(&git.FetchOptions{
 			RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
@@ -100,9 +104,20 @@ func ExecuteTask(task *config.Task) (bash.Result, error) {
 			}
 		}
 
-		if err := task.Git.Worktree.Checkout(&git.CheckoutOptions{
-			Create: false, Force: false, Branch: bn,
-		}); err != nil {
+		var checkoutOptions git.CheckoutOptions
+		if commit != "" {
+			h := plumbing.NewHash(commit)
+			checkoutOptions = git.CheckoutOptions{
+				Create: false, Force: false, Hash: h,
+			}
+		} else {
+			b := plumbing.NewBranchReferenceName(branch)
+			checkoutOptions = git.CheckoutOptions{
+				Create: false, Force: false, Branch: b,
+			}
+		}
+
+		if err := task.Git.Worktree.Checkout(&checkoutOptions); err != nil {
 			return bash.Result{}, err
 		}
 
