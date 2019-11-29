@@ -46,4 +46,65 @@ var _ = Describe("Cron", func() {
 		Expect(h.Name().String()).To(Equal("refs/heads/feature/test-branch"))
 		Expect(r).To(Equal(bash.Result{}))
 	})
+
+	It("Should fetch and checkout local commit 699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1", func() {
+		conf := config.Default()
+
+		conf.Schedules[0].Repo = testRepoPath
+		conf.Schedules[0].Tasks[0].Commit = "699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1"
+
+		config.SetConfig(&conf, croniclePath)
+		task := conf.Schedules[0].Tasks[0]
+		task.Command = []string{"python", "test.py"}
+		r, err := cron.ExecuteTask(&task)
+		fmt.Println(err)
+		c := task.Git.Commit
+		Expect(c.Hash.String()).To(Equal("699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1"))
+		Expect(r).To(Equal(bash.Result{
+			Command:    []string{"python", "test.py"},
+			Stdout:     "test specific commit: SUCCESS\n",
+			Stderr:     "",
+			ExitStatus: 0,
+		}))
+	})
+
+	It("Should fetch and checkout local branch test/checkout_specific_branch", func() {
+		conf := config.Default()
+		conf.Schedules[0].Repo = testRepoPath
+		conf.Schedules[0].Tasks[0].Branch = "test/checkout_specific_branch"
+
+		config.SetConfig(&conf, croniclePath)
+		task := conf.Schedules[0].Tasks[0]
+		task.Command = []string{"python", "test.py"}
+		r, err := cron.ExecuteTask(&task)
+		fmt.Println(err)
+		h, err := task.Git.Repository.Head()
+		Expect(h.Name().String()).To(Equal("refs/heads/test/checkout_specific_branch"))
+		Expect(r).To(Equal(bash.Result{
+			Command:    []string{"python", "test.py"},
+			Stdout:     "test specific branch: SUCCESS\n",
+			Stderr:     "",
+			ExitStatus: 0,
+		}))
+	})
+
+	It("Should fetch and checkout local master by default", func() {
+		conf := config.Default()
+		conf.Schedules[0].Repo = testRepoPath
+		// conf.Schedules[0].Tasks[0].Branch = "test/checkout_specific_branch"
+
+		config.SetConfig(&conf, croniclePath)
+		task := conf.Schedules[0].Tasks[0]
+		task.Command = []string{"python", "test.py"}
+		r, err := cron.ExecuteTask(&task)
+		fmt.Println(err)
+		h, err := task.Git.Repository.Head()
+		Expect(h.Name().String()).To(Equal("refs/heads/master"))
+		Expect(r).To(Equal(bash.Result{
+			Command:    []string{"python", "test.py"},
+			Stdout:     "test master: SUCCESS\n",
+			Stderr:     "",
+			ExitStatus: 0,
+		}))
+	})
 })
