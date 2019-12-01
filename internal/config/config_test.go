@@ -1,8 +1,8 @@
 package config_test
 
 import (
-	"github.com/hashicorp/hcl2/gohcl"
-	"github.com/hashicorp/hcl2/hclwrite"
+	"github.com/hashicorp/hcl/v2/gohcl"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
