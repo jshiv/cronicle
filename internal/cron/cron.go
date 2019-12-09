@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/robfig/cron.v2"
+	cron "github.com/robfig/cron/v3"
 
 	"gopkg.in/src-d/go-git.v4"
 	c "gopkg.in/src-d/go-git.v4/config"
