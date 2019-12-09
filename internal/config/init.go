@@ -146,21 +146,21 @@ func GetConfig(cronicleFile string) (*Config, error) {
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
-	var conf *Config
+	var conf Config
 	err = hclsimple.DecodeFile(cronicleFileAbs, &CommandEvalContext, &conf)
 	// conf, err := ParseFile(cronicleFileAbs)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := SetConfig(conf, croniclePath); err != nil {
-		return conf, err
+	if err := SetConfig(&conf, croniclePath); err != nil {
+		return &conf, err
 	}
 
 	// Collect any sub level Cronicle files if they exist
 	// then append all schedules to conf.Schedules
 	// Explicitly ignore any information that is not in a schedule.
-	repos := GetRepos(conf)
+	repos := GetRepos(&conf)
 	for repo := range repos {
 		repoPath, _ := LocalRepoDir(croniclePath, repo)
 		fmt.Println("sub repo path:  " + repoPath)
@@ -176,7 +176,7 @@ func GetConfig(cronicleFile string) (*Config, error) {
 
 	}
 
-	return conf, nil
+	return &conf, nil
 }
 
 // fileExists checks if a file exists and is not a directory before we
