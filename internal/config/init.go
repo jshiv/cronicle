@@ -10,6 +10,7 @@ import (
 
 	"net/url"
 
+	"github.com/hashicorp/hcl/v2/hclsimple"
 	"gopkg.in/src-d/go-git.v4"
 )
 
@@ -145,7 +146,9 @@ func GetConfig(cronicleFile string) (*Config, error) {
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
-	conf, err := ParseFile(cronicleFileAbs)
+	var conf *Config
+	err = hclsimple.DecodeFile(cronicleFileAbs, &CommandEvalContext, &conf)
+	// conf, err := ParseFile(cronicleFileAbs)
 	if err != nil {
 		return nil, err
 	}

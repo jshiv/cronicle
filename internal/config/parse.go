@@ -2,93 +2,19 @@ package config
 
 import (
 	"fmt"
-	"io"
-	"io/ioutil"
 	"os"
-	"path/filepath"
 
-	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
-	"github.com/hashicorp/hcl/v2/json"
+	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/zclconf/go-cty/cty"
 )
 
-// ParseFile parses the given file for a configuration. The syntax of the
-// file is determined based on the filename extension: "hcl" for HCL,
-// "json" for JSON, other is an error.
-// from https://github.com/mitchellh/golicense/blob/master/config/parse.go
-func ParseFile(filename string) (*Config, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	ext := filepath.Ext(filename)
-	if len(ext) > 0 {
-		ext = ext[1:]
-	}
-
-	return Parse(f, filename, ext)
-}
-
-// Parse parses the configuration from the given reader. The reader will be
-// read to completion (EOF) before returning so ensure that the reader
-// does not block forever.
-//
-// format is either "hcl" or "json"
-func Parse(r io.Reader, filename, format string) (*Config, error) {
-	switch format {
-	case "hcl":
-		return parseHCL(r, filename)
-
-	case "json":
-		return parseJSON(r, filename)
-
-	default:
-		return nil, fmt.Errorf("Format must be either 'hcl' or 'json'")
-	}
-}
-
-func parseHCL(r io.Reader, filename string) (*Config, error) {
-	src, err := ioutil.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-
-	f, diag := hclsyntax.ParseConfig(src, filename, hcl.Pos{})
-	if diag.HasErrors() {
-		return nil, diag
-	}
-
-	var config Config
-	diag = gohcl.DecodeBody(f.Body, nil, &config)
-	if diag.HasErrors() {
-		return nil, diag
-	}
-
-	return &config, nil
-}
-
-func parseJSON(r io.Reader, filename string) (*Config, error) {
-	src, err := ioutil.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-
-	f, diag := json.Parse(src, filename)
-	if diag.HasErrors() {
-		return nil, diag
-	}
-
-	var config Config
-	diag = gohcl.DecodeBody(f.Body, nil, &config)
-	if diag.HasErrors() {
-		return nil, diag
-	}
-
-	return &config, nil
+// CommandEvalContext hcl.EvalContext
+var CommandEvalContext = hcl.EvalContext{
+	Variables: map[string]cty.Value{
+		"date": cty.StringVal("${date}"),
+	},
 }
 
 //MarshallHcl writes a given Config to an hcl file at path
