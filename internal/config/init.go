@@ -33,7 +33,7 @@ func Init(croniclePath string) {
 	if fileExists(cronicleFile) {
 		conf, _ := GetConfig(cronicleFile)
 		hcl := GetHcl(*conf)
-		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes())))
+		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 		// CloneRepos(absCroniclePath, conf)
 	} else {
 		MarshallHcl(Default(), cronicleFile)

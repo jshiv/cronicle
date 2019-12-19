@@ -79,7 +79,7 @@ func Default() Config {
 
 	var task Task
 	task.Name = "hello"
-	task.Command = []string{"/bin/echo", "Hello World"}
+	task.Command = []string{"/bin/echo", "Hello World --date=${date}"}
 
 	var schedule Schedule
 	schedule.Name = "example"

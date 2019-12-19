@@ -11,8 +11,8 @@ import (
 
 	"path/filepath"
 
-	log "github.com/sirupsen/logrus"
 	cron "github.com/robfig/cron/v3"
+	log "github.com/sirupsen/logrus"
 
 	"gopkg.in/src-d/go-git.v4"
 	c "gopkg.in/src-d/go-git.v4/config"
@@ -31,7 +31,7 @@ func Run(cronicleFile string) {
 	conf, _ := config.GetConfig(cronicleFileAbs)
 	hcl := config.GetHcl(*conf)
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
-	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes())))
+	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
 	RunConfig(*conf)
 }
