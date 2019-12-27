@@ -19,11 +19,13 @@ import (
 
 var _ = Describe("Parse", func() {
 
-	It("config.CommandEvalContext should contain date as an argument", func() {
+	It("config.CommandEvalContext should contain date, datetime, and timestamp as an argument", func() {
 
 		expected := hcl.EvalContext{
 			Variables: map[string]cty.Value{
-				"date": cty.StringVal("${date}"),
+				"date":      cty.StringVal("${date}"),
+				"datetime":  cty.StringVal("${datetime}"),
+				"timestamp": cty.StringVal("${timestamp}"),
 			},
 		}
 		Expect(config.CommandEvalContext).To(Equal(expected))

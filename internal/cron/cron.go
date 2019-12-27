@@ -3,6 +3,8 @@ package cron
 import (
 	"fmt"
 	"runtime"
+	"strings"
+	"time"
 
 	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/config"
@@ -57,7 +59,6 @@ func RunConfig(conf config.Config) {
 // AddSchedule retuns a function primed with the given schedules commands
 func AddSchedule(schedule config.Schedule) func() {
 	log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Running...")
-
 	return ExecuteTasks(schedule)
 }
 
@@ -65,9 +66,13 @@ func AddSchedule(schedule config.Schedule) func() {
 // By default tasks execute in parallel unless wait_for is given
 func ExecuteTasks(schedule config.Schedule) func() {
 	return func() {
+		// TODO: added location specification in schedule struct
+		// https://godoc.org/github.com/robfig/cron
+		now := time.Now().In(time.Local)
+		fmt.Println("Schedule exec time: ", now)
 		for _, task := range schedule.Tasks {
 			go func(task config.Task) {
-				r, err := ExecuteTask(&task)
+				r, err := ExecuteTask(&task, now)
 				fmt.Println(err)
 				LogTask(&task, r)
 			}(task)
@@ -77,7 +82,7 @@ func ExecuteTasks(schedule config.Schedule) func() {
 }
 
 // ExecuteTask does a git pull, git checkout and exec's the given command
-func ExecuteTask(task *config.Task) (bash.Result, error) {
+func ExecuteTask(task *config.Task, now time.Time) (bash.Result, error) {
 	// log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
 
 	if task.Repo != "" {
@@ -136,8 +141,19 @@ func ExecuteTask(task *config.Task) (bash.Result, error) {
 	}
 
 	var result bash.Result
+	r := strings.NewReplacer(
+		"${date}", now.Format(config.TimeArgumentFormatMap["${date}"]),
+		"${datetime}", now.Format(config.TimeArgumentFormatMap["${datetime}"]),
+		"${timestamp}", now.Format(config.TimeArgumentFormatMap["${timestamp}"]),
+	)
 	if len(task.Command) > 0 {
-		result = bash.Bash(task.Command, task.Path)
+		cmd := make([]string, len(task.Command))
+		for i, s := range task.Command {
+			s = r.Replace(s)
+			cmd[i] = s
+		}
+
+		result = bash.Bash(cmd, task.Path)
 	}
 
 	return result, nil

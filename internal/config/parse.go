@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"regexp"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
@@ -23,13 +24,28 @@ type HclWriteFile struct {
 	Bytes []byte
 }
 
-// CommandEvalContext hcl.EvalContext evaluates the "${date}" argument and carries it through
-// as a string of the same form that will be used as an arugment later in the code.
-var CommandEvalContext = hcl.EvalContext{
-	Variables: map[string]cty.Value{
-		"date": cty.StringVal("${date}"),
-	},
-}
+var (
+	// CommandEvalContext hcl.EvalContext evaluates the "${date}" argument and carries it through
+	// as a string of the same form that will be used as an arugment later in the code.
+	CommandEvalContext = hcl.EvalContext{
+		Variables: map[string]cty.Value{
+			"date":      cty.StringVal("${date}"),
+			"datetime":  cty.StringVal("${datetime}"),
+			"timestamp": cty.StringVal("${timestamp}"),
+		},
+	}
+
+	// TimeArgumentFormatMap maps the CommandEvalContext arguments to time.Format strings for reforamting
+	// arguments given in hcl to timestamps.
+	// ${date}: 		"2006-01-02"
+	// ${datetime}: 	"2006-01-02T15:04:05Z07:00"
+	// ${timestamp}: 	"2006-01-02 15:04:05Z07:00"
+	TimeArgumentFormatMap = map[string]string{
+		"${date}":      "2006-01-02",
+		"${datetime}":  time.RFC3339,
+		"${timestamp}": "2006-01-02 15:04:05Z07:00",
+	}
+)
 
 //MarshallHcl writes a given Config to an hcl file at path
 func MarshallHcl(conf Config, path string) string {
