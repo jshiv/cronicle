@@ -82,7 +82,7 @@ func ExecuteTasks(schedule config.Schedule) func() {
 }
 
 // ExecuteTask does a git pull, git checkout and exec's the given command
-func ExecuteTask(task *config.Task, now time.Time) (bash.Result, error) {
+func ExecuteTask(task *config.Task, t time.Time) (bash.Result, error) {
 	// log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
 
 	if task.Repo != "" {
@@ -142,9 +142,9 @@ func ExecuteTask(task *config.Task, now time.Time) (bash.Result, error) {
 
 	var result bash.Result
 	r := strings.NewReplacer(
-		"${date}", now.Format(config.TimeArgumentFormatMap["${date}"]),
-		"${datetime}", now.Format(config.TimeArgumentFormatMap["${datetime}"]),
-		"${timestamp}", now.Format(config.TimeArgumentFormatMap["${timestamp}"]),
+		"${date}", t.Format(config.TimeArgumentFormatMap["${date}"]),
+		"${datetime}", t.Format(config.TimeArgumentFormatMap["${datetime}"]),
+		"${timestamp}", t.Format(config.TimeArgumentFormatMap["${timestamp}"]),
 	)
 	if len(task.Command) > 0 {
 		cmd := make([]string, len(task.Command))

@@ -189,6 +189,7 @@ func fileExists(filename string) bool {
 	return !info.IsDir()
 }
 
+// DirExists checks that a directory exists.
 func DirExists(dirname string) bool {
 	info, err := os.Stat(dirname)
 	if os.IsNotExist(err) {
