@@ -81,6 +81,29 @@ func ExecuteTasks(schedule config.Schedule) func() {
 	}
 }
 
+// RunTask parses the cronicle.hcl config, filters for a specified task
+// and executes the task
+func RunTask(cronicleFile string, taskName string, scheduleName string, now time.Time) {
+
+	cronicleFileAbs, err := filepath.Abs(cronicleFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(cronicleFileAbs)
+
+	conf, _ := config.GetConfig(cronicleFileAbs)
+	var t config.Task
+	for _, schedule := range conf.Schedules {
+		for _, task := range schedule.Tasks {
+			if task.Name == taskName {
+				t = task
+			}
+		}
+	}
+	r, err := ExecuteTask(&t, now)
+	fmt.Println(r)
+}
+
 // ExecuteTask does a git pull, git checkout and exec's the given command
 func ExecuteTask(task *config.Task, t time.Time) (bash.Result, error) {
 	// log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
