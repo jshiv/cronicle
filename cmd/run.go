@@ -25,7 +25,7 @@ import (
 // runCmd represents the run command
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Cronicle run reads in the Cronicle.hcl scheule and starts running tasks",
+	Short: "Cronicle run reads in the Cronicle.hcl schedule and starts running tasks",
 	Long: `The cronicle run command starts the cron scheduler for the specified Cronicle.hcl file.
 For example:
 
