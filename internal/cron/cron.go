@@ -100,8 +100,9 @@ func RunTask(cronicleFile string, taskName string, scheduleName string, now time
 			}
 		}
 	}
+	fmt.Println(now)
 	r, err := ExecuteTask(&t, now)
-	fmt.Println(r)
+	LogTask(&t, r)
 }
 
 // ExecuteTask does a git pull, git checkout and exec's the given command
