@@ -42,21 +42,33 @@ to quickly create a Cobra application.`,
 
 		timeFlag, _ := cmd.Flags().GetString("time")
 		var now time.Time
+		var end time.Time
 		if timeFlag == "" {
 			now = time.Now().In(time.Local)
 		} else {
-			if timeFlag == "" {
-				if n, err := time.Parse(time.RFC3339, timeFlag); err != nil {
-					fmt.Println(err)
-				} else {
-					now = n
-				}
+			fmt.Println(timeFlag)
+			if n, err := time.Parse(time.RFC3339, timeFlag); err != nil {
+				fmt.Println(err)
+			} else {
+				now = n.Local()
 			}
 
 		}
 
+		endFlag, _ := cmd.Flags().GetString("end")
+		if endFlag == "" {
+			end = now
+		} else {
+			if n, err := time.Parse(time.RFC3339, endFlag); err != nil {
+				fmt.Println(err)
+			} else {
+				end = n.Local()
+			}
+		}
+		for t := now; t.After(end) == false; t = t.AddDate(0, 0, 1) {
+			cron.ExecTasks(path, name, schedule, t)
+		}
 		fmt.Println("Reading from: " + path)
-		cron.RunTask(path, name, schedule, now)
 	},
 }
 
@@ -64,9 +76,9 @@ func init() {
 	rootCmd.AddCommand(taskCmd)
 	taskCmd.Flags().String("path", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
 	taskCmd.Flags().String("name", "", "Name of the task to execute (required)")
-	taskCmd.MarkFlagRequired("name")
 	taskCmd.Flags().String("schedule", "", "Name of the schedule that contains the task to execute")
-	taskCmd.Flags().String("time", "", "Timestamp to execute task [2006-01-02T15:04:05Z07:00]")
+	taskCmd.Flags().String("time", "", "Timestamp to execute task [2006-01-02T15:04:05-08:00]")
+	taskCmd.Flags().String("end", "", "date range end Timestamp [2006-01-02T15:04:05-08:00]")
 
 	// Here you will define your flags and configuration settings.
 

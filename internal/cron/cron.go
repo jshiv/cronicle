@@ -81,28 +81,59 @@ func ExecuteTasks(schedule config.Schedule) func() {
 	}
 }
 
-// RunTask parses the cronicle.hcl config, filters for a specified task
+// ExecTasks parses the cronicle.hcl config, filters for a specified task
 // and executes the task
-func RunTask(cronicleFile string, taskName string, scheduleName string, now time.Time) {
+func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(cronicleFileAbs)
+	fmt.Println("Reading from: " + cronicleFileAbs)
 
 	conf, _ := config.GetConfig(cronicleFileAbs)
-	var t config.Task
+
+	schedules := []config.Schedule{}
 	for _, schedule := range conf.Schedules {
+		schedule.Cron = now.String()
+		tasks := []config.Task{}
 		for _, task := range schedule.Tasks {
 			if task.Name == taskName {
-				t = task
+				tasks = append(tasks, task)
 			}
 		}
+
+		if schedule.Name == scheduleName {
+			// Only include explicilty given tasks or take all if taskName is not given.
+			if len(tasks) > 0 {
+				schedule.Tasks = tasks
+			}
+			//Add any schedule where the scheduleName is given
+			schedules = append(schedules, schedule)
+		} else if len(tasks) > 0 && schedule.Name != scheduleName {
+			schedule.Tasks = tasks
+			schedules = append(schedules, schedule)
+		}
 	}
-	fmt.Println(now)
-	r, err := ExecuteTask(&t, now)
-	LogTask(&t, r)
+
+	// If no schedules or tasks are specified, run the whole config
+	if len(schedules) == 0 {
+		schedules = conf.Schedules
+	}
+
+	var c config.Config
+	c.Schedules = schedules
+	hcl := config.GetHcl(c)
+
+	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
+	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
+	for _, schedule := range schedules {
+		for _, task := range schedule.Tasks {
+			r, _ := ExecuteTask(&task, now)
+			LogTask(&task, r)
+		}
+	}
+
 }
 
 // ExecuteTask does a git pull, git checkout and exec's the given command
