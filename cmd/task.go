@@ -46,7 +46,7 @@ to quickly create a Cobra application.`,
 		if timeFlag == "" {
 			now = time.Now().In(time.Local)
 		} else {
-			fmt.Println(timeFlag)
+			//TODO: Add flags for timeFlag format and timezone
 			if n, err := time.Parse(time.RFC3339, timeFlag); err != nil {
 				fmt.Println(err)
 			} else {
@@ -59,6 +59,7 @@ to quickly create a Cobra application.`,
 		if endFlag == "" {
 			end = now
 		} else {
+			//TODO: Add flags for endFlag format and timezone
 			if n, err := time.Parse(time.RFC3339, endFlag); err != nil {
 				fmt.Println(err)
 			} else {

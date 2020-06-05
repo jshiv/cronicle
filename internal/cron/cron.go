@@ -93,6 +93,7 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 
 	conf, _ := config.GetConfig(cronicleFileAbs)
 
+	//TODO: Move filtering to function
 	schedules := []config.Schedule{}
 	for _, schedule := range conf.Schedules {
 		schedule.Cron = now.String()
@@ -123,6 +124,7 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 
 	var c config.Config
 	c.Schedules = schedules
+	//TODO: Show hcl task.Command with given timestamp args filled
 	hcl := config.GetHcl(c)
 
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
