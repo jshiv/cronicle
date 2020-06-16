@@ -37,7 +37,6 @@ schedule "example" {
 
 ```
 
-The tool will use a Cronicle file to maintain `schedule as code`.
 A More complete example might look like:
 ```hcl
 #Cronicle.hcl
@@ -87,6 +86,8 @@ schedule "example" {
 
 ```
 
+# Bash Commands
+
 The init command sets up a new schedule repository with a sample Conicle.yml file
 ```bash
 cronicle init
@@ -99,7 +100,6 @@ tree
 └── repos
 ```
 
-# Bash Commands
 the run command starts the scheduler.
 ```bash
 cronicle run
