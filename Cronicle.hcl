@@ -12,7 +12,7 @@ schedule "schedule A" {
   }
 
   task "task1" {
-    command = ["/bin/echo", "Hello World"]
+    command = ["/bin/echo", "Hello World --date=${date}"]
   }
   task "task2" {
     command = ["/bin/echo", "This is Task2"]

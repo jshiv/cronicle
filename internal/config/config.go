@@ -1,11 +1,19 @@
 package config
 
+import (
+	"errors"
+
+	"gopkg.in/src-d/go-git.v4/plumbing"
+)
+
 // Config is the configuration structure for the cronicle checker.
 // https://raw.githubusercontent.com/mitchellh/golicense/master/config/config.go
 type Config struct {
 	Version   string     `hcl:"version,optional"`
 	Git       string     `hcl:"git"`
 	Schedules []Schedule `hcl:"schedule,block"`
+	// Repos points at external dependent repos that maintain their own schedules remotly.
+	Repos []string `hcl:"repos,optional"`
 }
 
 // Schedule is the configuration structure that defines a cron job consisting of tasks.
@@ -32,12 +40,36 @@ type Task struct {
 	Branch  string   `hcl:"branch,optional"`
 	Commit  string   `hcl:"commit,optional"`
 	Path    string
+	Git     Git
 }
 
 // Owner is the configuration structure that defines an owner of a schedule or task
 type Owner struct {
 	Name  string `hcl:"name"`
 	Email string `hcl:"email,optional"`
+}
+
+var (
+	//ErrBranchAndCommitGiven is thrown because commit and branch are mutually exclusive to identify a repo
+	ErrBranchAndCommitGiven = errors.New("branch and commit can not both be populated")
+)
+
+// Validate validates the fields and sets the default values.
+func (task *Task) Validate() error {
+	if task.Branch != "" {
+		if task.Commit != "" {
+			return ErrBranchAndCommitGiven
+		}
+	}
+
+	if task.Branch != "" {
+		task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
+	} else {
+		task.Git.ReferenceName = plumbing.HEAD
+
+	}
+
+	return nil
 }
 
 //Default returns a basic default Config
@@ -47,7 +79,7 @@ func Default() Config {
 
 	var task Task
 	task.Name = "hello"
-	task.Command = []string{"/bin/echo", "Hello World"}
+	task.Command = []string{"/bin/echo", "Hello World --date=${date}"}
 
 	var schedule Schedule
 	schedule.Name = "example"

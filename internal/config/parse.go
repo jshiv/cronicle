@@ -2,108 +2,78 @@ package config
 
 import (
 	"fmt"
-	"io"
-	"io/ioutil"
 	"os"
-	"path/filepath"
 
-	"github.com/hashicorp/hcl2/gohcl"
-	"github.com/hashicorp/hcl2/hcl"
-	"github.com/hashicorp/hcl2/hcl/hclsyntax"
-	"github.com/hashicorp/hcl2/hcl/json"
-	"github.com/hashicorp/hcl2/hclwrite"
+	"regexp"
+	"time"
+
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/gohcl"
+	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/zclconf/go-cty/cty"
 )
 
-// ParseFile parses the given file for a configuration. The syntax of the
-// file is determined based on the filename extension: "hcl" for HCL,
-// "json" for JSON, other is an error.
-// from https://github.com/mitchellh/golicense/blob/master/config/parse.go
-func ParseFile(filename string) (*Config, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
+// HclWriteFile contains the encoded hclwrite.File and the byte array of the file with
+// the $$ deduped. This is due the the effect that when writing template arguments with
+// the hcl library an extra $ will be added automatically. i.e. "${date}" becomes "$${date}"
+type HclWriteFile struct {
+	// File is the hclwrite.File encoded by gohcl.EncodeIntoBody
+	File hclwrite.File
 
-	ext := filepath.Ext(filename)
-	if len(ext) > 0 {
-		ext = ext[1:]
-	}
-
-	return Parse(f, filename, ext)
+	// Bytes is the byte array with deduped $$
+	Bytes []byte
 }
 
-// Parse parses the configuration from the given reader. The reader will be
-// read to completion (EOF) before returning so ensure that the reader
-// does not block forever.
-//
-// format is either "hcl" or "json"
-func Parse(r io.Reader, filename, format string) (*Config, error) {
-	switch format {
-	case "hcl":
-		return parseHCL(r, filename)
-
-	case "json":
-		return parseJSON(r, filename)
-
-	default:
-		return nil, fmt.Errorf("Format must be either 'hcl' or 'json'")
-	}
-}
-
-func parseHCL(r io.Reader, filename string) (*Config, error) {
-	src, err := ioutil.ReadAll(r)
-	if err != nil {
-		return nil, err
+var (
+	// CommandEvalContext hcl.EvalContext evaluates the "${date}" argument and carries it through
+	// as a string of the same form that will be used as an arugment later in the code.
+	CommandEvalContext = hcl.EvalContext{
+		Variables: map[string]cty.Value{
+			"date":      cty.StringVal("${date}"),
+			"datetime":  cty.StringVal("${datetime}"),
+			"timestamp": cty.StringVal("${timestamp}"),
+		},
 	}
 
-	f, diag := hclsyntax.ParseConfig(src, filename, hcl.Pos{})
-	if diag.HasErrors() {
-		return nil, diag
+	// TimeArgumentFormatMap maps the CommandEvalContext arguments to time.Format strings for reforamting
+	// arguments given in hcl to timestamps.
+	// ${date}: 		"2006-01-02"
+	// ${datetime}: 	"2006-01-02T15:04:05Z07:00"
+	// ${timestamp}: 	"2006-01-02 15:04:05Z07:00"
+	TimeArgumentFormatMap = map[string]string{
+		"${date}":      "2006-01-02",
+		"${datetime}":  time.RFC3339,
+		"${timestamp}": "2006-01-02 15:04:05Z07:00",
 	}
+)
 
-	var config Config
-	diag = gohcl.DecodeBody(f.Body, nil, &config)
-	if diag.HasErrors() {
-		return nil, diag
-	}
-
-	return &config, nil
-}
-
-func parseJSON(r io.Reader, filename string) (*Config, error) {
-	src, err := ioutil.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-
-	f, diag := json.Parse(src, filename)
-	if diag.HasErrors() {
-		return nil, diag
-	}
-
-	var config Config
-	diag = gohcl.DecodeBody(f.Body, nil, &config)
-	if diag.HasErrors() {
-		return nil, diag
-	}
-
-	return &config, nil
-}
-
+//MarshallHcl writes a given Config to an hcl file at path
 func MarshallHcl(conf Config, path string) string {
 	f := hclwrite.NewEmptyFile()
 	gohcl.EncodeIntoBody(&conf, f.Body())
-	fmt.Printf("%s", f.Bytes())
+	r := regexp.MustCompile("[$]+")
+	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
+	fmt.Printf("%s", b)
 	fmt.Println("writing to file")
 	destination, err := os.Create(path)
 	if err != nil {
 		panic(err)
 	}
-	_, writeErr := f.WriteTo(destination)
+
+	_, writeErr := destination.Write(b)
+	// _, writeErr := f.WriteTo(destination)
 	if writeErr != nil {
 		fmt.Printf("write error")
 	}
 	destination.Close()
 	return path
+}
+
+// GetHcl returns a hcl File object from a given Config
+func GetHcl(conf Config) HclWriteFile {
+	f := hclwrite.NewEmptyFile()
+	gohcl.EncodeIntoBody(&conf, f.Body())
+	r := regexp.MustCompile("[$]+")
+	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
+	return HclWriteFile{File: *f, Bytes: b}
 }
