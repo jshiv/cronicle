@@ -32,15 +32,16 @@ type Schedule struct {
 
 // Task is the configuration structure that defines a task (i.e., a command)
 type Task struct {
-	Name    string   `hcl:"name,label"`
-	Command []string `hcl:"command,optional"`
-	Depends []string `hcl:"depends,optional"`
-	Owner   *Owner   `hcl:"owner,block"`
-	Repo    string   `hcl:"repo,optional"`
-	Branch  string   `hcl:"branch,optional"`
-	Commit  string   `hcl:"commit,optional"`
-	Path    string
-	Git     Git
+	Name         string   `hcl:"name,label"`
+	Command      []string `hcl:"command,optional"`
+	Depends      []string `hcl:"depends,optional"`
+	Owner        *Owner   `hcl:"owner,block"`
+	Repo         string   `hcl:"repo,optional"`
+	Branch       string   `hcl:"branch,optional"`
+	Commit       string   `hcl:"commit,optional"`
+	Path         string
+	Git          Git
+	ScheduleName string
 }
 
 // Owner is the configuration structure that defines an owner of a schedule or task

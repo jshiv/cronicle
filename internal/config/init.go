@@ -131,7 +131,7 @@ func SetConfig(conf *Config, croniclePath string) error {
 				}
 			}
 			conf.Schedules[sdx].Tasks[tdx].Git = GetGit(taskPath)
-
+			conf.Schedules[sdx].Tasks[tdx].ScheduleName = schedule.Name
 		}
 	}
 	return nil

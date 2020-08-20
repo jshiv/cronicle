@@ -11,10 +11,12 @@
   types.commit = "string" # example
   types.success = "bool" # example
   types.task = "string"
+  types.schedule = "string"
   types.time = "timestamp" # example
   types.msg = "string"
   types.level = "string"
   types.schedule = "string"
+  types.cronicle = "string"
 
 [sinks.console]
   inputs = ["cronicle_log"]
@@ -32,4 +34,6 @@
   encoding.codec = "json" # optional, default
   labels.key = "cronicle"
   labels.task = "{{ task }}"
+  labels.schedule = "{{ schedule }}"
   labels.success = "{{ success }}"
+  labels.cronicle = "{{ cronicle }}"
