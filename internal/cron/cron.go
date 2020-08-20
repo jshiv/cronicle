@@ -220,24 +220,27 @@ func ExecuteTask(task *config.Task, t time.Time) (bash.Result, error) {
 func LogTask(task *config.Task, res bash.Result) {
 	if res.ExitStatus == 0 {
 		log.WithFields(log.Fields{
-			"task":   task.Name,
-			"exit":   res.ExitStatus,
-			"commit": task.Git.Commit.Hash.String()[:11],
-			"email":  task.Git.Commit.Author.Email,
+			"task":    task.Name,
+			"exit":    res.ExitStatus,
+			"commit":  task.Git.Commit.Hash.String()[:11],
+			"email":   task.Git.Commit.Author.Email,
+			"success": true,
 		}).Info(res.Stdout)
 	} else if res.ExitStatus == 1 {
 		log.WithFields(log.Fields{
-			"task":   task.Name,
-			"exit":   res.ExitStatus,
-			"commit": task.Git.Commit.Hash.String()[:11],
-			"email":  task.Git.Commit.Author.Email,
+			"task":    task.Name,
+			"exit":    res.ExitStatus,
+			"commit":  task.Git.Commit.Hash.String()[:11],
+			"email":   task.Git.Commit.Author.Email,
+			"success": false,
 		}).Error(res.Stderr)
 	} else {
 		log.WithFields(log.Fields{
-			"task":   task.Name,
-			"exit":   res.ExitStatus,
-			"commit": task.Git.Commit.Hash.String()[:11],
-			"email":  task.Git.Commit.Author.Email,
+			"task":    task.Name,
+			"exit":    res.ExitStatus,
+			"commit":  task.Git.Commit.Hash.String()[:11],
+			"email":   task.Git.Commit.Author.Email,
+			"success": false,
 		}).Error(res.Stderr)
 	}
 }
