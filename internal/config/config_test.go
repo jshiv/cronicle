@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"fmt"
+
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	. "github.com/onsi/ginkgo"
@@ -49,5 +51,53 @@ var _ = Describe("Config", func() {
 		gohcl.EncodeIntoBody(&testConfig, f.Body())
 		// fmt.Printf(string(f.Bytes()))
 		Expect(string(f.Bytes())).ToNot(BeNil())
+	})
+
+	It("Should return an TaskArray", func() {
+		conf := config.Default()
+		conf.Schedules[0].Tasks = append(conf.Schedules[0].Tasks, config.Task{Name: "task2"})
+		tasks := conf.TaskArray()
+		fmt.Println(len(tasks))
+		Expect(len(tasks)).To(Equal(2))
+		task := tasks[0]
+		Expect(task.Name).To(Equal("hello"))
+	})
+
+	It("Should FilterTask to all tasks if taskName is empty and scheduleName is empty", func() {
+		conf := config.Default()
+		conf.Schedules[0].Tasks = append(conf.Schedules[0].Tasks, config.Task{Name: "task2"})
+		tasks := conf.TaskArray().FilterTasks("", "")
+		fmt.Println(len(tasks))
+		Expect(len(tasks)).To(Equal(2))
+		task := tasks[1]
+		Expect(task.Name).To(Equal("task2"))
+	})
+
+	It("Should FilterTask to task2 if taskName = task2 and scheduleName is empty", func() {
+		conf := config.Default()
+		conf.Schedules[0].Tasks = append(conf.Schedules[0].Tasks, config.Task{Name: "task2"})
+		tasks := conf.TaskArray().FilterTasks("task2", "")
+		fmt.Println(len(tasks))
+		Expect(len(tasks)).To(Equal(1))
+		task := tasks[0]
+		Expect(task.Name).To(Equal("task2"))
+	})
+
+	It("Should FilterTask to both if taskName = hello and scheduleName = example", func() {
+		conf := config.Default()
+		conf.Schedules[0].Tasks = append(conf.Schedules[0].Tasks, config.Task{Name: "task2"})
+		tasks := conf.TaskArray().FilterTasks("hello", "example")
+		fmt.Println(len(tasks))
+		Expect(len(tasks)).To(Equal(1))
+		task := tasks[0]
+		Expect(task.Name).To(Equal("hello"))
+	})
+
+	It("Should FilterTask to none if taskName = hello and scheduleName = ex", func() {
+		conf := config.Default()
+		conf.Schedules[0].Tasks = append(conf.Schedules[0].Tasks, config.Task{Name: "task2"})
+		tasks := conf.TaskArray().FilterTasks("hello", "ex")
+		fmt.Println(len(tasks))
+		Expect(len(tasks)).To(Equal(0))
 	})
 })
