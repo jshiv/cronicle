@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"log"
 
 	"gopkg.in/src-d/go-git.v4/plumbing"
 )
@@ -53,6 +54,10 @@ type Owner struct {
 var (
 	//ErrBranchAndCommitGiven is thrown because commit and branch are mutually exclusive to identify a repo
 	ErrBranchAndCommitGiven = errors.New("branch and commit can not both be populated")
+	//ErrScheduleNameEmpty is thrown because schedule.Name == "", hcl can not be given with schedule "" {}
+	ErrScheduleNameEmpty = errors.New("schedule name can not be an empty string")
+	//ErrTaskNameEmpty is thrown because task.Name == "", hcl can not be given with task "" {}
+	ErrTaskNameEmpty = errors.New("task name can not be an empty string")
 )
 
 // Validate validates the fields and sets the default values.
@@ -70,6 +75,25 @@ func (task *Task) Validate() error {
 
 	}
 
+	return nil
+}
+
+//Validate checks that schedule.Name is not empty and assigns task.ScheduleName
+//on a whole config struct.
+func (conf *Config) Validate() error {
+
+	for sdx, schedule := range conf.Schedules {
+		if schedule.Name == "" {
+			return ErrScheduleNameEmpty
+		}
+
+		for tdx, task := range schedule.Tasks {
+			if task.Name == "" {
+				return ErrTaskNameEmpty
+			}
+			conf.Schedules[sdx].Tasks[tdx].ScheduleName = schedule.Name
+		}
+	}
 	return nil
 }
 
@@ -91,4 +115,62 @@ func Default() Config {
 	conf.Schedules = []Schedule{schedule}
 
 	return conf
+}
+
+//TaskArray is an array of Task structs,
+//calling config.TaskArra() ensures that each task.ScheduleName is filled
+type TaskArray []Task
+
+//TaskArray exports a TaskArray all tasks in a given config,
+//additionally, it ensures that task.ScheduleName is propigated
+func (conf *Config) TaskArray() TaskArray {
+
+	err := conf.Validate() // ensure that schedule.Name and task.ScheduleName are not empty
+	if err != nil {
+		log.Fatal(err)
+	}
+	tasks := TaskArray{}
+
+	for _, schedule := range conf.Schedules {
+		for _, task := range schedule.Tasks {
+			tasks = append(tasks, task)
+		}
+	}
+	return tasks
+}
+
+//FilterTasks returns a task array where
+//only matching task.Name = taskName and schedule.Name=scheduleName
+//if taskName = "" and scheduleName = "" then all tasks will be returned
+//empty strings are intrepreted as no filtering requested.
+func (t TaskArray) FilterTasks(taskName string, scheduleName string) TaskArray {
+
+	tasks := TaskArray{}
+	if taskName == "" && scheduleName != "" {
+		// if taskName is "", retrun all tasks with a matching scheduleName
+		for _, task := range t {
+			if task.ScheduleName == scheduleName {
+				tasks = append(tasks, task)
+			}
+		}
+	} else if taskName != "" && scheduleName == "" {
+		// if scheduleName is "", retrun all tasks with a matching taskName
+		for _, task := range t {
+			if task.Name == taskName {
+				tasks = append(tasks, task)
+			}
+		}
+	} else if taskName != "" && scheduleName != "" {
+		// if taskName and scheduleName are both gicen, return only tasks that match on both
+		for _, task := range t {
+			if task.Name == taskName && task.ScheduleName == scheduleName {
+				tasks = append(tasks, task)
+			}
+		}
+	} else {
+		//if both arguments are "", return all tasks
+		tasks = t
+	}
+
+	return tasks
 }
