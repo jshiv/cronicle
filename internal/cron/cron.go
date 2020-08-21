@@ -31,7 +31,7 @@ func Run(cronicleFile string) {
 	// croniclePath := filepath.Dir(cronicleFileAbs)
 
 	conf, _ := config.GetConfig(cronicleFileAbs)
-	hcl := config.GetHcl(*conf)
+	hcl := conf.Hcl()
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
@@ -93,47 +93,17 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 
 	conf, _ := config.GetConfig(cronicleFileAbs)
 
-	//TODO: Move filtering to function
-	schedules := []config.Schedule{}
-	for _, schedule := range conf.Schedules {
-		schedule.Cron = now.String()
-		tasks := []config.Task{}
-		for _, task := range schedule.Tasks {
-			if task.Name == taskName {
-				tasks = append(tasks, task)
-			}
-		}
-
-		if schedule.Name == scheduleName {
-			// Only include explicilty given tasks or take all if taskName is not given.
-			if len(tasks) > 0 {
-				schedule.Tasks = tasks
-			}
-			//Add any schedule where the scheduleName is given
-			schedules = append(schedules, schedule)
-		} else if len(tasks) > 0 && schedule.Name != scheduleName {
-			schedule.Tasks = tasks
-			schedules = append(schedules, schedule)
-		}
-	}
-
-	// If no schedules or tasks are specified, run the whole config
-	if len(schedules) == 0 {
-		schedules = conf.Schedules
-	}
+	tasks := conf.TaskArray().FilterTasks(taskName, scheduleName)
+	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 
 	var c config.Config
-	c.Schedules = schedules
-	//TODO: Show hcl task.Command with given timestamp args filled
-	hcl := config.GetHcl(c)
+	execSchedule := config.Schedule{Name: "exec", Cron: now.String(), Tasks: tasks}
+	c.Schedules = []config.Schedule{execSchedule}
+	fmt.Printf("%s", slantyedCyan(string(c.Hcl().Bytes)))
 
-	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
-	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
-	for _, schedule := range schedules {
-		for _, task := range schedule.Tasks {
-			r, _ := ExecuteTask(&task, now)
-			LogTask(&task, r)
-		}
+	for _, task := range tasks {
+		r, _ := ExecuteTask(&task, now)
+		LogTask(&task, r)
 	}
 
 }

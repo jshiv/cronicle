@@ -44,7 +44,7 @@ var _ = Describe("Parse", func() {
 		conf := config.Default()
 		conf.Schedules[0].Tasks[0].Command = []string{"/bin/echo", "Hello World --date=${date}"}
 
-		f := config.GetHcl(conf)
+		f := conf.Hcl()
 
 		test := strings.Contains(string(f.Bytes), `["/bin/echo", "Hello World --date=${date}"]`)
 		Expect(test).To(Equal(true))

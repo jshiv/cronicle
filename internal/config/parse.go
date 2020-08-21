@@ -69,10 +69,19 @@ func MarshallHcl(conf Config, path string) string {
 	return path
 }
 
-// GetHcl returns a hcl File object from a given Config
-func GetHcl(conf Config) HclWriteFile {
+//Hcl returns a hcl File object from a given Config
+func (conf Config) Hcl() HclWriteFile {
 	f := hclwrite.NewEmptyFile()
 	gohcl.EncodeIntoBody(&conf, f.Body())
+	r := regexp.MustCompile("[$]+")
+	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
+	return HclWriteFile{File: *f, Bytes: b}
+}
+
+//Hcl returns a hcl File object from a given task
+func (task Task) Hcl() HclWriteFile {
+	f := hclwrite.NewEmptyFile()
+	gohcl.EncodeIntoBody(&task, f.Body())
 	r := regexp.MustCompile("[$]+")
 	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
 	return HclWriteFile{File: *f, Bytes: b}

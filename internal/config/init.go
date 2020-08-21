@@ -32,7 +32,7 @@ func Init(croniclePath string) {
 	cronicleFile := path.Join(absCroniclePath, "Cronicle.hcl")
 	if fileExists(cronicleFile) {
 		conf, _ := GetConfig(cronicleFile)
-		hcl := GetHcl(*conf)
+		hcl := conf.Hcl()
 		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 		// CloneRepos(absCroniclePath, conf)
 	} else {
@@ -80,6 +80,7 @@ func LocalRepoDir(croniclePath string, repo string) (string, error) {
 //and assigns Git meta data to the task
 func SetConfig(conf *Config, croniclePath string) error {
 	// Assign the path for each task or schedule repo
+	conf.Validate()
 	for sdx, schedule := range conf.Schedules {
 		for tdx, task := range schedule.Tasks {
 			err := task.Validate()
