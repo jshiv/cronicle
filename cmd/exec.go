@@ -24,10 +24,10 @@ import (
 	"time"
 )
 
-// taskCmd represents the task command
-var taskCmd = &cobra.Command{
-	Use:   "task",
-	Short: "cronicle task executes a specified task",
+// execCmd represents the exec command
+var execCmd = &cobra.Command{
+	Use:   "exec",
+	Short: "cronicle exec executes a specified task or schedule",
 	Long: `A longer description that spans multiple lines and likely contains examples
 and usage of using your command. For example:
 
@@ -35,9 +35,9 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("task called")
+		fmt.Println("exec called")
 		path, _ := cmd.Flags().GetString("path")
-		name, _ := cmd.Flags().GetString("name")
+		task, _ := cmd.Flags().GetString("task")
 		schedule, _ := cmd.Flags().GetString("schedule")
 
 		timeFlag, _ := cmd.Flags().GetString("time")
@@ -67,27 +67,27 @@ to quickly create a Cobra application.`,
 			}
 		}
 		for t := now; t.After(end) == false; t = t.AddDate(0, 0, 1) {
-			cron.ExecTasks(path, name, schedule, t)
+			cron.ExecTasks(path, task, schedule, t)
 		}
 		fmt.Println("Reading from: " + path)
 	},
 }
 
 func init() {
-	rootCmd.AddCommand(taskCmd)
-	taskCmd.Flags().String("path", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
-	taskCmd.Flags().String("name", "", "Name of the task to execute (required)")
-	taskCmd.Flags().String("schedule", "", "Name of the schedule that contains the task to execute")
-	taskCmd.Flags().String("time", "", "Timestamp to execute task [2006-01-02T15:04:05-08:00]")
-	taskCmd.Flags().String("end", "", "date range end Timestamp [2006-01-02T15:04:05-08:00]")
+	rootCmd.AddCommand(execCmd)
+	execCmd.Flags().String("path", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
+	execCmd.Flags().String("task", "", "Name of the task to execute (required)")
+	execCmd.Flags().String("schedule", "", "Name of the schedule that contains the task to execute")
+	execCmd.Flags().String("time", "", "Timestamp to execute task [2006-01-02T15:04:05-08:00]")
+	execCmd.Flags().String("end", "", "date range end Timestamp [2006-01-02T15:04:05-08:00]")
 
 	// Here you will define your flags and configuration settings.
 
 	// Cobra supports Persistent Flags which will work for this command
 	// and all subcommands, e.g.:
-	// taskCmd.PersistentFlags().String("foo", "", "A help for foo")
+	// execCmd.PersistentFlags().String("foo", "", "A help for foo")
 
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
-	// taskCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	// execCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
