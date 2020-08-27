@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"log"
+	"time"
 
 	"gopkg.in/src-d/go-git.v4/plumbing"
 )
@@ -29,6 +30,10 @@ type Schedule struct {
 	EndDate   string `hcl:"end_date,optional"`
 	Owner     *Owner `hcl:"owner,block"`
 	Tasks     []Task `hcl:"task,block"`
+	//Now is the execution time of the given schedule that will be used to
+	//fill variable task command ${datetime}. The cron scheduler generally provides
+	//the value.
+	Now time.Time
 }
 
 // Task is the configuration structure that defines a task (i.e., a command)
