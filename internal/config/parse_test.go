@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -62,6 +63,28 @@ var _ = Describe("Parse", func() {
 		fmt.Println(err)
 		Expect(conf).To(Equal(c))
 		os.RemoveAll(p)
+	})
+
+	It("schedule.JSON should return []byte", func() {
+		conf := config.Default()
+		schedule := conf.Schedules[0]
+		// schedule.Now = time.Now().In(time.Local)
+		s := `{"Name":"example","Cron":"@every 5s","Repo":"","StartDate":"","EndDate":"","Owner":null,"Tasks":[{"Name":"hello","Command":["/bin/echo","Hello World --date=${date}"],"Depends":null,"Owner":null,"Repo":"","Branch":"","Commit":"","Path":"","Git":{"Worktree":null,"Repository":null,"Head":null,"Hash":null,"Commit":null,"ReferenceName":""},"ScheduleName":""}],"Now":"0001-01-01T00:00:00Z"}`
+
+		Expect(schedule.JSON()).To(Equal([]byte(s)))
+	})
+
+	It("json.Unmarshal(schedule.JSON) should equal schedule", func() {
+		conf := config.Default()
+		schedule := conf.Schedules[0]
+		// schedule.Now = time.Now().In(time.Local)
+		j := schedule.JSON()
+		var sched config.Schedule
+		err := json.Unmarshal(j, &sched)
+		if err != nil {
+			fmt.Println(err)
+		}
+		Expect(sched).To(Equal(schedule))
 	})
 
 })

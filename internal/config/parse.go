@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -67,6 +68,33 @@ func MarshallHcl(conf Config, path string) string {
 	}
 	destination.Close()
 	return path
+}
+
+// JSON method returns a json []byte array of the struct
+func (config Config) JSON() []byte {
+	b, err := json.Marshal(&config)
+	if err != nil {
+		fmt.Println(err)
+	}
+	return b
+}
+
+// JSON method returns a json []byte array of the struct
+func (schedule Schedule) JSON() []byte {
+	b, err := json.Marshal(&schedule)
+	if err != nil {
+		fmt.Println(err)
+	}
+	return b
+}
+
+// JSON method returns a json []byte array of the struct
+func (task Task) JSON() []byte {
+	b, err := json.Marshal(&task)
+	if err != nil {
+		fmt.Println(err)
+	}
+	return b
 }
 
 //Hcl returns a hcl File object from a given Config
