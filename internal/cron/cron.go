@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"encoding/json"
 	"fmt"
 	"runtime"
 	"strings"
@@ -41,11 +42,11 @@ func Run(cronicleFile string) {
 //RunConfig starts cron
 func RunConfig(conf config.Config) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
-
+	queue := make(chan []byte, 1000)
 	c := cron.New()
 	c.AddFunc("@every 6m", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
 	for _, schedule := range conf.Schedules {
-		cronID, err := c.AddFunc(schedule.Cron, AddSchedule(schedule))
+		cronID, err := c.AddFunc(schedule.Cron, QueueSchedule(schedule, queue))
 		fmt.Println(cronID)
 		if err != nil {
 			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
@@ -53,6 +54,16 @@ func RunConfig(conf config.Config) {
 		}
 	}
 	c.Start()
+
+	for scheduleBytes := range queue {
+		var s config.Schedule
+		err := json.Unmarshal(scheduleBytes, &s)
+		if err != nil {
+			fmt.Println(err)
+		}
+		ExecuteTasks(s)()
+
+	}
 	runtime.Goexit()
 }
 
@@ -62,13 +73,27 @@ func AddSchedule(schedule config.Schedule) func() {
 	return ExecuteTasks(schedule)
 }
 
+// QueueSchedule produces the json of a schdule to the buffered queue channel
+func QueueSchedule(schedule config.Schedule, queue chan []byte) func() {
+	log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Queuing...")
+	return func() {
+		schedule.Now = time.Now().In(time.Local)
+		queue <- schedule.JSON()
+	}
+}
+
 // ExecuteTasks handels the execution of all tasks in a given schedule.
 // By default tasks execute in parallel unless wait_for is given
 func ExecuteTasks(schedule config.Schedule) func() {
 	return func() {
 		// TODO: added location specification in schedule struct
 		// https://godoc.org/github.com/robfig/cron
-		now := time.Now().In(time.Local)
+		var now time.Time
+		if (schedule.Now == time.Time{}) {
+			now = time.Now().In(time.Local)
+		} else {
+			now = schedule.Now
+		}
 		fmt.Println("Schedule exec time: ", now)
 		for _, task := range schedule.Tasks {
 			go func(task config.Task) {
