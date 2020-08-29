@@ -76,6 +76,36 @@ func LocalRepoDir(croniclePath string, repo string) (string, error) {
 	return localRepoDir, nil
 }
 
+//SetGit sets assigns the
+func (task *Task) SetGit() {
+	if !DirExists(filepath.Join(task.Path, ".git")) {
+
+		_, err := git.PlainClone(task.Path, false, &git.CloneOptions{URL: task.Repo})
+		if err != nil {
+			fmt.Println(err)
+		}
+	}
+	task.Git = GetGit(task.Path)
+}
+
+//CleanGit nulls non-serlizable properties of a task
+//task.Git = Git{}
+func (task Task) CleanGit() Task {
+	t := task
+	t.Git = Git{}
+	return t
+}
+
+//CleanGit nulls non-serlizable properties of a schedule
+//task.Git = Git{}
+func (schedule Schedule) CleanGit() Schedule {
+	sch := schedule
+	for i, task := range schedule.Tasks {
+		sch.Tasks[i] = task.CleanGit()
+	}
+	return sch
+}
+
 //SetConfig populates task repo path, runs git clone for any sub repos,
 //and assigns Git meta data to the task
 func SetConfig(conf *Config, croniclePath string) error {
@@ -123,15 +153,17 @@ func SetConfig(conf *Config, croniclePath string) error {
 			conf.Schedules[sdx].Tasks[tdx].Path = taskPath
 			conf.Schedules[sdx].Tasks[tdx].Repo = repo
 
-			// Clone the repo if there is no .git directory in taskPath
-			if !DirExists(filepath.Join(taskPath, ".git")) {
+			// // Clone the repo if there is no .git directory in taskPath
+			// if !DirExists(filepath.Join(taskPath, ".git")) {
 
-				_, err := git.PlainClone(taskPath, false, &git.CloneOptions{URL: repo})
-				if err != nil {
-					return err
-				}
-			}
-			conf.Schedules[sdx].Tasks[tdx].Git = GetGit(taskPath)
+			// 	_, err := git.PlainClone(taskPath, false, &git.CloneOptions{URL: repo})
+			// 	if err != nil {
+			// 		return err
+			// 	}
+			// }
+			// conf.Schedules[sdx].Tasks[tdx].Git = GetGit(taskPath)
+			conf.Schedules[sdx].Tasks[tdx].SetGit()
+			conf.Schedules[sdx].Tasks[tdx].CleanGit()
 			conf.Schedules[sdx].Tasks[tdx].ScheduleName = schedule.Name
 		}
 	}

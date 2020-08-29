@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"log"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/src-d/go-git.v4/plumbing"
@@ -87,19 +88,70 @@ func (task *Task) Validate() error {
 //on a whole config struct.
 func (conf *Config) Validate() error {
 
-	for sdx, schedule := range conf.Schedules {
+	for _, schedule := range conf.Schedules {
 		if schedule.Name == "" {
 			return ErrScheduleNameEmpty
 		}
 
-		for tdx, task := range schedule.Tasks {
+		for _, task := range schedule.Tasks {
 			if task.Name == "" {
 				return ErrTaskNameEmpty
 			}
-			conf.Schedules[sdx].Tasks[tdx].ScheduleName = schedule.Name
 		}
 	}
 	return nil
+}
+
+//PropigateProperties Pushes the given croniclePath
+func (conf *Config) PropigateProperties(croniclePath string) {
+	// Assign the path for each task or schedule repo
+	for sdx, schedule := range conf.Schedules {
+		for tdx, task := range schedule.Tasks {
+			if task.Branch != "" {
+				task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
+			} else {
+				task.Git.ReferenceName = plumbing.HEAD
+
+			}
+
+			var path string
+			var taskPath string
+			var repo string
+
+			// If the task is associated to a repo
+			if task.Repo != "" {
+				repo = task.Repo
+				// If a Schedule is associated to a repo, all sub tasks are by default associated
+			} else if schedule.Repo != "" {
+				repo = schedule.Repo
+				// Else the repo is the cronicle repo
+			} else {
+				//TODO: make remote cronicle repo rathar than ""
+				repo = ""
+			}
+			// If the task is associated to a repo, put it in the repos directory
+			if task.Repo != "" {
+				path, _ = LocalRepoDir(croniclePath, task.Repo)
+				// If a Schedule is associated to a repo, all sub tasks are by default associated
+			} else if schedule.Repo != "" {
+				path, _ = LocalRepoDir(croniclePath, schedule.Repo)
+				// Else the path is the root croniclePath
+			} else {
+				path = croniclePath
+			}
+
+			// If the given task is associatated to a repo, clone the task to an independent path
+			if repo != "" {
+				taskPath = filepath.Join(path, schedule.Name, task.Name)
+				// Else the task is associated to the root croniclePath
+			} else {
+				taskPath = croniclePath
+			}
+			conf.Schedules[sdx].Tasks[tdx].Path = taskPath
+			conf.Schedules[sdx].Tasks[tdx].Repo = repo
+			conf.Schedules[sdx].Tasks[tdx].ScheduleName = schedule.Name
+		}
+	}
 }
 
 //Default returns a basic default Config
