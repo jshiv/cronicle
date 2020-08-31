@@ -53,6 +53,19 @@ var _ = Describe("Config", func() {
 		Expect(string(f.Bytes())).ToNot(BeNil())
 	})
 
+	It("conf.PropigateTaskProperties(./path/) should propigate task properties ScheduleName, Repo, Branch, and Path", func() {
+		conf := config.Default()
+		conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
+		conf.Schedules[0].Tasks[0].Branch = "feature/test-branch"
+
+		conf.PropigateTaskProperties("./path/")
+		Expect(conf.Schedules[0].Tasks[0].ScheduleName).To(Equal("example"))
+		Expect(conf.Schedules[0].Tasks[0].Repo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
+		Expect(conf.Schedules[0].Tasks[0].Branch).To(Equal("feature/test-branch"))
+		Expect(conf.Schedules[0].Tasks[0].Path).To(Equal("path/repos/jshiv/cronicle-sample.git/example/hello"))
+
+	})
+
 	It("Should return an TaskArray", func() {
 		conf := config.Default()
 		conf.Schedules[0].Tasks = append(conf.Schedules[0].Tasks, config.Task{Name: "task2"})
@@ -86,6 +99,7 @@ var _ = Describe("Config", func() {
 	It("Should FilterTask to both if taskName = hello and scheduleName = example", func() {
 		conf := config.Default()
 		conf.Schedules[0].Tasks = append(conf.Schedules[0].Tasks, config.Task{Name: "task2"})
+		conf.PropigateTaskProperties("./path")
 		tasks := conf.TaskArray().FilterTasks("hello", "example")
 		fmt.Println(len(tasks))
 		Expect(len(tasks)).To(Equal(1))

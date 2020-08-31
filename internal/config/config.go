@@ -102,55 +102,62 @@ func (conf *Config) Validate() error {
 	return nil
 }
 
-//PropigateProperties Pushes the given croniclePath
-func (conf *Config) PropigateProperties(croniclePath string) {
+//PropigateTaskProperties pushes schedule.Name, schedule.Repo and the repo path down to the task values.
+//It also populates task.Git.ReferenceName with task.Branch or HEAD.
+func (conf *Config) PropigateTaskProperties(croniclePath string) {
+	for i := range conf.Schedules {
+		conf.Schedules[i].PropigateTaskProperties(croniclePath)
+	}
+}
+
+//PropigateTaskProperties pushes schedule.Name, schedule.Repo and the repo path down to the task values.
+//It also populates task.Git.ReferenceName with task.Branch or HEAD.
+func (schedule *Schedule) PropigateTaskProperties(croniclePath string) {
 	// Assign the path for each task or schedule repo
-	for sdx, schedule := range conf.Schedules {
-		for tdx, task := range schedule.Tasks {
-			if task.Branch != "" {
-				task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
-			} else {
-				task.Git.ReferenceName = plumbing.HEAD
+	for i, task := range schedule.Tasks {
+		if task.Branch != "" {
+			task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
+		} else {
+			task.Git.ReferenceName = plumbing.HEAD
 
-			}
-
-			var path string
-			var taskPath string
-			var repo string
-
-			// If the task is associated to a repo
-			if task.Repo != "" {
-				repo = task.Repo
-				// If a Schedule is associated to a repo, all sub tasks are by default associated
-			} else if schedule.Repo != "" {
-				repo = schedule.Repo
-				// Else the repo is the cronicle repo
-			} else {
-				//TODO: make remote cronicle repo rathar than ""
-				repo = ""
-			}
-			// If the task is associated to a repo, put it in the repos directory
-			if task.Repo != "" {
-				path, _ = LocalRepoDir(croniclePath, task.Repo)
-				// If a Schedule is associated to a repo, all sub tasks are by default associated
-			} else if schedule.Repo != "" {
-				path, _ = LocalRepoDir(croniclePath, schedule.Repo)
-				// Else the path is the root croniclePath
-			} else {
-				path = croniclePath
-			}
-
-			// If the given task is associatated to a repo, clone the task to an independent path
-			if repo != "" {
-				taskPath = filepath.Join(path, schedule.Name, task.Name)
-				// Else the task is associated to the root croniclePath
-			} else {
-				taskPath = croniclePath
-			}
-			conf.Schedules[sdx].Tasks[tdx].Path = taskPath
-			conf.Schedules[sdx].Tasks[tdx].Repo = repo
-			conf.Schedules[sdx].Tasks[tdx].ScheduleName = schedule.Name
 		}
+
+		var path string
+		var taskPath string
+		var repo string
+
+		// If the task is associated to a repo
+		if task.Repo != "" {
+			repo = task.Repo
+			// If a Schedule is associated to a repo, all sub tasks are by default associated
+		} else if schedule.Repo != "" {
+			repo = schedule.Repo
+			// Else the repo is the cronicle repo
+		} else {
+			//TODO: make remote cronicle repo rathar than ""
+			repo = ""
+		}
+		// If the task is associated to a repo, put it in the repos directory
+		if task.Repo != "" {
+			path, _ = LocalRepoDir(croniclePath, task.Repo)
+			// If a Schedule is associated to a repo, all sub tasks are by default associated
+		} else if schedule.Repo != "" {
+			path, _ = LocalRepoDir(croniclePath, schedule.Repo)
+			// Else the path is the root croniclePath
+		} else {
+			path = croniclePath
+		}
+
+		// If the given task is associatated to a repo, clone the task to an independent path
+		if repo != "" {
+			taskPath = filepath.Join(path, schedule.Name, task.Name)
+			// Else the task is associated to the root croniclePath
+		} else {
+			taskPath = croniclePath
+		}
+		schedule.Tasks[i].Path = taskPath
+		schedule.Tasks[i].Repo = repo
+		schedule.Tasks[i].ScheduleName = schedule.Name
 	}
 }
 
