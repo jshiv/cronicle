@@ -56,12 +56,16 @@ func RunConfig(conf config.Config) {
 	c.Start()
 
 	for scheduleBytes := range queue {
+		fmt.Println(string(scheduleBytes))
 		var s config.Schedule
 		err := json.Unmarshal(scheduleBytes, &s)
+		s.PropigateTaskProperties("./")
+
 		if err != nil {
 			fmt.Println(err)
 		}
-		ExecuteTasks(s)()
+		fmt.Println(s)
+		// ExecuteTasks(s)()
 
 	}
 	runtime.Goexit()
@@ -78,6 +82,7 @@ func QueueSchedule(schedule config.Schedule, queue chan []byte) func() {
 	log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Queuing...")
 	return func() {
 		schedule.Now = time.Now().In(time.Local)
+		schedule.CleanGit()
 		queue <- schedule.JSON()
 	}
 }

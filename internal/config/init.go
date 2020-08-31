@@ -90,20 +90,16 @@ func (task *Task) SetGit() {
 
 //CleanGit nulls non-serlizable properties of a task
 //task.Git = Git{}
-func (task Task) CleanGit() Task {
-	t := task
-	t.Git = Git{}
-	return t
+func (task *Task) CleanGit() {
+	task.Git = Git{}
 }
 
 //CleanGit nulls non-serlizable properties of a schedule
 //task.Git = Git{}
-func (schedule Schedule) CleanGit() Schedule {
-	sch := schedule
-	for i, task := range schedule.Tasks {
-		sch.Tasks[i] = task.CleanGit()
+func (schedule *Schedule) CleanGit() {
+	for i := range schedule.Tasks {
+		schedule.Tasks[i].CleanGit()
 	}
-	return sch
 }
 
 //SetConfig populates task repo path, runs git clone for any sub repos,
@@ -186,9 +182,10 @@ func GetConfig(cronicleFile string) (*Config, error) {
 		return nil, err
 	}
 
-	if err := SetConfig(&conf, croniclePath); err != nil {
-		return &conf, err
-	}
+	conf.PropigateTaskProperties(croniclePath)
+	// if err := SetConfig(&conf, croniclePath); err != nil {
+	// 	return &conf, err
+	// }
 
 	// Collect any sub level Cronicle files if they exist
 	// then append all schedules to conf.Schedules
