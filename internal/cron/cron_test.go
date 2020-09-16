@@ -14,19 +14,19 @@ import (
 
 var _ = Describe("Cron", func() {
 
-	It("Should return an empty bash.Result", func() {
-		conf := config.Default()
-		task := conf.Schedules[0].Tasks[0]
-		task.Command = []string{}
-		err := config.SetConfig(&conf, croniclePath)
-		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
-		r, err := cron.ExecuteTask(&task, t)
-		fmt.Println(err)
-		g := config.GetGit(croniclePath)
-		h, err := g.Repository.Head()
-		Expect(h.Name().String()).To(Equal("refs/heads/master"))
-		Expect(r).To(Equal(bash.Result{}))
-	})
+	// It("Should return an empty bash.Result", func() {
+	// 	conf := config.Default()
+	// 	task := conf.Schedules[0].Tasks[0]
+	// 	task.Command = []string{}
+	// 	// err := config.SetConfig(&conf, croniclePath)
+	// 	t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+	// 	r, err := cron.ExecuteTask(&task, t)
+	// 	fmt.Println(err)
+	// 	g := config.GetGit(croniclePath)
+	// 	h, err := g.Repository.Head()
+	// 	Expect(h.Name().String()).To(Equal("refs/heads/master"))
+	// 	Expect(r).To(Equal(bash.Result{}))
+	// })
 
 	It("Should fetch and checkout branch feature/test-branch", func() {
 		conf := config.Default()

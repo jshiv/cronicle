@@ -47,6 +47,8 @@ func RunConfig(conf config.Config) {
 	c.AddFunc("@every 6m", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
 	for _, schedule := range conf.Schedules {
 		cronID, err := c.AddFunc(schedule.Cron, QueueSchedule(schedule, queue))
+		// cronID, err := c.AddFunc(schedule.Cron, AddSchedule(schedule))
+
 		fmt.Println(cronID)
 		if err != nil {
 			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
@@ -56,7 +58,7 @@ func RunConfig(conf config.Config) {
 	c.Start()
 
 	for scheduleBytes := range queue {
-		fmt.Println(string(scheduleBytes))
+		// fmt.Println(string(scheduleBytes))
 		var s config.Schedule
 		err := json.Unmarshal(scheduleBytes, &s)
 		s.PropigateTaskProperties("./")
@@ -64,9 +66,8 @@ func RunConfig(conf config.Config) {
 		if err != nil {
 			fmt.Println(err)
 		}
-		fmt.Println(s)
-		// ExecuteTasks(s)()
-
+		// fmt.Println(s.Tasks[0])
+		ExecuteTasks(s)()
 	}
 	runtime.Goexit()
 }
@@ -141,8 +142,11 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 // ExecuteTask does a git pull, git checkout and exec's the given command
 func ExecuteTask(task *config.Task, t time.Time) (bash.Result, error) {
 	// log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
+	task.SetGit()
+	fmt.Println(string(task.JSON()))
 
 	if task.Repo != "" {
+		// task.SetGit()
 		var branch string
 		if task.Branch != "" {
 			branch = task.Branch
@@ -218,6 +222,7 @@ func ExecuteTask(task *config.Task, t time.Time) (bash.Result, error) {
 
 //LogTask logs the exit status, stderr, git commit and other logging data.
 func LogTask(task *config.Task, res bash.Result) {
+
 	if res.ExitStatus == 0 {
 		log.WithFields(log.Fields{
 			"schedule": task.ScheduleName,

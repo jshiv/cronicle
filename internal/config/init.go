@@ -76,7 +76,7 @@ func LocalRepoDir(croniclePath string, repo string) (string, error) {
 	return localRepoDir, nil
 }
 
-//SetGit sets assigns the
+//SetGit sets executes GetGit after a plain clone if a repo is given
 func (task *Task) SetGit() {
 	if !DirExists(filepath.Join(task.Path, ".git")) {
 
@@ -106,61 +106,16 @@ func (schedule *Schedule) CleanGit() {
 //and assigns Git meta data to the task
 func SetConfig(conf *Config, croniclePath string) error {
 	// Assign the path for each task or schedule repo
+	conf.PropigateTaskProperties(croniclePath)
 	conf.Validate()
+
 	for sdx, schedule := range conf.Schedules {
 		for tdx, task := range schedule.Tasks {
 			err := task.Validate()
 			if err != nil {
 				return err
 			}
-			var path string
-			var taskPath string
-			var repo string
-
-			// If the task is associated to a repo
-			if task.Repo != "" {
-				repo = task.Repo
-				// If a Schedule is associated to a repo, all sub tasks are by default associated
-			} else if schedule.Repo != "" {
-				repo = schedule.Repo
-				// Else the repo is the cronicle repo
-			} else {
-				//TODO: make remote cronicle repo rathar than ""
-				repo = ""
-			}
-			// If the task is associated to a repo, put it in the repos directory
-			if task.Repo != "" {
-				path, _ = LocalRepoDir(croniclePath, task.Repo)
-				// If a Schedule is associated to a repo, all sub tasks are by default associated
-			} else if schedule.Repo != "" {
-				path, _ = LocalRepoDir(croniclePath, schedule.Repo)
-				// Else the path is the root croniclePath
-			} else {
-				path = croniclePath
-			}
-
-			// If the given task is associatated to a repo, clone the task to an independent path
-			if repo != "" {
-				taskPath = filepath.Join(path, schedule.Name, task.Name)
-				// Else the task is associated to the root croniclePath
-			} else {
-				taskPath = croniclePath
-			}
-			conf.Schedules[sdx].Tasks[tdx].Path = taskPath
-			conf.Schedules[sdx].Tasks[tdx].Repo = repo
-
-			// // Clone the repo if there is no .git directory in taskPath
-			// if !DirExists(filepath.Join(taskPath, ".git")) {
-
-			// 	_, err := git.PlainClone(taskPath, false, &git.CloneOptions{URL: repo})
-			// 	if err != nil {
-			// 		return err
-			// 	}
-			// }
-			// conf.Schedules[sdx].Tasks[tdx].Git = GetGit(taskPath)
 			conf.Schedules[sdx].Tasks[tdx].SetGit()
-			conf.Schedules[sdx].Tasks[tdx].CleanGit()
-			conf.Schedules[sdx].Tasks[tdx].ScheduleName = schedule.Name
 		}
 	}
 	return nil
