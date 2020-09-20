@@ -1,7 +1,6 @@
 package config_test
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/jshiv/cronicle/internal/bash"
@@ -12,94 +11,96 @@ import (
 
 var _ = Describe("Exec", func() {
 
-	It("Should execute a task in worderPath with no .git", func() {
-		// conf := config.Default()
-		// conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
-		// conf.Schedules[0].Tasks[0].Branch = "feature/test-branch"
-
-		// config.SetConfig(&conf, croniclePath)
-		// task := conf.Schedules[0].Tasks[0]
-		// task.Command = []string{}
-		// t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
-		// r, err := cron.ExecuteTask(&task, t)
-		// fmt.Println(err)
-		// h, err := task.Git.Repository.Head()
-		// Expect(h.Name().String()).To(Equal("refs/heads/feature/test-branch"))
-		Expect(1).To(Equal(1))
-	})
-
-	It("Should return an empty bash.Result", func() {
+	It("task should execute with no repo given in a non .git path", func() {
 		conf := config.Default()
-		config.SetConfig(&conf, croniclePath)
+		schedule := conf.Schedules[0]
+		schedule.PropigateTaskProperties(taskPath)
+		task := schedule.Tasks[0]
 
-		task := conf.Schedules[0].Tasks[0]
 		task.Command = []string{}
 		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
-		fmt.Println(t)
-		r, _ := task.Execute(t)
-		// Expect(task.Git.Repository).To(Equal(BeNil()))
-		// Expect(err).To(Equal(BeNil()))
+		r, err := task.Execute(t)
+		Expect(err).To(BeNil())
+		Expect(task.Repo).To(Equal(""))
+		Expect(task.Git.Repository).To(BeNil())
 		Expect(r).To(Equal(bash.Result{}))
 	})
 
-	// It("Should fetch and checkout branch feature/test-branch", func() {
-	// 	conf := config.Default()
-	// 	conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
-	// 	conf.Schedules[0].Tasks[0].Branch = "feature/test-branch"
+	It("task should execute with no repo given in in a .git path", func() {
+		conf := config.Default()
+		schedule := conf.Schedules[0]
+		schedule.PropigateTaskProperties(croniclePath)
+		task := schedule.Tasks[0]
 
-	// 	config.SetConfig(&conf, croniclePath)
-	// 	task := conf.Schedules[0].Tasks[0]
-	// 	task.Command = []string{}
-	// 	t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
-	// 	r, err := cron.ExecuteTask(&task, t)
-	// 	fmt.Println(err)
-	// 	h, err := task.Git.Repository.Head()
-	// 	Expect(h.Name().String()).To(Equal("refs/heads/feature/test-branch"))
-	// 	Expect(r).To(Equal(bash.Result{}))
-	// })
+		task.Command = []string{}
+		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		r, err := task.Execute(t)
+		Expect(err).To(BeNil())
+		Expect(task.Repo).To(Equal(""))
+		Expect(task.Git.Repository).To(BeNil())
+		Expect(r).To(Equal(bash.Result{}))
+	})
 
-	// It("Should fetch and checkout local commit 699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1", func() {
-	// 	conf := config.Default()
+	It("Should fetch and checkout branch feature/test-branch and Should return an empty bash.Result", func() {
+		conf := config.Default()
+		schedule := conf.Schedules[0]
+		schedule.Repo = "https://github.com/jshiv/cronicle-sample.git"
+		schedule.PropigateTaskProperties(taskPath)
+		task := schedule.Tasks[0]
+		task.Branch = "feature/test-branch"
 
-	// 	conf.Schedules[0].Repo = testRepoPath
-	// 	conf.Schedules[0].Tasks[0].Commit = "699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1"
+		task.Command = []string{}
+		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		r, err := task.Execute(t)
+		Expect(err).To(BeNil())
+		h, _ := task.Git.Repository.Head()
+		Expect(h.Name().String()).To(Equal("refs/heads/feature/test-branch"))
+		Expect(r).To(Equal(bash.Result{}))
+	})
 
-	// 	config.SetConfig(&conf, croniclePath)
-	// 	task := conf.Schedules[0].Tasks[0]
-	// 	task.Command = []string{"python", "test.py"}
-	// 	t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
-	// 	r, err := cron.ExecuteTask(&task, t)
-	// 	fmt.Println(err)
-	// 	c := task.Git.Commit
-	// 	Expect(c.Hash.String()).To(Equal("699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1"))
-	// 	Expect(r).To(Equal(bash.Result{
-	// 		Command:    []string{"python", "test.py"},
-	// 		Stdout:     "test specific commit: SUCCESS\n",
-	// 		Stderr:     "",
-	// 		ExitStatus: 0,
-	// 	}))
-	// })
+	It("Should fetch and checkout local commit 699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1", func() {
+		conf := config.Default()
+		schedule := conf.Schedules[0]
+		schedule.Repo = testRepoPath
+		schedule.PropigateTaskProperties(taskPath)
+		task := schedule.Tasks[0]
+		task.Commit = "699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1"
 
-	// It("Should fetch and checkout local branch test/checkout_specific_branch", func() {
-	// 	conf := config.Default()
-	// 	conf.Schedules[0].Repo = testRepoPath
-	// 	conf.Schedules[0].Tasks[0].Branch = "test/checkout_specific_branch"
+		task.Command = []string{"python", "test.py"}
+		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		r, err := task.Execute(t)
+		Expect(err).To(BeNil())
+		c := task.Git.Commit
+		Expect(c.Hash.String()).To(Equal("699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1"))
+		Expect(r).To(Equal(bash.Result{
+			Command:    []string{"python", "test.py"},
+			Stdout:     "test specific commit: SUCCESS\n",
+			Stderr:     "",
+			ExitStatus: 0,
+		}))
+	})
 
-	// 	config.SetConfig(&conf, croniclePath)
-	// 	task := conf.Schedules[0].Tasks[0]
-	// 	task.Command = []string{"python", "test.py"}
-	// 	t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
-	// 	r, err := cron.ExecuteTask(&task, t)
-	// 	fmt.Println(err)
-	// 	h, err := task.Git.Repository.Head()
-	// 	Expect(h.Name().String()).To(Equal("refs/heads/test/checkout_specific_branch"))
-	// 	Expect(r).To(Equal(bash.Result{
-	// 		Command:    []string{"python", "test.py"},
-	// 		Stdout:     "test specific branch: SUCCESS\n",
-	// 		Stderr:     "",
-	// 		ExitStatus: 0,
-	// 	}))
-	// })
+	It("Should fetch and checkout local branch test/checkout_specific_branch", func() {
+		conf := config.Default()
+		schedule := conf.Schedules[0]
+		schedule.Repo = testRepoPath
+		schedule.PropigateTaskProperties(taskPath)
+		task := schedule.Tasks[0]
+		task.Branch = "test/checkout_specific_branch"
+
+		task.Command = []string{"python", "test.py"}
+		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		r, err := task.Execute(t)
+		Expect(err).To(BeNil())
+		h, err := task.Git.Repository.Head()
+		Expect(h.Name().String()).To(Equal("refs/heads/test/checkout_specific_branch"))
+		Expect(r).To(Equal(bash.Result{
+			Command:    []string{"python", "test.py"},
+			Stdout:     "test specific branch: SUCCESS\n",
+			Stderr:     "",
+			ExitStatus: 0,
+		}))
+	})
 
 	// It("Should fetch and checkout local master by default", func() {
 	// 	conf := config.Default()

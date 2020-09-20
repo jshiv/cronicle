@@ -20,12 +20,12 @@ func TestConfig(t *testing.T) {
 }
 
 var croniclePath string
-var workerPath string
+var taskPath string
 var testRepoPath string
 
 var _ = BeforeSuite(func() {
 	croniclePath, _ = filepath.Abs("./testconfig/")
-	workerPath, _ = filepath.Abs("./testworker/")
+	taskPath, _ = filepath.Abs("./test_task/")
 	config.Init(croniclePath)
 
 	p, _ := filepath.Abs("./test_repo/")
@@ -38,5 +38,6 @@ var _ = BeforeSuite(func() {
 var _ = AfterSuite(func() {
 	os.RemoveAll("./testconfig")
 	os.RemoveAll("./test_repo/")
+	os.RemoveAll("./test_task/")
 
 })
