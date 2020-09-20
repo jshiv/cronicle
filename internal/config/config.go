@@ -60,7 +60,10 @@ type Owner struct {
 var (
 	//ErrBranchAndCommitGiven is thrown because commit and branch are mutually exclusive to identify a repo
 	ErrBranchAndCommitGiven = errors.New("branch and commit can not both be populated")
-	//ErrIfRepoGivenAndPathNotGiven is thrown because commit and branch are mutually exclusive to identify a repo
+	//ErrRepoNotGiven is thrown because a git repo is not given, for the case where Checkout or other git
+	//specific methods are called
+	ErrRepoNotGiven = errors.New("git repo has not been given")
+	//ErrIfRepoGivenAndPathNotGiven is thrown because a repo was given but the path to the local repo has not been provided
 	ErrIfRepoGivenAndPathNotGiven = errors.New("if repo is populated, path must also be given at runtime")
 	//ErrScheduleNameEmpty is thrown because schedule.Name == "", hcl can not be given with schedule "" {}
 	ErrScheduleNameEmpty = errors.New("schedule name can not be an empty string")
