@@ -14,19 +14,38 @@ import (
 
 var _ = Describe("Cron", func() {
 
-	// It("Should return an empty bash.Result", func() {
-	// 	conf := config.Default()
-	// 	task := conf.Schedules[0].Tasks[0]
-	// 	task.Command = []string{}
-	// 	// err := config.SetConfig(&conf, croniclePath)
-	// 	t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
-	// 	r, err := cron.ExecuteTask(&task, t)
-	// 	fmt.Println(err)
-	// 	g := config.GetGit(croniclePath)
-	// 	h, err := g.Repository.Head()
-	// 	Expect(h.Name().String()).To(Equal("refs/heads/master"))
-	// 	Expect(r).To(Equal(bash.Result{}))
-	// })
+	It("Should execute a task in worderPath with no .git", func() {
+		// conf := config.Default()
+		// conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
+		// conf.Schedules[0].Tasks[0].Branch = "feature/test-branch"
+
+		// config.SetConfig(&conf, croniclePath)
+		// task := conf.Schedules[0].Tasks[0]
+		// task.Command = []string{}
+		// t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		// r, err := cron.ExecuteTask(&task, t)
+		// fmt.Println(err)
+		// h, err := task.Git.Repository.Head()
+		// Expect(h.Name().String()).To(Equal("refs/heads/feature/test-branch"))
+		Expect(1).To(Equal(1))
+	})
+
+	It("Should return an empty bash.Result", func() {
+		conf := config.Default()
+		err := config.SetConfig(&conf, croniclePath)
+
+		task := conf.Schedules[0].Tasks[0]
+		task.Command = []string{}
+		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		fmt.Println(t)
+		r, err := cron.ExecuteTask(&task, t)
+		fmt.Println(err)
+		fmt.Println(r)
+		// g := config.GetGit(croniclePath)
+		// h, err := g.Repository.Head()
+		// Expect(h.Name().String()).To(Equal("refs/heads/master"))
+		// Expect(r).To(Equal(bash.Result{}))
+	})
 
 	It("Should fetch and checkout branch feature/test-branch", func() {
 		conf := config.Default()
