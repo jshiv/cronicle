@@ -76,24 +76,6 @@ func LocalRepoDir(croniclePath string, repo string) (string, error) {
 	return localRepoDir, nil
 }
 
-//SetGit sets executes GetGit after a plain clone if a repo is given
-func (task *Task) SetGit() {
-	if !DirExists(filepath.Join(task.Path, ".git")) {
-
-		_, err := git.PlainClone(task.Path, false, &git.CloneOptions{URL: task.Repo})
-		if err != nil {
-			fmt.Println(err)
-		}
-	}
-	task.Git = GetGit(task.Path)
-}
-
-//CleanGit nulls non-serlizable properties of a task
-//task.Git = Git{}
-func (task *Task) CleanGit() {
-	task.Git = Git{}
-}
-
 //CleanGit nulls non-serlizable properties of a schedule
 //task.Git = Git{}
 func (schedule *Schedule) CleanGit() {
