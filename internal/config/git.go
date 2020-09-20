@@ -31,17 +31,17 @@ func (g *Git) Open(worktreePath string) error {
 	g.Repository = r
 
 	if r != nil {
-		if h, err := r.Head(); err != nil {
+		h, err := r.Head()
+		if err != nil {
 			return err
-		} else {
-			g.Head = h
 		}
+		g.Head = h
 
-		if wt, err := r.Worktree(); err != nil {
+		wt, err := r.Worktree()
+		if err != nil {
 			return err
-		} else {
-			g.Worktree = wt
 		}
+		g.Worktree = wt
 	}
 
 	return nil
