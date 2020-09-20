@@ -60,6 +60,8 @@ type Owner struct {
 var (
 	//ErrBranchAndCommitGiven is thrown because commit and branch are mutually exclusive to identify a repo
 	ErrBranchAndCommitGiven = errors.New("branch and commit can not both be populated")
+	//ErrIfRepoGivenAndPathNotGiven is thrown because commit and branch are mutually exclusive to identify a repo
+	ErrIfRepoGivenAndPathNotGiven = errors.New("if repo is populated, path must also be given at runtime")
 	//ErrScheduleNameEmpty is thrown because schedule.Name == "", hcl can not be given with schedule "" {}
 	ErrScheduleNameEmpty = errors.New("schedule name can not be an empty string")
 	//ErrTaskNameEmpty is thrown because task.Name == "", hcl can not be given with task "" {}
@@ -68,17 +70,14 @@ var (
 
 // Validate validates the fields and sets the default values.
 func (task *Task) Validate() error {
-	if task.Branch != "" {
-		if task.Commit != "" {
-			return ErrBranchAndCommitGiven
-		}
+	if task.Branch != "" && task.Commit != "" {
+		return ErrBranchAndCommitGiven
 	}
 
-	if task.Branch != "" {
-		task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
-	} else {
-		task.Git.ReferenceName = plumbing.HEAD
-
+	if task.Repo != "" {
+		if task.Path == "" {
+			return ErrIfRepoGivenAndPathNotGiven
+		}
 	}
 
 	return nil
@@ -119,7 +118,6 @@ func (schedule *Schedule) PropigateTaskProperties(croniclePath string) {
 			task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
 		} else {
 			task.Git.ReferenceName = plumbing.HEAD
-
 		}
 
 		var path string
