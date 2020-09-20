@@ -33,20 +33,27 @@ func (task *Task) Bash(t time.Time) bash.Result {
 
 // Execute does a git pull, git checkout and exec's the given command
 func (task *Task) Execute(t time.Time) (bash.Result, error) {
-	// log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
+
+	//Validate the task
 	if err := task.Validate(); err != nil {
 		return bash.Result{}, err
 	}
+
+	//If a repo is given, clone the repo and task.Git.Open(task.Path)
 	if task.Repo != "" {
-		task.Clone()
+		if err := task.Clone(); err != nil {
+			return bash.Result{}, err
+		}
 	}
 
+	//Set HEAD and commit state after checkout branch/commit
 	if task.Git.Repository != nil {
 		if err := task.Checkout(); err != nil {
 			return bash.Result{}, err
 		}
 	}
 
+	//Execute task.Command in bash at time t
 	result := task.Bash(t)
 
 	return result, nil
