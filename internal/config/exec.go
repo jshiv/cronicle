@@ -9,10 +9,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-//Bash executes task.Command at task.Path and returns the bash.Result struct
+//Exec executes task.Command at task.Path and returns the bash.Result struct
 //prior to execution, the command will replace any ${date}, ${datetime}, ${timestamp}
 //with time t given in the bash command
-func (task *Task) Bash(t time.Time) bash.Result {
+func (task *Task) Exec(t time.Time) bash.Result {
 	var result bash.Result
 	r := strings.NewReplacer(
 		"${date}", t.Format(TimeArgumentFormatMap["${date}"]),
@@ -54,7 +54,7 @@ func (task *Task) Execute(t time.Time) (bash.Result, error) {
 	}
 
 	//Execute task.Command in bash at time t
-	result := task.Bash(t)
+	result := task.Exec(t)
 
 	return result, nil
 }

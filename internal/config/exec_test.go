@@ -102,80 +102,72 @@ var _ = Describe("Exec", func() {
 		}))
 	})
 
-	// It("Should fetch and checkout local master by default", func() {
-	// 	conf := config.Default()
-	// 	conf.Schedules[0].Repo = testRepoPath
-	// 	// conf.Schedules[0].Tasks[0].Branch = "test/checkout_specific_branch"
+	It("Should fetch and checkout local master by default", func() {
 
-	// 	config.SetConfig(&conf, croniclePath)
-	// 	task := conf.Schedules[0].Tasks[0]
-	// 	task.Command = []string{"python", "test.py"}
-	// 	t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
-	// 	r, err := cron.ExecuteTask(&task, t)
-	// 	fmt.Println(err)
-	// 	h, err := task.Git.Repository.Head()
-	// 	Expect(h.Name().String()).To(Equal("refs/heads/master"))
-	// 	Expect(r).To(Equal(bash.Result{
-	// 		Command:    []string{"python", "test.py"},
-	// 		Stdout:     "test master: SUCCESS\n",
-	// 		Stderr:     "",
-	// 		ExitStatus: 0,
-	// 	}))
-	// })
+		conf := config.Default()
+		schedule := conf.Schedules[0]
+		schedule.Repo = testRepoPath
+		schedule.PropigateTaskProperties(taskPath)
+		task := schedule.Tasks[0]
 
-	// It("Should replace ${date}, ${datetime}, and ${timestamp} bash arguments with 2020-11-01T22:08:41+00:00", func() {
-	// 	conf := config.Default()
-	// 	conf.Schedules[0].Repo = testRepoPath
-	// 	// conf.Schedules[0].Tasks[0].Branch = "test/checkout_specific_branch"
+		task.Command = []string{"python", "test.py"}
+		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		r, err := task.Execute(t)
+		Expect(err).To(BeNil())
+		h, err := task.Git.Repository.Head()
+		Expect(h.Name().String()).To(Equal("refs/heads/master"))
+		Expect(r).To(Equal(bash.Result{
+			Command:    []string{"python", "test.py"},
+			Stdout:     "test master: SUCCESS\n",
+			Stderr:     "",
+			ExitStatus: 0,
+		}))
+	})
 
-	// 	config.SetConfig(&conf, croniclePath)
-	// 	task := conf.Schedules[0].Tasks[0]
-	// 	task.Command = []string{"/bin/echo", "${date}", "${datetime}", "${timestamp}"}
-	// 	t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
-	// 	r, err := cron.ExecuteTask(&task, t)
-	// 	fmt.Println(err)
-	// 	h, err := task.Git.Repository.Head()
-	// 	Expect(h.Name().String()).To(Equal("refs/heads/master"))
-	// 	Expect(r).To(Equal(bash.Result{
-	// 		Command: []string{
-	// 			"/bin/echo",
-	// 			"2020-11-01",
-	// 			"2020-11-01T22:08:41Z",
-	// 			"2020-11-01 22:08:41Z",
-	// 		},
-	// 		Stdout:     "2020-11-01 2020-11-01T22:08:41Z 2020-11-01 22:08:41Z\n",
-	// 		Stderr:     "",
-	// 		ExitStatus: 0,
-	// 	}))
-	// })
+	It("task.Exec(t) Should replace ${date}, ${datetime}, and ${timestamp} bash arguments with 2020-11-01T22:08:41+00:00", func() {
+		conf := config.Default()
+		schedule := conf.Schedules[0]
 
-	// It("Should replace duplicate values of ${date} bash arguments with 2020-11-01", func() {
-	// 	conf := config.Default()
-	// 	conf.Schedules[0].Repo = testRepoPath
-	// 	// conf.Schedules[0].Tasks[0].Branch = "test/checkout_specific_branch"
+		task := schedule.Tasks[0]
+		task.Command = []string{"/bin/echo", "${date}", "${datetime}", "${timestamp}"}
+		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		r := task.Exec(t)
 
-	// 	config.SetConfig(&conf, croniclePath)
-	// 	task := conf.Schedules[0].Tasks[0]
-	// 	task.Command = []string{
-	// 		"/bin/echo",
-	// 		"${date}, ${date}",
-	// 		"${datetime}, ${datetime}",
-	// 		"${timestamp}, ${timestamp}"}
-	// 	t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
-	// 	r, err := cron.ExecuteTask(&task, t)
-	// 	fmt.Println(err)
-	// 	h, err := task.Git.Repository.Head()
-	// 	Expect(h.Name().String()).To(Equal("refs/heads/master"))
-	// 	Expect(r).To(Equal(bash.Result{
-	// 		Command: []string{
-	// 			"/bin/echo",
-	// 			"2020-11-01, 2020-11-01",
-	// 			"2020-11-01T22:08:41Z, 2020-11-01T22:08:41Z",
-	// 			"2020-11-01 22:08:41Z, 2020-11-01 22:08:41Z",
-	// 		},
-	// 		Stdout:     "2020-11-01, 2020-11-01 2020-11-01T22:08:41Z, 2020-11-01T22:08:41Z 2020-11-01 22:08:41Z, 2020-11-01 22:08:41Z\n",
-	// 		Stderr:     "",
-	// 		ExitStatus: 0,
-	// 	}))
-	// })
+		Expect(r).To(Equal(bash.Result{
+			Command: []string{
+				"/bin/echo",
+				"2020-11-01",
+				"2020-11-01T22:08:41Z",
+				"2020-11-01 22:08:41Z",
+			},
+			Stdout:     "2020-11-01 2020-11-01T22:08:41Z 2020-11-01 22:08:41Z\n",
+			Stderr:     "",
+			ExitStatus: 0,
+		}))
+	})
+
+	It("Should replace duplicate values of ${date} bash arguments with 2020-11-01", func() {
+		conf := config.Default()
+		schedule := conf.Schedules[0]
+		task := schedule.Tasks[0]
+		task.Command = []string{
+			"/bin/echo",
+			"${date}, ${date}",
+			"${datetime}, ${datetime}",
+			"${timestamp}, ${timestamp}"}
+		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		r := task.Exec(t)
+
+		Expect(r).To(Equal(bash.Result{
+			Command: []string{
+				"/bin/echo",
+				"2020-11-01, 2020-11-01",
+				"2020-11-01T22:08:41Z, 2020-11-01T22:08:41Z",
+				"2020-11-01 22:08:41Z, 2020-11-01 22:08:41Z",
+			},
+			Stdout:     "2020-11-01, 2020-11-01 2020-11-01T22:08:41Z, 2020-11-01T22:08:41Z 2020-11-01 22:08:41Z, 2020-11-01 22:08:41Z\n",
+			Stderr:     "",
+			ExitStatus: 0,
+		}))
+	})
 })
