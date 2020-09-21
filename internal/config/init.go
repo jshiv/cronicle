@@ -84,26 +84,6 @@ func (schedule *Schedule) CleanGit() {
 	}
 }
 
-//SetConfig populates task repo path, runs git clone for any sub repos,
-//and assigns Git meta data to the task
-func SetConfig(conf *Config, croniclePath string) error {
-	// Assign the path for each task or schedule repo
-	conf.PropigateTaskProperties(croniclePath)
-	conf.Validate()
-
-	for sdx, schedule := range conf.Schedules {
-		for tdx, task := range schedule.Tasks {
-			if err := task.Validate(); err != nil {
-				return err
-			}
-			if err := conf.Schedules[sdx].Tasks[tdx].Clone(); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 //Init populates task repo path, runs git clone for any sub repos,
 //and assigns Git meta data to the task
 func (conf *Config) Init(croniclePath string) error {

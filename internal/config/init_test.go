@@ -5,7 +5,6 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-
 	"gopkg.in/src-d/go-git.v4/plumbing"
 
 	"github.com/jshiv/cronicle/internal/config"
@@ -19,7 +18,8 @@ var _ = Describe("Init", func() {
 				conf = config.Default()
 			})
 			It("should populate Task.Path with the croniclePath", func() {
-				err := config.SetConfig(&conf, croniclePath)
+				// err := config.SetConfig(&conf, croniclePath)
+				err := conf.Init(croniclePath)
 				if err != nil {
 					fmt.Println(err)
 				}
@@ -28,15 +28,16 @@ var _ = Describe("Init", func() {
 			})
 			It("should clone a sub repo from https://github.com/jshiv/cronicle-sample.git", func() {
 				conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
-				err := config.SetConfig(&conf, croniclePath)
+				err := conf.Init(croniclePath)
 
 				if err != nil {
 					fmt.Println(err)
 				}
 				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath + "/repos/jshiv/cronicle-sample.git/example/hello"))
 				Expect(conf.Schedules[0].Tasks[0].Repo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
-				Expect(conf.Schedules[0].Tasks[0].Git.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))
 				Expect(config.DirExists(croniclePath + "/repos/jshiv/cronicle-sample.git/example/hello/.git")).To(Equal(true))
+				conf.Schedules[0].Tasks[0].Clone()
+				Expect(conf.Schedules[0].Tasks[0].Git.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))
 
 			})
 			It("should fail if a branch and commit are given from https://github.com/jshiv/cronicle-sample.git", func() {
@@ -44,7 +45,7 @@ var _ = Describe("Init", func() {
 				conf.Schedules[0].Tasks[0].Branch = "feature/test-branch"
 				conf.Schedules[0].Tasks[0].Commit = "8e9f30a6c3598203c73c0fd393081d2e84961da9"
 
-				err := config.SetConfig(&conf, croniclePath)
+				err := conf.Init(croniclePath)
 				Expect(err).To(Equal(config.ErrBranchAndCommitGiven))
 
 			})
