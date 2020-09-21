@@ -42,11 +42,11 @@ func Run(cronicleFile string) {
 //RunConfig starts cron
 func RunConfig(conf config.Config) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
-	queue := make(chan []byte, 1000)
+	scheduleQueue := make(chan []byte, 1000)
 	c := cron.New()
 	c.AddFunc("@every 6m", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
 	for _, schedule := range conf.Schedules {
-		cronID, err := c.AddFunc(schedule.Cron, QueueSchedule(schedule, queue))
+		cronID, err := c.AddFunc(schedule.Cron, PublishSchedule(schedule, scheduleQueue))
 		// cronID, err := c.AddFunc(schedule.Cron, AddSchedule(schedule))
 
 		fmt.Println(cronID)
@@ -57,19 +57,30 @@ func RunConfig(conf config.Config) {
 	}
 	c.Start()
 
+	SubscribeSchedule(scheduleQueue, "./")
+	runtime.Goexit()
+}
+
+//SubscribeSchedule subscribes to the schedule queue
+func SubscribeSchedule(queue chan []byte, schedulePath string) {
+	var path string
+	if schedulePath == "" {
+		path, _ = filepath.Abs("./")
+	} else {
+		path = schedulePath
+	}
 	for scheduleBytes := range queue {
-		// fmt.Println(string(scheduleBytes))
+
 		var s config.Schedule
 		err := json.Unmarshal(scheduleBytes, &s)
-		s.PropigateTaskProperties("./")
+		s.PropigateTaskProperties(path)
 
 		if err != nil {
 			fmt.Println(err)
 		}
-		// fmt.Println(s.Tasks[0])
+
 		ExecuteTasks(s)()
 	}
-	runtime.Goexit()
 }
 
 // AddSchedule retuns a function primed with the given schedules commands
@@ -78,8 +89,8 @@ func AddSchedule(schedule config.Schedule) func() {
 	return ExecuteTasks(schedule)
 }
 
-// QueueSchedule produces the json of a schdule to the buffered queue channel
-func QueueSchedule(schedule config.Schedule, queue chan []byte) func() {
+// PublishSchedule produces the json of a schdule to the buffered queue channel
+func PublishSchedule(schedule config.Schedule, queue chan []byte) func() {
 	log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Queuing...")
 	return func() {
 		schedule.Now = time.Now().In(time.Local)
