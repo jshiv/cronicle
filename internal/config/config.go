@@ -58,8 +58,12 @@ type Owner struct {
 	Email string `hcl:"email,optional"`
 }
 
-// Queue is the metadata associated to the message queue for distributed operation
+// Queue is the metadata associated to the message queue for distributed operation.
+// Cronicle uses vice to communicate with queues via channels.
+// https://github.com/matryer/vice
 type Queue struct {
+	//Type names the message queue technology to be used
+	//options are nats, nsq, rabbitmq, redis, sqs
 	Type string `hcl:"type,optional"`
 }
 
