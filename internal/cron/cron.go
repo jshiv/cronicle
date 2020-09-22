@@ -10,7 +10,10 @@ import (
 	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/config"
 	"github.com/matryer/vice"
+	"github.com/matryer/vice/queues/nsq"
+	"github.com/matryer/vice/queues/rabbitmq"
 	"github.com/matryer/vice/queues/redis"
+	"github.com/matryer/vice/queues/sqs"
 
 	"github.com/fatih/color"
 
@@ -38,32 +41,63 @@ func Run(cronicleFile string) {
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
-	// if conf.Queue.Type == "" {
-	// 	schedules := make(chan []byte)
-	// 	go StartCron(*conf, schedules)
-	// 	go ConsumeSchedule(schedules, "./")
-	// } else {
-	// 	transport := MakeTransport(*conf)
-	// 	produce := transport.Send("schedules")
-	// 	consume := transport.Receive("schedules")
-	// 	go StartCron(*conf, produce)
-	// 	go ConsumeSchedule(consume, "./")
-	// }
+	if conf.Queue.Type == "" {
+		schedules := make(chan []byte)
+		go StartCron(*conf, schedules)
+		go ConsumeSchedule(schedules, "./")
+	} else {
+		transport := MakeViceTransport(*conf)
+		produce := transport.Send("schedules")
+		go StartCron(*conf, produce)
+		// consume := transport.Receive("schedules")
+		// go ConsumeSchedule(consume, "./")
+	}
 
-	schedules := make(chan []byte)
-	go StartCron(*conf, schedules)
-	go ConsumeSchedule(schedules, "./")
+	// schedules := make(chan []byte)
+	// go StartCron(*conf, schedules)
+	// go ConsumeSchedule(schedules, "./")
 	runtime.Goexit()
 
 }
 
-//MakeTransport
-func MakeTransport(conf config.Config) vice.Transport {
+// StartWorker listens to a vice transport queue for schedules
+// produced by the cron job
+func StartWorker(cronicleFile string) {
+
+	cronicleFileAbs, err := filepath.Abs(cronicleFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	croniclePath := filepath.Dir(cronicleFileAbs)
+
+	conf, _ := config.GetConfig(cronicleFileAbs)
+	hcl := conf.Hcl()
+	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
+	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
+
+	transport := MakeViceTransport(*conf)
+	schedules := transport.Receive("schedules")
+	go ConsumeSchedule(schedules, croniclePath)
+
+	runtime.Goexit()
+
+}
+
+//MakeTransport creates a vice.Transport interface from the given
+//queue field in the config
+func MakeViceTransport(conf config.Config) vice.Transport {
 	var transport vice.Transport
 	switch conf.Queue.Type {
-	case "":
 	case "redis":
 		transport = redis.New()
+	// case "nats":
+	// 	transport = nats.New()
+	case "nsq":
+		transport = nsq.New()
+	case "rabbitmq":
+		transport = rabbitmq.New()
+	case "sqs":
+		transport = sqs.New(1, time.Duration(1))
 	}
 	return transport
 }
