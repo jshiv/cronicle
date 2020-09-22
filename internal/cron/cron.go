@@ -23,7 +23,7 @@ import (
 )
 
 // Run is the main function of the cron package
-func Run(cronicleFile string, runWorker bool) {
+func Run(cronicleFile string, runOptions RunOptions) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
@@ -36,14 +36,17 @@ func Run(cronicleFile string, runWorker bool) {
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
-	if conf.Queue.Type == "" {
+	if runOptions.QueueType == "" {
+		runOptions.QueueType = conf.Queue.Type
+	}
+	if runOptions.QueueType == "" {
 		schedules := make(chan []byte)
 		go StartCron(*conf, schedules)
 		go ConsumeSchedule(schedules, croniclePath)
 	} else {
-		transport := MakeViceTransport(*conf)
+		transport := MakeViceTransport(runOptions.QueueType)
 		go StartCron(*conf, transport.Send("schedules"))
-		if runWorker {
+		if runOptions.RunWorker {
 			go ConsumeSchedule(transport.Receive("schedules"), croniclePath)
 		}
 	}
@@ -52,9 +55,14 @@ func Run(cronicleFile string, runWorker bool) {
 
 }
 
+type RunOptions struct {
+	RunWorker bool
+	QueueType string
+}
+
 // StartWorker listens to a vice transport queue for schedules
 // produced by the cron job
-func StartWorker(cronicleFile string) {
+func StartWorker(cronicleFile string, runOptions RunOptions) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
@@ -67,7 +75,10 @@ func StartWorker(cronicleFile string) {
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
-	transport := MakeViceTransport(*conf)
+	if runOptions.QueueType == "" {
+		runOptions.QueueType = conf.Queue.Type
+	}
+	transport := MakeViceTransport(runOptions.QueueType)
 	schedules := transport.Receive("schedules")
 	go ConsumeSchedule(schedules, croniclePath)
 
@@ -77,9 +88,9 @@ func StartWorker(cronicleFile string) {
 
 //MakeViceTransport creates a vice.Transport interface from the given
 //queue field in the config
-func MakeViceTransport(conf config.Config) vice.Transport {
+func MakeViceTransport(queueType string) vice.Transport {
 	var transport vice.Transport
-	switch conf.Queue.Type {
+	switch queueType {
 	case "redis":
 		transport = redis.New()
 	case "nats":

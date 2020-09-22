@@ -36,10 +36,13 @@ The run command will log schedule information to stdout including git commit inf
 	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
 		path, _ := cmd.Flags().GetString("path")
+
 		runWorker, _ := cmd.Flags().GetBool("worker")
+		queueType, _ := cmd.Flags().GetString("queue")
+		runOptions := cron.RunOptions{RunWorker: runWorker, QueueType: queueType}
 
 		fmt.Println("Reading from: " + path)
-		cron.Run(path, runWorker)
+		cron.Run(path, runOptions)
 	},
 }
 
@@ -47,6 +50,14 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	runCmd.Flags().String("path", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
 	runCmd.Flags().Bool("worker", true, "start a worker thread to consume tasks in distributed mode")
+	queueDesc := `
+	message broker technology for distributed schedule execution, 
+	Options: 
+		redis [distributed on localhost]
+		nsq [run on cluster with nsqd]
+	Configurable via the queue.type field in Cronicle.hcl
+	`
+	runCmd.Flags().String("queue", "", queueDesc)
 
 	// Here you will define your flags and configuration settings.
 

@@ -25,24 +25,48 @@ import (
 // workerCmd represents the worker command
 var workerCmd = &cobra.Command{
 	Use:   "worker",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Short: "Start a schedule consumer thread on a given distributed message queue.",
+	Long: `Cronicle runs a centralized cron job that submits shedules to a message queue 
+	for consumtion by the worker nodes which will execute all tasks in a given schedule. 
+	To start a local distbuted cronicle flow with redis as the message broker:
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	# Start a redis broker
+	sudo docker run --name redis-cronicle -p 6379:6379 -d redis
+
+	# Setup a cronicle repo
+	cronicle init --path=./demo
+
+	# In a seperate shell, start a worker to consume the schedules queue.
+	cronicle worker --path ./demo/Cronicle.hcl --queue redis
+
+	# Start cron, in distributed mode "cronicle run" will start a consumer thread by default
+	# Note --worker=false will prevent the scheduler from starting a worker thread.
+	cronicle run --path ./demo/Cronicle.hcl --worker=false --queue redis 
+
+
+Multipule workers can be started, they will take turns consuming from the queue.
+`,
 	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
 		path, _ := cmd.Flags().GetString("path")
+		queueType, _ := cmd.Flags().GetString("queue")
 		fmt.Println("Starting Worker from: " + path)
-		cron.StartWorker(path)
+		runOptions := cron.RunOptions{RunWorker: true, QueueType: queueType}
+		cron.StartWorker(path, runOptions)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(workerCmd)
 	workerCmd.Flags().String("path", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
+	queueDesc := `
+	message broker technology for distributed schedule execution, 
+	Options: 
+		redis [distributed on localhost]
+		nsq [run on cluster with nsqd]
+	Configurable via the queue.type field in Cronicle.hcl
+	`
+	workerCmd.Flags().String("queue", "", queueDesc)
 
 	// Here you will define your flags and configuration settings.
 
