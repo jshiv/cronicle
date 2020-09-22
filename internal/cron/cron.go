@@ -35,7 +35,7 @@ func Run(cronicleFile string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// croniclePath := filepath.Dir(cronicleFileAbs)
+	croniclePath := filepath.Dir(cronicleFileAbs)
 
 	conf, _ := config.GetConfig(cronicleFileAbs)
 	hcl := conf.Hcl()
@@ -45,18 +45,13 @@ func Run(cronicleFile string) {
 	if conf.Queue.Type == "" {
 		schedules := make(chan []byte)
 		go StartCron(*conf, schedules)
-		go ConsumeSchedule(schedules, "./")
+		go ConsumeSchedule(schedules, croniclePath)
 	} else {
 		transport := MakeViceTransport(*conf)
 		produce := transport.Send("schedules")
 		go StartCron(*conf, produce)
-		// consume := transport.Receive("schedules")
-		// go ConsumeSchedule(consume, "./")
 	}
 
-	// schedules := make(chan []byte)
-	// go StartCron(*conf, schedules)
-	// go ConsumeSchedule(schedules, "./")
 	runtime.Goexit()
 
 }
