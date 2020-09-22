@@ -23,7 +23,7 @@ import (
 )
 
 // Run is the main function of the cron package
-func Run(cronicleFile string) {
+func Run(cronicleFile string, runWorker bool) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
@@ -44,6 +44,10 @@ func Run(cronicleFile string) {
 		transport := MakeViceTransport(*conf)
 		produce := transport.Send("schedules")
 		go StartCron(*conf, produce)
+		if runWorker {
+			consume := transport.Receive("schedules")
+			go ConsumeSchedule(consume, croniclePath)
+		}
 	}
 
 	runtime.Goexit()
