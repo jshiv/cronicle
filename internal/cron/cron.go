@@ -42,11 +42,9 @@ func Run(cronicleFile string, runWorker bool) {
 		go ConsumeSchedule(schedules, croniclePath)
 	} else {
 		transport := MakeViceTransport(*conf)
-		produce := transport.Send("schedules")
-		go StartCron(*conf, produce)
+		go StartCron(*conf, transport.Send("schedules"))
 		if runWorker {
-			consume := transport.Receive("schedules")
-			go ConsumeSchedule(consume, croniclePath)
+			go ConsumeSchedule(transport.Receive("schedules"), croniclePath)
 		}
 	}
 
