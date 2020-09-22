@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Version   string     `hcl:"version,optional"`
 	Git       string     `hcl:"git"`
+	Queue     Queue      `hcl:"queue,block"`
 	Schedules []Schedule `hcl:"schedule,block"`
 	// Repos points at external dependent repos that maintain their own schedules remotly.
 	Repos []string `hcl:"repos,optional"`
@@ -55,6 +56,11 @@ type Task struct {
 type Owner struct {
 	Name  string `hcl:"name"`
 	Email string `hcl:"email,optional"`
+}
+
+// Queue is the metadata associated to the message queue for distributed operation
+type Queue struct {
+	Type string `hcl:"type,optional"`
 }
 
 var (
