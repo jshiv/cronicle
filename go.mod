@@ -11,6 +11,10 @@ require (
 	github.com/matryer/is v1.4.0 // indirect
 	github.com/matryer/vice v1.0.0
 	github.com/mitchellh/go-homedir v1.1.0
+	github.com/nats-io/go-nats v1.7.2 // indirect
+	github.com/nats-io/go-nats-streaming v0.4.4 // indirect
+	github.com/nats-io/nkeys v0.2.0 // indirect
+	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/nsqio/go-nsq v1.0.8 // indirect
 	github.com/onsi/ginkgo v1.12.3
 	github.com/onsi/gomega v1.10.1

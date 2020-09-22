@@ -10,6 +10,7 @@ import (
 	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/config"
 	"github.com/matryer/vice"
+	"github.com/matryer/vice/queues/nats"
 	"github.com/matryer/vice/queues/nsq"
 	"github.com/matryer/vice/queues/rabbitmq"
 	"github.com/matryer/vice/queues/redis"
@@ -83,15 +84,15 @@ func StartWorker(cronicleFile string) {
 
 }
 
-//MakeTransport creates a vice.Transport interface from the given
+//MakeViceTransport creates a vice.Transport interface from the given
 //queue field in the config
 func MakeViceTransport(conf config.Config) vice.Transport {
 	var transport vice.Transport
 	switch conf.Queue.Type {
 	case "redis":
 		transport = redis.New()
-	// case "nats":
-	// 	transport = nats.New()
+	case "nats":
+		transport = nats.New()
 	case "nsq":
 		transport = nsq.New()
 	case "rabbitmq":
