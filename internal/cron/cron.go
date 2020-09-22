@@ -9,6 +9,7 @@ import (
 
 	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/config"
+	"github.com/matryer/vice"
 	"github.com/matryer/vice/queues/redis"
 
 	"github.com/fatih/color"
@@ -37,20 +38,45 @@ func Run(cronicleFile string) {
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
-	go StartCron(*conf)
+	// if conf.Queue.Type == "" {
+	// 	schedules := make(chan []byte)
+	// 	go StartCron(*conf, schedules)
+	// 	go ConsumeSchedule(schedules, "./")
+	// } else {
+	// 	transport := MakeTransport(*conf)
+	// 	produce := transport.Send("schedules")
+	// 	consume := transport.Receive("schedules")
+	// 	go StartCron(*conf, produce)
+	// 	go ConsumeSchedule(consume, "./")
+	// }
+
+	schedules := make(chan []byte)
+	go StartCron(*conf, schedules)
+	go ConsumeSchedule(schedules, "./")
 	runtime.Goexit()
 
+}
+
+//MakeTransport
+func MakeTransport(conf config.Config) vice.Transport {
+	var transport vice.Transport
+	switch conf.Queue.Type {
+	case "":
+	case "redis":
+		transport = redis.New()
+	}
+	return transport
 }
 
 //StartCron pushes all schedules in the given config to the cron scheduler
 //starts the cron scheduler which publishes the serialzied
 //schedules to the message queue for execution.
-func StartCron(conf config.Config) {
+func StartCron(conf config.Config, schedules chan<- []byte) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
-	transport := redis.New()
-	// schedules := make(chan []byte, 1000)
-	schedules := transport.Send("schedules")
+	// transport := redis.New()
+	// // schedules := make(chan []byte, 1000)
+	// schedules := transport.Send("schedules")
 
 	c := cron.New()
 	c.AddFunc("@every 6m", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
