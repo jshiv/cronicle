@@ -9,6 +9,7 @@ import (
 
 	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/config"
+	"github.com/matryer/vice/queues/redis"
 
 	"github.com/fatih/color"
 
@@ -36,33 +37,42 @@ func Run(cronicleFile string) {
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
-	RunConfig(*conf)
+	go StartCron(*conf)
+	runtime.Goexit()
+
 }
 
-//RunConfig starts cron
-func RunConfig(conf config.Config) {
+//StartCron pushes all schedules in the given config to the cron scheduler
+//starts the cron scheduler which publishes the serialzied
+//schedules to the message queue for execution.
+func StartCron(conf config.Config) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
-	scheduleQueue := make(chan []byte, 1000)
+
+	transport := redis.New()
+	// schedules := make(chan []byte, 1000)
+	schedules := transport.Send("schedules")
+
 	c := cron.New()
 	c.AddFunc("@every 6m", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
 	for _, schedule := range conf.Schedules {
-		cronID, err := c.AddFunc(schedule.Cron, PublishSchedule(schedule, scheduleQueue))
-		// cronID, err := c.AddFunc(schedule.Cron, AddSchedule(schedule))
-
-		fmt.Println(cronID)
+		_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, schedules))
 		if err != nil {
 			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
 			log.Fatal(err)
 		}
 	}
 	c.Start()
-
-	SubscribeSchedule(scheduleQueue, "./")
-	runtime.Goexit()
 }
 
-//SubscribeSchedule subscribes to the schedule queue
-func SubscribeSchedule(queue chan []byte, schedulePath string) {
+// AddSchedule retuns a function primed with the given schedules commands
+func AddSchedule(schedule config.Schedule) func() {
+	log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Running...")
+	return ExecuteTasks(schedule)
+}
+
+//ConsumeSchedule consumes the byte array of a
+//schedule from the message queue for execution
+func ConsumeSchedule(queue <-chan []byte, schedulePath string) {
 	var path string
 	if schedulePath == "" {
 		path, _ = filepath.Abs("./")
@@ -83,16 +93,12 @@ func SubscribeSchedule(queue chan []byte, schedulePath string) {
 	}
 }
 
-// AddSchedule retuns a function primed with the given schedules commands
-func AddSchedule(schedule config.Schedule) func() {
-	log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Running...")
-	return ExecuteTasks(schedule)
-}
-
-// PublishSchedule produces the json of a schdule to the buffered queue channel
-func PublishSchedule(schedule config.Schedule, queue chan []byte) func() {
-	log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Queuing...")
+//ProduceSchedule produces the json of a
+//schdule to the message queue for consumption
+func ProduceSchedule(schedule config.Schedule, queue chan<- []byte) func() {
 	return func() {
+		log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Queuing...")
+
 		schedule.Now = time.Now().In(time.Local)
 		schedule.CleanGit()
 		queue <- schedule.JSON()
