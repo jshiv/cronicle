@@ -146,9 +146,9 @@ func ExecuteTasks(schedule config.Schedule) func() {
 		fmt.Println("Schedule exec time: ", now)
 		for _, task := range schedule.Tasks {
 			go func(task config.Task) {
-				r, err := ExecuteTask(&task, now)
+				r, err := task.Execute(now)
 				fmt.Println(err)
-				LogTask(&task, r)
+				task.Log(r)
 			}(task)
 
 		}
