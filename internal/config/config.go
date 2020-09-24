@@ -64,8 +64,10 @@ type Owner struct {
 // TODO: Add host, port blocks for addressing remote queues
 type Queue struct {
 	//Type names the message queue technology to be used
-	//options are nats, nsq, rabbitmq, redis, sqs
+	//options are nsq and redis
 	Type string `hcl:"type,optional"`
+	//host:port of nsqd/nsqlookupd/redis queue service
+	Addr string `hcl:"addr,optional"`
 }
 
 var (
