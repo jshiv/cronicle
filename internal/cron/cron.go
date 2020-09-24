@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/jshiv/cronicle/internal/config"
 	"github.com/matryer/vice"
-	"github.com/matryer/vice/queues/nsq"
+	nsqvice "github.com/matryer/vice/queues/nsq"
+	"github.com/nsqio/go-nsq"
 	"github.com/matryer/vice/queues/redis"
 
 	"github.com/fatih/color"
@@ -42,7 +42,7 @@ func Run(cronicleFile string, runOptions RunOptions) {
 		go StartCron(*conf, schedules)
 		go ConsumeSchedule(schedules, croniclePath)
 	} else {
-		transport := MakeViceTransport(runOptions.QueueType)
+		transport := MakeViceTransport(runOptions.QueueType, "")
 		go StartCron(*conf, transport.Send("schedules"))
 		if runOptions.RunWorker {
 			go ConsumeSchedule(transport.Receive("schedules"), croniclePath)
@@ -67,21 +67,12 @@ func StartWorker(path string, runOptions RunOptions) {
 		log.Fatal(err)
 	}
 
-	var conf *config.Config
-	croniclePath := filepath.Dir(pathAbs)
-	if strings.Contains(path, "Cronicle.hcl") {
-		conf, _ = config.GetConfig(pathAbs)
-		hcl := conf.Hcl()
-		slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
-		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
-	}
-
 	if runOptions.QueueType == "" {
-		runOptions.QueueType = conf.Queue.Type
+		log.Error("--queue must be specified in distributed mode. Options: redis, nsq]")
 	}
-	transport := MakeViceTransport(runOptions.QueueType)
+	transport := MakeViceTransport(runOptions.QueueType, "")
 	schedules := transport.Receive("schedules")
-	go ConsumeSchedule(schedules, croniclePath)
+	go ConsumeSchedule(schedules, pathAbs)
 
 	runtime.Goexit()
 
@@ -89,15 +80,22 @@ func StartWorker(path string, runOptions RunOptions) {
 
 //MakeViceTransport creates a vice.Transport interface from the given
 //queue field in the config
-func MakeViceTransport(queueType string) vice.Transport {
-	var transport vice.Transport
+func MakeViceTransport(queueType string, addr string) vice.Transport {
+	// var transport *nsqvice.Transport
+	
 	switch queueType {
 	case "redis":
-		transport = redis.New()
+		transport := redis.New()
+		return transport
 	case "nsq":
-		transport = nsq.New()
+		transport := nsqvice.New()
+		transport.ConnectConsumer = func(consumer *nsq.Consumer) error {return consumer.ConnectToNSQLookupd(addr) }
+		return transport
 	}
-	return transport
+
+	// return transpor
+	return nsqvice.New()
+	
 }
 
 //StartCron pushes all schedules in the given config to the cron scheduler

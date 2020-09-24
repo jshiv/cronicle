@@ -67,6 +67,7 @@ func init() {
 	Configurable via the queue.type field in Cronicle.hcl
 	`
 	workerCmd.Flags().String("queue", "", queueDesc)
+	cobra.MarkFlagRequired(workerCmd.Flags(), "queue")
 
 	// Here you will define your flags and configuration settings.
 
