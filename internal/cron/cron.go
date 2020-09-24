@@ -38,15 +38,16 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	if runOptions.QueueType == "" {
 		runOptions.QueueType = conf.Queue.Type
 	}
+
 	if runOptions.QueueType == "" {
 		schedules := make(chan []byte)
 		go StartCron(*conf, schedules)
 		go ConsumeSchedule(schedules, croniclePath)
 	} else {
 		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
-		go StartCron(*conf, transport.Send("schedules"))
+		go StartCron(*conf, transport.Send(runOptions.QueueName))
 		if runOptions.RunWorker {
-			go ConsumeSchedule(transport.Receive("schedules"), croniclePath)
+			go ConsumeSchedule(transport.Receive(runOptions.QueueName), croniclePath)
 		}
 	}
 
@@ -54,9 +55,11 @@ func Run(cronicleFile string, runOptions RunOptions) {
 
 }
 
+// RunOptions enables the runtime configuration of the distributed message queue
 type RunOptions struct {
 	RunWorker bool
 	QueueType string
+	QueueName string
 	Addr string
 }
 
@@ -73,7 +76,7 @@ func StartWorker(path string, runOptions RunOptions) {
 		log.Error("--queue must be specified in distributed mode. Options: redis, nsq]")
 	}
 	transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
-	schedules := transport.Receive("schedules")
+	schedules := transport.Receive(runOptions.QueueName)
 	go ConsumeSchedule(schedules, pathAbs)
 
 	runtime.Goexit()

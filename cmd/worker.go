@@ -50,10 +50,11 @@ Multipule workers can be started, they will take turns consuming from the queue.
 	Run: func(cmd *cobra.Command, args []string) {
 		path, _ := cmd.Flags().GetString("path")
 		queueType, _ := cmd.Flags().GetString("queue")
+		queueName, _ := cmd.Flags().GetString("queue-name")
 		addr, _ := cmd.Flags().GetString("addr")
 
 		fmt.Println("Starting Worker from: " + path)
-		runOptions := cron.RunOptions{RunWorker: true, QueueType: queueType, Addr: addr}
+		runOptions := cron.RunOptions{RunWorker: true, QueueType: queueType, QueueName: queueName, Addr: addr}
 		cron.StartWorker(path, runOptions)
 	},
 }
@@ -70,6 +71,7 @@ func init() {
 	`
 	workerCmd.Flags().String("queue", "", queueDesc)
 	cobra.MarkFlagRequired(workerCmd.Flags(), "queue")
+	workerCmd.Flags().String("queue-name", "cronicle", "Name of the queue to message schedules over.")
 
 	addrDesc := `
 	host:port of the queue service leader, 

@@ -39,9 +39,10 @@ The run command will log schedule information to stdout including git commit inf
 
 		runWorker, _ := cmd.Flags().GetBool("worker")
 		queueType, _ := cmd.Flags().GetString("queue")
+		queueName, _ := cmd.Flags().GetString("queue-name")
 		addr, _ := cmd.Flags().GetString("addr")
 
-		runOptions := cron.RunOptions{RunWorker: runWorker, QueueType: queueType, Addr: addr}
+		runOptions := cron.RunOptions{RunWorker: runWorker, QueueType: queueType, QueueName: queueName, Addr: addr}
 
 		fmt.Println("Reading from: " + path)
 		cron.Run(path, runOptions)
@@ -60,6 +61,8 @@ func init() {
 	Configurable via the queue.type field in Cronicle.hcl
 	`
 	runCmd.Flags().String("queue", "", queueDesc)
+	runCmd.Flags().String("queue-name", "cronicle", "Name of the queue to message schedules over.")
+
 	addrDesc := `
 	host:port of the queue service leader, 
 	Options: 
