@@ -10,7 +10,8 @@ import (
 	"github.com/matryer/vice"
 	nsqvice "github.com/matryer/vice/queues/nsq"
 	"github.com/nsqio/go-nsq"
-	"github.com/matryer/vice/queues/redis"
+	redisvice "github.com/matryer/vice/queues/redis"
+	// "github.com/go-redis/redis"
 
 	"github.com/fatih/color"
 
@@ -85,11 +86,30 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 	
 	switch queueType {
 	case "redis":
-		transport := redis.New()
+		// if addr == "" {
+		// 	addr = "127.0.0.1:6379"
+		// } 
+		// opts := &redis.Options{
+		// 	Network:    "tcp",
+		// 	Addr:       addr,
+		// 	Password:   "",
+		// 	DB:         0,
+		// 	MaxRetries: 0,
+		// }
+		// 	client := redis.NewClient(opts)
+
+		// opt := redisvice.WithClient(client)
+		transport := redisvice.New()
 		return transport
 	case "nsq":
 		transport := nsqvice.New()
-		transport.ConnectConsumer = func(consumer *nsq.Consumer) error {return consumer.ConnectToNSQLookupd(addr) }
+		transport.ConnectConsumer = func(consumer *nsq.Consumer) error {
+			if addr == "" {
+				return consumer.ConnectToNSQD(nsqvice.DefaultTCPAddr)
+			} else {
+				return consumer.ConnectToNSQLookupd(addr) 
+			}
+}
 		return transport
 	}
 
