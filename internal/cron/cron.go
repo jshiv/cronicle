@@ -6,12 +6,12 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/go-redis/redis"
 	"github.com/jshiv/cronicle/internal/config"
 	"github.com/matryer/vice"
 	nsqvice "github.com/matryer/vice/queues/nsq"
-	"github.com/nsqio/go-nsq"
 	redisvice "github.com/matryer/vice/queues/redis"
-	// "github.com/go-redis/redis"
+	"github.com/nsqio/go-nsq"
 
 	"github.com/fatih/color"
 
@@ -83,39 +83,39 @@ func StartWorker(path string, runOptions RunOptions) {
 //queue field in the config
 func MakeViceTransport(queueType string, addr string) vice.Transport {
 	// var transport *nsqvice.Transport
-	
+
 	switch queueType {
 	case "redis":
-		// if addr == "" {
-		// 	addr = "127.0.0.1:6379"
-		// } 
-		// opts := &redis.Options{
-		// 	Network:    "tcp",
-		// 	Addr:       addr,
-		// 	Password:   "",
-		// 	DB:         0,
-		// 	MaxRetries: 0,
-		// }
-		// 	client := redis.NewClient(opts)
-
-		// opt := redisvice.WithClient(client)
-		transport := redisvice.New()
+		if addr == "" {
+			addr = "127.0.0.1:6379"
+		}
+		opts := &redis.Options{
+			Network:    "tcp",
+			Addr:       addr,
+			Password:   "",
+			DB:         0,
+			MaxRetries: 0,
+		}
+		client := redis.NewClient(opts)
+		fmt.Println(client)
+		opt := redisvice.WithClient(client)
+		transport := redisvice.New(opt)
 		return transport
 	case "nsq":
 		transport := nsqvice.New()
 		transport.ConnectConsumer = func(consumer *nsq.Consumer) error {
 			if addr == "" {
 				return consumer.ConnectToNSQD(nsqvice.DefaultTCPAddr)
-			} else {
-				return consumer.ConnectToNSQLookupd(addr) 
 			}
-}
+			return consumer.ConnectToNSQLookupd(addr)
+
+		}
 		return transport
 	}
 
 	// return transpor
 	return nsqvice.New()
-	
+
 }
 
 //StartCron pushes all schedules in the given config to the cron scheduler
