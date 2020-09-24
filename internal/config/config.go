@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"log"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/src-d/go-git.v4/plumbing"
@@ -13,6 +14,7 @@ import (
 type Config struct {
 	Version   string     `hcl:"version,optional"`
 	Git       string     `hcl:"git"`
+	Queue     Queue      `hcl:"queue,block"`
 	Schedules []Schedule `hcl:"schedule,block"`
 	// Repos points at external dependent repos that maintain their own schedules remotly.
 	Repos []string `hcl:"repos,optional"`
@@ -56,9 +58,26 @@ type Owner struct {
 	Email string `hcl:"email,optional"`
 }
 
+// Queue is the metadata associated to the message queue for distributed operation.
+// Cronicle uses vice to communicate with queues via channels.
+// https://github.com/matryer/vice
+// TODO: Add host, port blocks for addressing remote queues
+type Queue struct {
+	//Type names the message queue technology to be used
+	//options are nsq and redis
+	Type string `hcl:"type,optional"`
+	//host:port of nsqd/nsqlookupd/redis queue service
+	Addr string `hcl:"addr,optional"`
+}
+
 var (
 	//ErrBranchAndCommitGiven is thrown because commit and branch are mutually exclusive to identify a repo
 	ErrBranchAndCommitGiven = errors.New("branch and commit can not both be populated")
+	//ErrRepoNotGiven is thrown because a git repo is not given, for the case where Checkout or other git
+	//specific methods are called
+	ErrRepoNotGiven = errors.New("git repo has not been given")
+	//ErrIfRepoGivenAndPathNotGiven is thrown because a repo was given but the path to the local repo has not been provided
+	ErrIfRepoGivenAndPathNotGiven = errors.New("if repo is populated, path must also be given at runtime")
 	//ErrScheduleNameEmpty is thrown because schedule.Name == "", hcl can not be given with schedule "" {}
 	ErrScheduleNameEmpty = errors.New("schedule name can not be an empty string")
 	//ErrTaskNameEmpty is thrown because task.Name == "", hcl can not be given with task "" {}
@@ -67,17 +86,14 @@ var (
 
 // Validate validates the fields and sets the default values.
 func (task *Task) Validate() error {
-	if task.Branch != "" {
-		if task.Commit != "" {
-			return ErrBranchAndCommitGiven
-		}
+	if task.Branch != "" && task.Commit != "" {
+		return ErrBranchAndCommitGiven
 	}
 
-	if task.Branch != "" {
-		task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
-	} else {
-		task.Git.ReferenceName = plumbing.HEAD
-
+	if task.Repo != "" {
+		if task.Path == "" {
+			return ErrIfRepoGivenAndPathNotGiven
+		}
 	}
 
 	return nil
@@ -87,19 +103,76 @@ func (task *Task) Validate() error {
 //on a whole config struct.
 func (conf *Config) Validate() error {
 
-	for sdx, schedule := range conf.Schedules {
+	for _, schedule := range conf.Schedules {
 		if schedule.Name == "" {
 			return ErrScheduleNameEmpty
 		}
 
-		for tdx, task := range schedule.Tasks {
+		for _, task := range schedule.Tasks {
 			if task.Name == "" {
 				return ErrTaskNameEmpty
 			}
-			conf.Schedules[sdx].Tasks[tdx].ScheduleName = schedule.Name
 		}
 	}
 	return nil
+}
+
+//PropigateTaskProperties pushes schedule.Name, schedule.Repo and the repo path down to the task values.
+//It also populates task.Git.ReferenceName with task.Branch or HEAD.
+func (conf *Config) PropigateTaskProperties(croniclePath string) {
+	for i := range conf.Schedules {
+		conf.Schedules[i].PropigateTaskProperties(croniclePath)
+	}
+}
+
+//PropigateTaskProperties pushes schedule.Name, schedule.Repo and the repo path down to the task values.
+//It also populates task.Git.ReferenceName with task.Branch or HEAD.
+func (schedule *Schedule) PropigateTaskProperties(croniclePath string) {
+	// Assign the path for each task or schedule repo
+	for i, task := range schedule.Tasks {
+		if task.Branch != "" {
+			task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
+		} else {
+			task.Git.ReferenceName = plumbing.HEAD
+		}
+
+		var path string
+		var taskPath string
+		var repo string
+
+		// If the task is associated to a repo
+		if task.Repo != "" {
+			repo = task.Repo
+			// If a Schedule is associated to a repo, all sub tasks are by default associated
+		} else if schedule.Repo != "" {
+			repo = schedule.Repo
+			// Else the repo is the cronicle repo
+		} else {
+			//TODO: make remote cronicle repo rathar than ""
+			repo = ""
+		}
+		// If the task is associated to a repo, put it in the repos directory
+		if task.Repo != "" {
+			path, _ = LocalRepoDir(croniclePath, task.Repo)
+			// If a Schedule is associated to a repo, all sub tasks are by default associated
+		} else if schedule.Repo != "" {
+			path, _ = LocalRepoDir(croniclePath, schedule.Repo)
+			// Else the path is the root croniclePath
+		} else {
+			path = croniclePath
+		}
+
+		// If the given task is associatated to a repo, clone the task to an independent path
+		if repo != "" {
+			taskPath = filepath.Join(path, schedule.Name, task.Name)
+			// Else the task is associated to the root croniclePath
+		} else {
+			taskPath = croniclePath
+		}
+		schedule.Tasks[i].Path = taskPath
+		schedule.Tasks[i].Repo = repo
+		schedule.Tasks[i].ScheduleName = schedule.Name
+	}
 }
 
 //Default returns a basic default Config

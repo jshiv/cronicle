@@ -20,10 +20,12 @@ func TestCron(t *testing.T) {
 }
 
 var croniclePath string
+var workerPath string
 var testRepoPath string
 
 var _ = BeforeSuite(func() {
 	croniclePath, _ = filepath.Abs("./testconfig/")
+	workerPath, _ = filepath.Abs("./testworker/")
 	config.Init(croniclePath)
 
 	p, _ := filepath.Abs("./test_repo/")

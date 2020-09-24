@@ -76,63 +76,29 @@ func LocalRepoDir(croniclePath string, repo string) (string, error) {
 	return localRepoDir, nil
 }
 
-//SetConfig populates task repo path, runs git clone for any sub repos,
+//CleanGit nulls non-serlizable properties of a schedule
+//task.Git = Git{}
+func (schedule *Schedule) CleanGit() {
+	for i := range schedule.Tasks {
+		schedule.Tasks[i].CleanGit()
+	}
+}
+
+//Init populates task repo path, runs git clone for any sub repos,
 //and assigns Git meta data to the task
-func SetConfig(conf *Config, croniclePath string) error {
+func (conf *Config) Init(croniclePath string) error {
 	// Assign the path for each task or schedule repo
+	conf.PropigateTaskProperties(croniclePath)
 	conf.Validate()
-	for sdx, schedule := range conf.Schedules {
-		for tdx, task := range schedule.Tasks {
-			err := task.Validate()
-			if err != nil {
+
+	for _, schedule := range conf.Schedules {
+		for _, task := range schedule.Tasks {
+			if err := task.Validate(); err != nil {
 				return err
 			}
-			var path string
-			var taskPath string
-			var repo string
-
-			// If the task is associated to a repo
-			if task.Repo != "" {
-				repo = task.Repo
-				// If a Schedule is associated to a repo, all sub tasks are by default associated
-			} else if schedule.Repo != "" {
-				repo = schedule.Repo
-				// Else the repo is the cronicle repo
-			} else {
-				//TODO: make remote cronicle repo rathar than ""
-				repo = ""
+			if err := task.Clone(); err != nil {
+				return err
 			}
-			// If the task is associated to a repo, put it in the repos directory
-			if task.Repo != "" {
-				path, _ = LocalRepoDir(croniclePath, task.Repo)
-				// If a Schedule is associated to a repo, all sub tasks are by default associated
-			} else if schedule.Repo != "" {
-				path, _ = LocalRepoDir(croniclePath, schedule.Repo)
-				// Else the path is the root croniclePath
-			} else {
-				path = croniclePath
-			}
-
-			// If the given task is associatated to a repo, clone the task to an independent path
-			if repo != "" {
-				taskPath = filepath.Join(path, schedule.Name, task.Name)
-				// Else the task is associated to the root croniclePath
-			} else {
-				taskPath = croniclePath
-			}
-			conf.Schedules[sdx].Tasks[tdx].Path = taskPath
-			conf.Schedules[sdx].Tasks[tdx].Repo = repo
-
-			// Clone the repo if there is no .git directory in taskPath
-			if !DirExists(filepath.Join(taskPath, ".git")) {
-
-				_, err := git.PlainClone(taskPath, false, &git.CloneOptions{URL: repo})
-				if err != nil {
-					return err
-				}
-			}
-			conf.Schedules[sdx].Tasks[tdx].Git = GetGit(taskPath)
-			conf.Schedules[sdx].Tasks[tdx].ScheduleName = schedule.Name
 		}
 	}
 	return nil
@@ -154,9 +120,10 @@ func GetConfig(cronicleFile string) (*Config, error) {
 		return nil, err
 	}
 
-	if err := SetConfig(&conf, croniclePath); err != nil {
-		return &conf, err
-	}
+	conf.PropigateTaskProperties(croniclePath)
+	// if err := SetConfig(&conf, croniclePath); err != nil {
+	// 	return &conf, err
+	// }
 
 	// Collect any sub level Cronicle files if they exist
 	// then append all schedules to conf.Schedules

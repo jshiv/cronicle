@@ -1,13 +1,17 @@
 package cron
 
 import (
+	"encoding/json"
 	"fmt"
 	"runtime"
-	"strings"
 	"time"
 
-	"github.com/jshiv/cronicle/internal/bash"
+	"github.com/go-redis/redis"
 	"github.com/jshiv/cronicle/internal/config"
+	"github.com/matryer/vice"
+	nsqvice "github.com/matryer/vice/queues/nsq"
+	redisvice "github.com/matryer/vice/queues/redis"
+	"github.com/nsqio/go-nsq"
 
 	"github.com/fatih/color"
 
@@ -15,51 +19,159 @@ import (
 
 	cron "github.com/robfig/cron/v3"
 	log "github.com/sirupsen/logrus"
-
-	"gopkg.in/src-d/go-git.v4"
-	c "gopkg.in/src-d/go-git.v4/config"
-	"gopkg.in/src-d/go-git.v4/plumbing"
 )
 
 // Run is the main function of the cron package
-func Run(cronicleFile string) {
+func Run(cronicleFile string, runOptions RunOptions) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// croniclePath := filepath.Dir(cronicleFileAbs)
+	croniclePath := filepath.Dir(cronicleFileAbs)
 
 	conf, _ := config.GetConfig(cronicleFileAbs)
 	hcl := conf.Hcl()
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
-	RunConfig(*conf)
+	if runOptions.QueueType == "" {
+		runOptions.QueueType = conf.Queue.Type
+	}
+
+	if runOptions.QueueType == "" {
+		schedules := make(chan []byte)
+		go StartCron(*conf, schedules)
+		go ConsumeSchedule(schedules, croniclePath)
+	} else {
+		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
+		go StartCron(*conf, transport.Send(runOptions.QueueName))
+		if runOptions.RunWorker {
+			go ConsumeSchedule(transport.Receive(runOptions.QueueName), croniclePath)
+		}
+	}
+
+	runtime.Goexit()
+
 }
 
-//RunConfig starts cron
-func RunConfig(conf config.Config) {
+// RunOptions enables the runtime configuration of the distributed message queue
+type RunOptions struct {
+	RunWorker bool
+	QueueType string
+	QueueName string
+	Addr string
+}
+
+// StartWorker listens to a vice transport queue for schedules
+// produced by cronicle run
+func StartWorker(path string, runOptions RunOptions) {
+
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if runOptions.QueueType == "" {
+		log.Error("--queue must be specified in distributed mode. Options: redis, nsq]")
+	}
+	transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
+	schedules := transport.Receive(runOptions.QueueName)
+	go ConsumeSchedule(schedules, pathAbs)
+
+	runtime.Goexit()
+
+}
+
+//MakeViceTransport creates a vice.Transport interface from the given
+//queue field in the config
+func MakeViceTransport(queueType string, addr string) vice.Transport {
+	// var transport *nsqvice.Transport
+
+	switch queueType {
+	case "redis":
+		if addr == "" {
+			addr = "127.0.0.1:6379"
+		}
+		opts := &redis.Options{
+			Network:    "tcp",
+			Addr:       addr,
+			Password:   "",
+			DB:         0,
+			MaxRetries: 0,
+		}
+		client := redis.NewClient(opts)
+		fmt.Println(client)
+		opt := redisvice.WithClient(client)
+		transport := redisvice.New(opt)
+		return transport
+	case "nsq":
+		transport := nsqvice.New()
+		transport.ConnectConsumer = func(consumer *nsq.Consumer) error {
+			if addr == "" {
+				return consumer.ConnectToNSQD(nsqvice.DefaultTCPAddr)
+			}
+			return consumer.ConnectToNSQLookupd(addr)
+
+		}
+		return transport
+	}
+
+	// return transpor
+	return nsqvice.New()
+
+}
+
+//StartCron pushes all schedules in the given config to the cron scheduler
+//starts the cron scheduler which publishes the serialzied
+//schedules to the message queue for execution.
+func StartCron(conf config.Config, schedules chan<- []byte) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
 	c := cron.New()
 	c.AddFunc("@every 6m", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
 	for _, schedule := range conf.Schedules {
-		cronID, err := c.AddFunc(schedule.Cron, AddSchedule(schedule))
-		fmt.Println(cronID)
+		_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, schedules))
 		if err != nil {
 			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
 			log.Fatal(err)
 		}
 	}
 	c.Start()
-	runtime.Goexit()
 }
 
-// AddSchedule retuns a function primed with the given schedules commands
-func AddSchedule(schedule config.Schedule) func() {
-	log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Running...")
-	return ExecuteTasks(schedule)
+//ConsumeSchedule consumes the byte array of a
+//schedule from the message queue for execution
+func ConsumeSchedule(queue <-chan []byte, path string) {
+	var p string
+	if path == "" {
+		p, _ = filepath.Abs("./")
+	} else {
+		p = path
+	}
+	for scheduleBytes := range queue {
+
+		var s config.Schedule
+		err := json.Unmarshal(scheduleBytes, &s)
+		s.PropigateTaskProperties(p)
+
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		ExecuteTasks(s)()
+	}
+}
+
+//ProduceSchedule produces the json of a
+//schdule to the message queue for consumption
+func ProduceSchedule(schedule config.Schedule, queue chan<- []byte) func() {
+	return func() {
+		log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Queuing...")
+		schedule.Now = time.Now().In(time.Local)
+		schedule.CleanGit()
+		queue <- schedule.JSON()
+	}
 }
 
 // ExecuteTasks handels the execution of all tasks in a given schedule.
@@ -68,13 +180,20 @@ func ExecuteTasks(schedule config.Schedule) func() {
 	return func() {
 		// TODO: added location specification in schedule struct
 		// https://godoc.org/github.com/robfig/cron
-		now := time.Now().In(time.Local)
+		var now time.Time
+		if (schedule.Now == time.Time{}) {
+			now = time.Now().In(time.Local)
+		} else {
+			now = schedule.Now
+		}
 		fmt.Println("Schedule exec time: ", now)
 		for _, task := range schedule.Tasks {
+			//TODO: Setup dag execution
+			//[[task1, task2], [task3], [task4, task5]]?
 			go func(task config.Task) {
-				r, err := ExecuteTask(&task, now)
+				r, err := task.Execute(now)
 				fmt.Println(err)
-				LogTask(&task, r)
+				task.Log(r)
 			}(task)
 
 		}
@@ -102,122 +221,7 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 	fmt.Printf("%s", slantyedCyan(string(c.Hcl().Bytes)))
 
 	for _, task := range tasks {
-		r, _ := ExecuteTask(&task, now)
-		LogTask(&task, r)
+		r, _ := task.Execute(now)
+		task.Log(r)
 	}
-
-}
-
-// ExecuteTask does a git pull, git checkout and exec's the given command
-func ExecuteTask(task *config.Task, t time.Time) (bash.Result, error) {
-	// log.WithFields(log.Fields{"task": task.Name}).Info(task.Command)
-
-	if task.Repo != "" {
-		var branch string
-		if task.Branch != "" {
-			branch = task.Branch
-		} else {
-			branch = "master"
-		}
-
-		var commit string
-		if task.Commit != "" {
-			commit = task.Commit
-		}
-
-		err := task.Git.Repository.Fetch(&git.FetchOptions{
-			RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
-		})
-		if err != nil {
-			switch err {
-			case git.NoErrAlreadyUpToDate:
-			default:
-				return bash.Result{}, err
-			}
-		}
-
-		var checkoutOptions git.CheckoutOptions
-		if commit != "" {
-			h := plumbing.NewHash(commit)
-			checkoutOptions = git.CheckoutOptions{
-				Create: false, Force: false, Hash: h,
-			}
-		} else {
-			b := plumbing.NewBranchReferenceName(branch)
-			checkoutOptions = git.CheckoutOptions{
-				Create: false, Force: false, Branch: b,
-			}
-		}
-
-		if err := task.Git.Worktree.Checkout(&checkoutOptions); err != nil {
-			return bash.Result{}, err
-		}
-
-		// } else if task.Commit != "" {
-		// 	cn := plumbing.NewHash(task.Commit)
-		// 	task.Git.Worktree.Pull(&git.PullOptions{})
-		// 	task.Git.Worktree.Checkout(&git.CheckoutOptions{Hash: cn, Force: true})
-		// } else {
-		// 	task.Git.Worktree.Pull(&git.PullOptions{})
-		// }
-	}
-
-	if task.Git.Repository != nil {
-		task.Git.Head, _ = task.Git.Repository.Head()
-		task.Git.Commit, _ = task.Git.Repository.CommitObject(task.Git.Head.Hash())
-	}
-
-	var result bash.Result
-	r := strings.NewReplacer(
-		"${date}", t.Format(config.TimeArgumentFormatMap["${date}"]),
-		"${datetime}", t.Format(config.TimeArgumentFormatMap["${datetime}"]),
-		"${timestamp}", t.Format(config.TimeArgumentFormatMap["${timestamp}"]),
-	)
-	if len(task.Command) > 0 {
-		cmd := make([]string, len(task.Command))
-		for i, s := range task.Command {
-			s = r.Replace(s)
-			cmd[i] = s
-		}
-
-		result = bash.Bash(cmd, task.Path)
-	}
-
-	return result, nil
-}
-
-//LogTask logs the exit status, stderr, git commit and other logging data.
-func LogTask(task *config.Task, res bash.Result) {
-	if res.ExitStatus == 0 {
-		log.WithFields(log.Fields{
-			"schedule": task.ScheduleName,
-			"task":     task.Name,
-			"exit":     res.ExitStatus,
-			"commit":   task.Git.Commit.Hash.String()[:11],
-			"email":    task.Git.Commit.Author.Email,
-			"success":  true,
-		}).Info(res.Stdout)
-	} else if res.ExitStatus == 1 {
-		log.WithFields(log.Fields{
-			"schedule": task.ScheduleName,
-			"task":     task.Name,
-			"exit":     res.ExitStatus,
-			"commit":   task.Git.Commit.Hash.String()[:11],
-			"email":    task.Git.Commit.Author.Email,
-			"success":  false,
-		}).Error(res.Stderr)
-	} else {
-		log.WithFields(log.Fields{
-			"schedule": task.ScheduleName,
-			"task":     task.Name,
-			"exit":     res.ExitStatus,
-			"commit":   task.Git.Commit.Hash.String()[:11],
-			"email":    task.Git.Commit.Author.Email,
-			"success":  false,
-		}).Error(res.Stderr)
-	}
-}
-
-func Dummy(in string) string {
-	return in
 }
