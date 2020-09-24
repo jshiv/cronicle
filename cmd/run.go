@@ -67,7 +67,7 @@ func init() {
 		nsq   NSQLookupd service [default: localhost:4150 nsqd dameon]
 	Configurable via the queue.addr field in Cronicle.hcl
 	`
-	workerCmd.Flags().String("addr", "", addrDesc)
+	runCmd.Flags().String("addr", "", addrDesc)
 
 	// Here you will define your flags and configuration settings.
 
