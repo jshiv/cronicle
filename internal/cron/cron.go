@@ -4,15 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/jshiv/cronicle/internal/config"
 	"github.com/matryer/vice"
-	"github.com/matryer/vice/queues/nats"
 	"github.com/matryer/vice/queues/nsq"
-	"github.com/matryer/vice/queues/rabbitmq"
 	"github.com/matryer/vice/queues/redis"
-	"github.com/matryer/vice/queues/sqs"
 
 	"github.com/fatih/color"
 
@@ -61,19 +59,22 @@ type RunOptions struct {
 }
 
 // StartWorker listens to a vice transport queue for schedules
-// produced by the cron job
-func StartWorker(cronicleFile string, runOptions RunOptions) {
+// produced by cronicle run
+func StartWorker(path string, runOptions RunOptions) {
 
-	cronicleFileAbs, err := filepath.Abs(cronicleFile)
+	pathAbs, err := filepath.Abs(path)
 	if err != nil {
 		log.Fatal(err)
 	}
-	croniclePath := filepath.Dir(cronicleFileAbs)
 
-	conf, _ := config.GetConfig(cronicleFileAbs)
-	hcl := conf.Hcl()
-	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
-	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
+	var conf *config.Config
+	croniclePath := filepath.Dir(pathAbs)
+	if strings.Contains(path, "Cronicle.hcl") {
+		conf, _ = config.GetConfig(pathAbs)
+		hcl := conf.Hcl()
+		slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
+		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
+	}
 
 	if runOptions.QueueType == "" {
 		runOptions.QueueType = conf.Queue.Type
@@ -93,14 +94,8 @@ func MakeViceTransport(queueType string) vice.Transport {
 	switch queueType {
 	case "redis":
 		transport = redis.New()
-	case "nats":
-		transport = nats.New()
 	case "nsq":
 		transport = nsq.New()
-	case "rabbitmq":
-		transport = rabbitmq.New()
-	case "sqs":
-		transport = sqs.New(1, time.Duration(1))
 	}
 	return transport
 }
@@ -125,18 +120,18 @@ func StartCron(conf config.Config, schedules chan<- []byte) {
 
 //ConsumeSchedule consumes the byte array of a
 //schedule from the message queue for execution
-func ConsumeSchedule(queue <-chan []byte, schedulePath string) {
-	var path string
-	if schedulePath == "" {
-		path, _ = filepath.Abs("./")
+func ConsumeSchedule(queue <-chan []byte, path string) {
+	var p string
+	if path == "" {
+		p, _ = filepath.Abs("./")
 	} else {
-		path = schedulePath
+		p = path
 	}
 	for scheduleBytes := range queue {
 
 		var s config.Schedule
 		err := json.Unmarshal(scheduleBytes, &s)
-		s.PropigateTaskProperties(path)
+		s.PropigateTaskProperties(p)
 
 		if err != nil {
 			fmt.Println(err)

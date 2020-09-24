@@ -58,12 +58,12 @@ Multipule workers can be started, they will take turns consuming from the queue.
 
 func init() {
 	rootCmd.AddCommand(workerCmd)
-	workerCmd.Flags().String("path", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
+	workerCmd.Flags().String("path", "./", "Path to git pull schedule repos.")
 	queueDesc := `
 	message broker technology for distributed schedule execution, 
 	Options: 
 		redis [distributed on localhost]
-		nsq [run on cluster with nsqd]
+		nsq   [distributed on cluster running nsqd]
 	Configurable via the queue.type field in Cronicle.hcl
 	`
 	workerCmd.Flags().String("queue", "", queueDesc)
