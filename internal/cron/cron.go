@@ -43,7 +43,7 @@ func Run(cronicleFile string, runOptions RunOptions) {
 		go StartCron(*conf, schedules)
 		go ConsumeSchedule(schedules, croniclePath)
 	} else {
-		transport := MakeViceTransport(runOptions.QueueType, "")
+		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
 		go StartCron(*conf, transport.Send("schedules"))
 		if runOptions.RunWorker {
 			go ConsumeSchedule(transport.Receive("schedules"), croniclePath)
@@ -57,6 +57,7 @@ func Run(cronicleFile string, runOptions RunOptions) {
 type RunOptions struct {
 	RunWorker bool
 	QueueType string
+	Addr string
 }
 
 // StartWorker listens to a vice transport queue for schedules
@@ -71,7 +72,7 @@ func StartWorker(path string, runOptions RunOptions) {
 	if runOptions.QueueType == "" {
 		log.Error("--queue must be specified in distributed mode. Options: redis, nsq]")
 	}
-	transport := MakeViceTransport(runOptions.QueueType, "")
+	transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
 	schedules := transport.Receive("schedules")
 	go ConsumeSchedule(schedules, pathAbs)
 

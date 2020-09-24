@@ -50,8 +50,10 @@ Multipule workers can be started, they will take turns consuming from the queue.
 	Run: func(cmd *cobra.Command, args []string) {
 		path, _ := cmd.Flags().GetString("path")
 		queueType, _ := cmd.Flags().GetString("queue")
+		addr, _ := cmd.Flags().GetString("addr")
+
 		fmt.Println("Starting Worker from: " + path)
-		runOptions := cron.RunOptions{RunWorker: true, QueueType: queueType}
+		runOptions := cron.RunOptions{RunWorker: true, QueueType: queueType, Addr: addr}
 		cron.StartWorker(path, runOptions)
 	},
 }
@@ -68,6 +70,15 @@ func init() {
 	`
 	workerCmd.Flags().String("queue", "", queueDesc)
 	cobra.MarkFlagRequired(workerCmd.Flags(), "queue")
+
+	addrDesc := `
+	host:port of the queue service leader, 
+	Options: 
+		redis server[default: 127.0.0.1:6379]
+		nsq   NSQLookupd service [default: localhost:4150 nsqd dameon]
+	Configurable via the queue.addr field in Cronicle.hcl
+	`
+	workerCmd.Flags().String("addr", "", addrDesc)
 
 	// Here you will define your flags and configuration settings.
 

@@ -39,7 +39,9 @@ The run command will log schedule information to stdout including git commit inf
 
 		runWorker, _ := cmd.Flags().GetBool("worker")
 		queueType, _ := cmd.Flags().GetString("queue")
-		runOptions := cron.RunOptions{RunWorker: runWorker, QueueType: queueType}
+		addr, _ := cmd.Flags().GetString("addr")
+
+		runOptions := cron.RunOptions{RunWorker: runWorker, QueueType: queueType, Addr: addr}
 
 		fmt.Println("Reading from: " + path)
 		cron.Run(path, runOptions)
@@ -58,6 +60,14 @@ func init() {
 	Configurable via the queue.type field in Cronicle.hcl
 	`
 	runCmd.Flags().String("queue", "", queueDesc)
+	addrDesc := `
+	host:port of the queue service leader, 
+	Options: 
+		redis server[default: 127.0.0.1:6379]
+		nsq   NSQLookupd service [default: localhost:4150 nsqd dameon]
+	Configurable via the queue.addr field in Cronicle.hcl
+	`
+	workerCmd.Flags().String("addr", "", addrDesc)
 
 	// Here you will define your flags and configuration settings.
 
