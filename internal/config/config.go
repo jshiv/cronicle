@@ -196,7 +196,7 @@ func Default() Config {
 }
 
 //TaskArray is an array of Task structs,
-//calling config.TaskArra() ensures that each task.ScheduleName is filled
+//calling config.TaskArray() ensures that each task.ScheduleName is filled
 type TaskArray []Task
 
 //TaskArray exports a TaskArray all tasks in a given config,
@@ -215,6 +215,20 @@ func (conf *Config) TaskArray() TaskArray {
 		}
 	}
 	return tasks
+}
+
+//TaskMap is an map of key=task.Name: value=Task struct,
+type TaskMap map[string]Task
+
+//TaskMap exports a TaskMap all tasks in a given config,
+//additionally, it ensures that task.ScheduleName is propigated
+func (schedule *Schedule) TaskMap() TaskMap {
+
+	taskMap := TaskMap{}
+	for _, task := range schedule.Tasks {
+		taskMap[task.Name] = task
+	}
+	return taskMap
 }
 
 //FilterTasks returns a task array where
