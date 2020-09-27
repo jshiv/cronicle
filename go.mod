@@ -7,6 +7,7 @@ require (
 	github.com/gernest/kemi v0.0.0-20160708162426-04d6c23628c2
 	github.com/go-redis/redis v6.15.9+incompatible
 	github.com/hashicorp/hcl/v2 v2.6.0
+	github.com/hashicorp/terraform v0.13.3
 	github.com/matryer/is v1.4.0 // indirect
 	github.com/matryer/vice v1.0.1-0.20190210090722-660007f4486b
 	github.com/mitchellh/go-homedir v1.1.0
@@ -19,7 +20,6 @@ require (
 	github.com/spf13/cobra v1.0.0
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/spf13/viper v1.7.0
-	github.com/zclconf/go-cty v1.4.2
-	golang.org/x/crypto v0.0.0-20200323165209-0ec3e9974c59 // indirect
+	github.com/zclconf/go-cty v1.5.1
 	gopkg.in/src-d/go-git.v4 v4.13.1
 )

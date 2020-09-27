@@ -60,7 +60,7 @@ type RunOptions struct {
 	RunWorker bool
 	QueueType string
 	QueueName string
-	Addr string
+	Addr      string
 }
 
 // StartWorker listens to a vice transport queue for schedules
@@ -151,15 +151,14 @@ func ConsumeSchedule(queue <-chan []byte, path string) {
 	}
 	for scheduleBytes := range queue {
 
-		var s config.Schedule
-		err := json.Unmarshal(scheduleBytes, &s)
-		s.PropigateTaskProperties(p)
-
+		var schedule config.Schedule
+		err := json.Unmarshal(scheduleBytes, &schedule)
 		if err != nil {
-			fmt.Println(err)
+			log.Error(err)
 		}
+		schedule.PropigateTaskProperties(p)
+		schedule.ExecuteTasks()
 
-		ExecuteTasks(s)()
 	}
 }
 
@@ -171,32 +170,6 @@ func ProduceSchedule(schedule config.Schedule, queue chan<- []byte) func() {
 		schedule.Now = time.Now().In(time.Local)
 		schedule.CleanGit()
 		queue <- schedule.JSON()
-	}
-}
-
-// ExecuteTasks handels the execution of all tasks in a given schedule.
-// By default tasks execute in parallel unless wait_for is given
-func ExecuteTasks(schedule config.Schedule) func() {
-	return func() {
-		// TODO: added location specification in schedule struct
-		// https://godoc.org/github.com/robfig/cron
-		var now time.Time
-		if (schedule.Now == time.Time{}) {
-			now = time.Now().In(time.Local)
-		} else {
-			now = schedule.Now
-		}
-		fmt.Println("Schedule exec time: ", now)
-		for _, task := range schedule.Tasks {
-			//TODO: Setup dag execution
-			//[[task1, task2], [task3], [task4, task5]]?
-			go func(task config.Task) {
-				r, err := task.Execute(now)
-				fmt.Println(err)
-				task.Log(r)
-			}(task)
-
-		}
 	}
 }
 

@@ -64,7 +64,7 @@ func (task *Task) Log(res bash.Result) {
 
 	var commit string
 	var email string
-	if task.Git.Repository != nil {
+	if task.Git.Commit != nil {
 		commit = task.Git.Commit.Hash.String()[:11]
 		email = task.Git.Commit.Author.Email
 	} else {
