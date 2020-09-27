@@ -60,7 +60,7 @@ type RunOptions struct {
 	RunWorker bool
 	QueueType string
 	QueueName string
-	Addr string
+	Addr      string
 }
 
 // StartWorker listens to a vice transport queue for schedules
@@ -151,15 +151,14 @@ func ConsumeSchedule(queue <-chan []byte, path string) {
 	}
 	for scheduleBytes := range queue {
 
-		var s config.Schedule
-		err := json.Unmarshal(scheduleBytes, &s)
-		s.PropigateTaskProperties(p)
-
+		var schedule config.Schedule
+		err := json.Unmarshal(scheduleBytes, &schedule)
 		if err != nil {
-			fmt.Println(err)
+			log.Error(err)
 		}
+		schedule.PropigateTaskProperties(p)
+		schedule.ExecuteTasks()
 
-		ExecuteTasks(s)()
 	}
 }
 
