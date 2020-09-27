@@ -173,32 +173,6 @@ func ProduceSchedule(schedule config.Schedule, queue chan<- []byte) func() {
 	}
 }
 
-// ExecuteTasks handels the execution of all tasks in a given schedule.
-// By default tasks execute in parallel unless wait_for is given
-func ExecuteTasks(schedule config.Schedule) func() {
-	return func() {
-		// TODO: added location specification in schedule struct
-		// https://godoc.org/github.com/robfig/cron
-		var now time.Time
-		if (schedule.Now == time.Time{}) {
-			now = time.Now().In(time.Local)
-		} else {
-			now = schedule.Now
-		}
-		fmt.Println("Schedule exec time: ", now)
-		for _, task := range schedule.Tasks {
-			//TODO: Setup dag execution
-			//[[task1, task2], [task3], [task4, task5]]?
-			go func(task config.Task) {
-				r, err := task.Execute(now)
-				fmt.Println(err)
-				task.Log(r)
-			}(task)
-
-		}
-	}
-}
-
 // ExecTasks parses the cronicle.hcl config, filters for a specified task
 // and executes the task
 func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time) {
