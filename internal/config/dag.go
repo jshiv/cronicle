@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/hashicorp/terraform/dag"
@@ -15,8 +14,6 @@ func (schedule *Schedule) taskGraph() dag.AcyclicGraph {
 	var g dag.AcyclicGraph
 	var edges []dag.Edge
 	for _, task := range schedule.Tasks {
-		fmt.Println(task.Name)
-		fmt.Println(task.Depends)
 		g.Add(task.Name)
 		for _, depName := range task.Depends {
 			edges = append(edges, dag.BasicEdge(task.Name, depName))
@@ -30,6 +27,10 @@ func (schedule *Schedule) taskGraph() dag.AcyclicGraph {
 	return g
 }
 
+// ExecuteTasks handels the execution of all tasks in a given schedule.
+// The execution walks over a DAG[Directed Acyclic Graph] to determine
+// execution order, which will default to parallel unless task.depends is
+// specified.
 func (schedule Schedule) ExecuteTasks() {
 	var now time.Time
 	if (schedule.Now == time.Time{}) {
@@ -40,6 +41,8 @@ func (schedule Schedule) ExecuteTasks() {
 
 	taskMap := schedule.TaskMap()
 	taskGraph := schedule.taskGraph()
+	graphString := taskGraph.StringWithNodeTypes()
+	log.Println(graphString)
 	err := taskGraph.Walk(func(v dag.Vertex) tfdiags.Diagnostics {
 		var diags tfdiags.Diagnostics
 		taskName := dag.VertexName(v)
@@ -54,7 +57,9 @@ func (schedule Schedule) ExecuteTasks() {
 		return diags
 	})
 
-	log.Error(err)
+	if err != nil {
+		log.Error(err)
+	}
 
 }
 
