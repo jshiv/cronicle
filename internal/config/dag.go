@@ -42,7 +42,10 @@ func (schedule Schedule) ExecuteTasks() {
 	taskMap := schedule.TaskMap()
 	taskGraph := schedule.taskGraph()
 	graphString := taskGraph.StringWithNodeTypes()
-	log.Println(graphString)
+	log.WithFields(log.Fields{
+		"schedule": schedule.Name,
+		"time":     now,
+	}).Info(graphString)
 	err := taskGraph.Walk(func(v dag.Vertex) tfdiags.Diagnostics {
 		var diags tfdiags.Diagnostics
 		taskName := dag.VertexName(v)
