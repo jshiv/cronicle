@@ -39,6 +39,7 @@ type Schedule struct {
 }
 
 // Task is the configuration structure that defines a task (i.e., a command)
+// TODO: Add retry
 type Task struct {
 	Name         string   `hcl:"name,label"`
 	Command      []string `hcl:"command,optional"`

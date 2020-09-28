@@ -125,6 +125,7 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 //StartCron pushes all schedules in the given config to the cron scheduler
 //starts the cron scheduler which publishes the serialzied
 //schedules to the message queue for execution.
+//TODO Add meta job to fetch and refresh cron schedule with updated Cronicle.hcl
 func StartCron(conf config.Config, schedules chan<- []byte) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 

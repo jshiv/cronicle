@@ -11,7 +11,6 @@ import (
 	"net/url"
 
 	"github.com/hashicorp/hcl/v2/hclsimple"
-	"gopkg.in/src-d/go-git.v4"
 )
 
 //Init initializes a default croniclePath with a .git repository,
@@ -24,11 +23,11 @@ func Init(croniclePath string) {
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	// errors.New("could not extract repos from " + slantedRed("Config"))
 	fmt.Println("Init Cronicle: " + slantyedCyan(absCroniclePath))
+	//TODO: rename repos to .repos
+	//TODO: add .gitignore blocking .repos
+	//TODO: if init executes in .git path, add .git/remote to Cronicle.hcl
 	os.MkdirAll(path.Join(absCroniclePath, "repos"), 0777)
-	_, err = git.PlainInit(absCroniclePath, false)
-	if err != nil {
-		fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("git: %s", err))
-	}
+	//TODO: rename Cronicle.hcl to cronicle.hcl
 	cronicleFile := path.Join(absCroniclePath, "Cronicle.hcl")
 	if fileExists(cronicleFile) {
 		conf, _ := GetConfig(cronicleFile)
@@ -37,7 +36,8 @@ func Init(croniclePath string) {
 		// CloneRepos(absCroniclePath, conf)
 	} else {
 		MarshallHcl(Default(), cronicleFile)
-		Commit(absCroniclePath, "Cronicle Initial Commit")
+		// TODO pull cronicle repo, if config.repo != "", do not creat .git
+		// Commit(absCroniclePath, "Cronicle Initial Commit")
 	}
 
 }
