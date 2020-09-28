@@ -12,13 +12,21 @@ import (
 // Config is the configuration structure for the cronicle checker.
 // https://raw.githubusercontent.com/mitchellh/golicense/master/config/config.go
 type Config struct {
-	Version   string     `hcl:"version,optional"`
-	Git       string     `hcl:"git"`
+	Version string `hcl:"version,optional"`
+	Git     string `hcl:"git,optional"`
+	// GitRemote *GitRemote `hcl:"git,block"`
 	Queue     Queue      `hcl:"queue,block"`
 	Schedules []Schedule `hcl:"schedule,block"`
 	// Repos points at external dependent repos that maintain their own schedules remotly.
 	Repos []string `hcl:"repos,optional"`
 }
+
+// // GitRemote provides the remote repo info for the main cronicle scheduler
+// type GitRemote struct {
+// 	Remote string `hcl:"remote,optional"`
+// 	Branch string `hcl:"branch,optional"`
+// 	Commit string `hcl:"commit,optional"`
+// }
 
 // Schedule is the configuration structure that defines a cron job consisting of tasks.
 type Schedule struct {
