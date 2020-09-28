@@ -37,11 +37,11 @@ var workerCmd = &cobra.Command{
 	cronicle init --path=./demo
 
 	# In a seperate shell, start a worker to consume the schedules queue.
-	cronicle worker --path ./demo/Cronicle.hcl --queue redis
+	cronicle worker --path ./demo/cronicle.hcl --queue redis
 
 	# Start cron, in distributed mode "cronicle run" will start a consumer thread by default
 	# Note --worker=false will prevent the scheduler from starting a worker thread.
-	cronicle run --path ./demo/Cronicle.hcl --worker=false --queue redis 
+	cronicle run --path ./demo/cronicle.hcl --worker=false --queue redis 
 
 
 Multipule workers can be started, they will take turns consuming from the queue.
@@ -67,7 +67,7 @@ func init() {
 	Options: 
 		redis [distributed on localhost]
 		nsq   [distributed on cluster running nsqd]
-	Configurable via the queue.type field in Cronicle.hcl
+	Configurable via the queue.type field in cronicle.hcl
 	`
 	workerCmd.Flags().String("queue", "", queueDesc)
 	cobra.MarkFlagRequired(workerCmd.Flags(), "queue")
@@ -78,7 +78,7 @@ func init() {
 	Options: 
 		redis server[default: 127.0.0.1:6379]
 		nsq   NSQLookupd service [default: localhost:4150 nsqd dameon]
-	Configurable via the queue.addr field in Cronicle.hcl
+	Configurable via the queue.addr field in cronicle.hcl
 	`
 	workerCmd.Flags().String("addr", "", addrDesc)
 

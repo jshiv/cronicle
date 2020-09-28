@@ -75,7 +75,7 @@ to quickly create a Cobra application.`,
 
 func init() {
 	rootCmd.AddCommand(execCmd)
-	execCmd.Flags().String("path", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
+	execCmd.Flags().String("path", "./cronicle.hcl", "Path to a cronicle.hcl file")
 	execCmd.Flags().String("task", "", "Name of the task to execute (required)")
 	execCmd.Flags().String("schedule", "", "Name of the schedule that contains the task to execute")
 	execCmd.Flags().String("time", "", "Timestamp to execute task [2006-01-02T15:04:05-08:00]")

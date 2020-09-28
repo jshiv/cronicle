@@ -25,12 +25,12 @@ import (
 // runCmd represents the run command
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Cronicle run reads in the Cronicle.hcl schedule and starts running tasks",
-	Long: `The cronicle run command starts the cron scheduler for the specified Cronicle.hcl file.
+	Short: "Cronicle run reads in the cronicle.hcl schedule and starts running tasks",
+	Long: `The cronicle run command starts the cron scheduler for the specified cronicle.hcl file.
 For example:
 
 cronicle init --path cronicle
-cronicle run --path cronicle/Cronicle.hcl
+cronicle run --path cronicle/cronicle.hcl
 
 The run command will log schedule information to stdout including git commit info.`,
 	Args: cobra.MinimumNArgs(0),
@@ -51,14 +51,14 @@ The run command will log schedule information to stdout including git commit inf
 
 func init() {
 	rootCmd.AddCommand(runCmd)
-	runCmd.Flags().String("path", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
+	runCmd.Flags().String("path", "./cronicle.hcl", "Path to a cronicle.hcl file")
 	runCmd.Flags().Bool("worker", true, "start a worker thread to consume tasks in distributed mode")
 	queueDesc := `
 	message broker technology for distributed schedule execution, 
 	Options: 
 		redis [distributed on localhost]
 		nsq [run on cluster with nsqd]
-	Configurable via the queue.type field in Cronicle.hcl
+	Configurable via the queue.type field in cronicle.hcl
 	`
 	runCmd.Flags().String("queue", "", queueDesc)
 	runCmd.Flags().String("queue-name", "cronicle", "Name of the queue to message schedules over.")
@@ -68,7 +68,7 @@ func init() {
 	Options: 
 		redis server[default: 127.0.0.1:6379]
 		nsq   NSQLookupd service [default: localhost:4150 nsqd dameon]
-	Configurable via the queue.addr field in Cronicle.hcl
+	Configurable via the queue.addr field in cronicle.hcl
 	`
 	runCmd.Flags().String("addr", "", addrDesc)
 

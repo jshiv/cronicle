@@ -26,17 +26,17 @@ import (
 // initCmd represents the init command
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Creates a Cronicle git repo including a default Cronicle.hcl file and repos folder.",
+	Short: "Creates a Cronicle git repo including a default cronicle.hcl file and repos folder.",
 	Long: `The cronicle init command will instantiate a Cronicle repository in the current directory
 For example:
 
 cronicle init --path ./cronicle
 tree -a cronicle
 ├── .git
-├── Cronicle.hcl
+├── cronicle.hcl
 └── repos
 
-This directory will contain the root Cronicle.hcl file and git repository. This is where
+This directory will contain the root cronicle.hcl file and git repository. This is where
 the main schedule will be defined and run. Subsequent schedules will be cloned into the 
 repos folder.
 `,

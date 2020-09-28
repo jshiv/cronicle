@@ -24,5 +24,5 @@ cronicle worker  --path ./worker/ --queue nsq --addr 127.0.0.1:4161
 ```
 nsqd --lookupd-tcp-address=127.0.0.1:4160 --broadcast-address=127.0.0.1
 ./cronicle init --path cron
-cronicle run --path ./cron/Cronicle.hcl --worker=true --queue nsq --addr 127.0.0.1:4161
+cronicle run --path ./cron/cronicle.hcl --worker=true --queue nsq --addr 127.0.0.1:4161
 ```

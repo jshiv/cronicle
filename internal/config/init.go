@@ -14,7 +14,7 @@ import (
 )
 
 //Init initializes a default croniclePath with a .git repository,
-//Basic schedule as code in a Cronicle.hcl file and a repos folder.
+//Basic schedule as code in a cronicle.hcl file and a repos folder.
 func Init(croniclePath string) {
 	absCroniclePath, err := filepath.Abs(croniclePath)
 	if err != nil {
@@ -25,10 +25,9 @@ func Init(croniclePath string) {
 	fmt.Println("Init Cronicle: " + slantyedCyan(absCroniclePath))
 	//TODO: rename repos to .repos
 	//TODO: add .gitignore blocking .repos
-	//TODO: if init executes in .git path, add .git/remote to Cronicle.hcl
+	//TODO: if init executes in .git path, add .git/remote to cronicle.hcl
 	os.MkdirAll(path.Join(absCroniclePath, "repos"), 0777)
-	//TODO: rename Cronicle.hcl to cronicle.hcl
-	cronicleFile := path.Join(absCroniclePath, "Cronicle.hcl")
+	cronicleFile := path.Join(absCroniclePath, "cronicle.hcl")
 	if fileExists(cronicleFile) {
 		conf, _ := GetConfig(cronicleFile)
 		hcl := conf.Hcl()
@@ -63,7 +62,7 @@ func GetRepos(conf *Config) map[string]bool {
 	return repos
 }
 
-//LocalRepoDir takes a Cronicle.hcl path and a github repo URL and converts
+//LocalRepoDir takes a cronicle.hcl path and a github repo URL and converts
 //it to the local clone of that repo
 func LocalRepoDir(croniclePath string, repo string) (string, error) {
 	reposDir := path.Join(croniclePath, "repos")
@@ -104,7 +103,7 @@ func (conf *Config) Init(croniclePath string) error {
 	return nil
 }
 
-// GetConfig returns the Config specified by the given Cronicle.hcl file
+// GetConfig returns the Config specified by the given cronicle.hcl file
 // Including any Cronicle files specified by in the repos directory.
 func GetConfig(cronicleFile string) (*Config, error) {
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
@@ -132,7 +131,7 @@ func GetConfig(cronicleFile string) (*Config, error) {
 	for repo := range repos {
 		repoPath, _ := LocalRepoDir(croniclePath, repo)
 		fmt.Println("sub repo path:  " + repoPath)
-		repoCronicleFile := filepath.Join(repoPath, "Cronicle.hcl")
+		repoCronicleFile := filepath.Join(repoPath, "cronicle.hcl")
 		fmt.Println("sub repo file:  " + repoCronicleFile)
 		fmt.Println(fileExists(repoCronicleFile))
 		if fileExists(repoCronicleFile) {

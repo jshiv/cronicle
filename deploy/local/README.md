@@ -5,7 +5,7 @@ This deployment setup describes how to standup a cronicle log server locally on 
 _Build the cronicle binary via `go build -o deploy/local/`_
 ```
 ./cronicle init --path demo
-./cronicle run --path demo/Cronicle.hcl
+./cronicle run --path demo/cronicle.hcl
 ```
 ## Install [vector](https://vector.dev/):
 _Vector is the router that ships the cronicle logs to loki._
@@ -14,7 +14,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.vector.dev | sh
 ```
 ## Pipe the cronicle logs from stdout to vector
 ```
-./cronicle run --path demo/Cronicle.hcl | vector --config ./vector.toml
+./cronicle run --path demo/cronicle.hcl | vector --config ./vector.toml
 ```
 ## Run [graphana](https://grafana.com/) and [loki](https://grafana.com/docs/loki/latest/overview/) with [docker](https://docs.docker.com/desktop/).
 ```

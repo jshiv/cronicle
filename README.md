@@ -5,10 +5,10 @@ git integrated workflow scheduler that provides a pull model for CI/CD and versi
 
 Usage[Vision] 
 
-The tool will use a Cronicle.hcl file to maintain `schedule as code`.
+The tool will use a cronicle.hcl file to maintain `schedule as code`.
 A bash job scheduler could look like:
 ```hcl
-#Cronicle.hcl 
+#cronicle.hcl 
 version = "0.0.1"
   
 // root remote schedule repository (optional)
@@ -39,7 +39,7 @@ schedule "example" {
 
 A More complete example might look like:
 ```hcl
-#Cronicle.hcl
+#cronicle.hcl
 version = "0.0.1"
 
 /* git is a list of remote repositories 
