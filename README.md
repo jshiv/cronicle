@@ -1,12 +1,10 @@
 # cronicle
 git integrated workflow scheduler that provides a pull model for CI/CD and versioning on job execution.
 
-## Development Phase: Alpha
-
-Usage[Vision] 
+Usage
 
 The tool will use a cronicle.hcl file to maintain `schedule as code`.
-A bash job scheduler could look like:
+A cronicle schedule could look like:
 ```hcl
 #cronicle.hcl 
 version = "0.0.1"
@@ -88,15 +86,12 @@ schedule "example" {
 
 # Bash Commands
 
-The init command sets up a new schedule repository with a sample Conicle.yml file
+The init command sets up a new schedule repository with a sample conicle.hcl file
 ```bash
 cronicle init
 tree
 .
-├── .git
 ├── .gitignore
-├── Cronicle.yml
-├── logs
 └── repos
 ```
 
