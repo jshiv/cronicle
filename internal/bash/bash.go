@@ -18,6 +18,9 @@ type Result struct {
 	ExitStatus int
 }
 
+//TODO Update nameing convention, i.e. Exec
+//TODO Add method for running command that does not collect stdout, just writes to stdout
+// in order to handle complex/verbose logging
 func Bash(command []string, dir string) Result {
 	var result Result
 	result.Command = command
