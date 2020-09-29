@@ -91,8 +91,8 @@ The init command sets up a new schedule repository with a sample conicle.hcl fil
 cronicle init
 tree
 .
-├── .gitignore
-└── repos
+├── cronicle.hcl
+└── .repos
 ```
 
 the run command starts the scheduler.

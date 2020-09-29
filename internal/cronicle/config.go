@@ -56,9 +56,16 @@ type Task struct {
 	Repo         string   `hcl:"repo,optional"`
 	Branch       string   `hcl:"branch,optional"`
 	Commit       string   `hcl:"commit,optional"`
+	Retry        *Retry   `hcl:"retry,block"`
 	Path         string
 	Git          Git
 	ScheduleName string
+}
+
+//Retry defines the retry count and delay in number and seconds.
+type Retry struct {
+	Count int `hcl:"count,optional"`
+	Delay int `hcl:"delay,optional"`
 }
 
 // Owner is the configuration structure that defines an owner of a schedule or task

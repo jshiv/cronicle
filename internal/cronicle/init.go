@@ -26,7 +26,7 @@ func Init(croniclePath string) {
 	//TODO: rename repos to .repos
 	//TODO: add .gitignore blocking .repos
 	//TODO: if init executes in .git path, add .git/remote to cronicle.hcl
-	os.MkdirAll(path.Join(absCroniclePath, "repos"), 0777)
+	os.MkdirAll(path.Join(absCroniclePath, ".repos"), 0777)
 	cronicleFile := path.Join(absCroniclePath, "cronicle.hcl")
 	if fileExists(cronicleFile) {
 		conf, _ := GetConfig(cronicleFile)
@@ -65,7 +65,7 @@ func GetRepos(conf *Config) map[string]bool {
 //LocalRepoDir takes a cronicle.hcl path and a github repo URL and converts
 //it to the local clone of that repo
 func LocalRepoDir(croniclePath string, repo string) (string, error) {
-	reposDir := path.Join(croniclePath, "repos")
+	reposDir := path.Join(croniclePath, ".repos")
 	u, err := url.Parse(repo)
 	if err != nil {
 		return "", err

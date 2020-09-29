@@ -53,7 +53,19 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		}
 	}
 
-	//Execute task.Command in bash at time t
+	// //Execute task.Command in bash at time t with retry
+	// var result exec.Result
+	// err := try.Do(func(attempt int) (bool, error) {
+	// 	var err error
+	// 	result = task.Exec(t)
+	// 	if err != nil {
+	// 		time.Sleep(1 * time.Minute) // wait a minute
+	// 	}
+	// 	return attempt < task., err
+	// })
+	// if err != nil {
+	// 	log.Fatalln("error:", err)
+	// }
 	result := task.Exec(t)
 
 	return result, nil
