@@ -18,7 +18,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/jshiv/cronicle/internal/cron"
+	"github.com/jshiv/cronicle/internal/cronicle"
 	"github.com/spf13/cobra"
 )
 
@@ -54,8 +54,8 @@ Multipule workers can be started, they will take turns consuming from the queue.
 		addr, _ := cmd.Flags().GetString("addr")
 
 		fmt.Println("Starting Worker from: " + path)
-		runOptions := cron.RunOptions{RunWorker: true, QueueType: queueType, QueueName: queueName, Addr: addr}
-		cron.StartWorker(path, runOptions)
+		runOptions := cronicle.RunOptions{RunWorker: true, QueueType: queueType, QueueName: queueName, Addr: addr}
+		cronicle.StartWorker(path, runOptions)
 	},
 }
 

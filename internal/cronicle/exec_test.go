@@ -1,10 +1,10 @@
-package config_test
+package cronicle_test
 
 import (
 	"time"
 
 	"github.com/jshiv/cronicle/internal/bash"
-	"github.com/jshiv/cronicle/internal/config"
+	"github.com/jshiv/cronicle/internal/cronicle"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -12,7 +12,7 @@ import (
 var _ = Describe("Exec", func() {
 
 	It("task should execute with no repo given in a non .git path", func() {
-		conf := config.Default()
+		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
 		schedule.PropigateTaskProperties(taskPath)
 		task := schedule.Tasks[0]
@@ -27,7 +27,7 @@ var _ = Describe("Exec", func() {
 	})
 
 	It("task should execute with no repo given in in a .git path", func() {
-		conf := config.Default()
+		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
 		schedule.PropigateTaskProperties(croniclePath)
 		task := schedule.Tasks[0]
@@ -42,7 +42,7 @@ var _ = Describe("Exec", func() {
 	})
 
 	It("Should fetch and checkout branch feature/test-branch and Should return an empty bash.Result", func() {
-		conf := config.Default()
+		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
 		schedule.Repo = "https://github.com/jshiv/cronicle-sample.git"
 		schedule.PropigateTaskProperties(taskPath)
@@ -59,7 +59,7 @@ var _ = Describe("Exec", func() {
 	})
 
 	It("Should fetch and checkout local commit 699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1", func() {
-		conf := config.Default()
+		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
 		schedule.Repo = testRepoPath
 		schedule.PropigateTaskProperties(taskPath)
@@ -81,7 +81,7 @@ var _ = Describe("Exec", func() {
 	})
 
 	It("Should fetch and checkout local branch test/checkout_specific_branch", func() {
-		conf := config.Default()
+		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
 		schedule.Repo = testRepoPath
 		schedule.PropigateTaskProperties(taskPath)
@@ -104,7 +104,7 @@ var _ = Describe("Exec", func() {
 
 	It("Should fetch and checkout local master by default", func() {
 
-		conf := config.Default()
+		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
 		schedule.Repo = testRepoPath
 		schedule.PropigateTaskProperties(taskPath)
@@ -125,7 +125,7 @@ var _ = Describe("Exec", func() {
 	})
 
 	It("task.Exec(t) Should replace ${date}, ${datetime}, and ${timestamp} bash arguments with 2020-11-01T22:08:41+00:00", func() {
-		conf := config.Default()
+		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
 
 		task := schedule.Tasks[0]
@@ -147,7 +147,7 @@ var _ = Describe("Exec", func() {
 	})
 
 	It("Should replace duplicate values of ${date} bash arguments with 2020-11-01", func() {
-		conf := config.Default()
+		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
 		task := schedule.Tasks[0]
 		task.Command = []string{

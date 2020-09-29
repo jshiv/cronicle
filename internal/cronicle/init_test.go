@@ -1,4 +1,4 @@
-package config_test
+package cronicle_test
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 
-	"github.com/jshiv/cronicle/internal/config"
+	config "github.com/jshiv/cronicle/internal/cronicle"
 )
 
 var _ = Describe("Init", func() {
