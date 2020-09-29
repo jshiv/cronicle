@@ -69,6 +69,7 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		var err error
 		result = task.Exec(t)
 		err = exitStatusError(result)
+		task.Log(result)
 		if err != nil {
 			time.Sleep(time.Duration(task.Retry.Delay) * time.Second) // wait a minute
 		}

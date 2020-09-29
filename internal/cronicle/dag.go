@@ -50,8 +50,7 @@ func (schedule Schedule) ExecuteTasks() {
 		var diags tfdiags.Diagnostics
 		taskName := dag.VertexName(v)
 		task := taskMap[taskName]
-		r, err := task.Execute(now)
-		task.Log(r)
+		_, err := task.Execute(now)
 
 		if err != nil {
 			diags = diags.Append(err)
