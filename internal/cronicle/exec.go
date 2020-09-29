@@ -58,6 +58,14 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 	//Execute task.Command in bash at time t with retry
 	var result exec.Result
 	err := try.Do(func(attempt int) (bool, error) {
+
+		if attempt > 1 {
+			log.WithFields(log.Fields{
+				"schedule": task.ScheduleName,
+				"task":     task.Name,
+				"retry":  attempt,
+			}).Info("Retry")
+		}
 		var err error
 		result = task.Exec(t)
 		err = exitStatusError(result)

@@ -51,17 +51,18 @@ func (schedule Schedule) ExecuteTasks() {
 		taskName := dag.VertexName(v)
 		task := taskMap[taskName]
 		r, err := task.Execute(now)
+		task.Log(r)
+
 		if err != nil {
 			diags = diags.Append(err)
 			return diags
 		}
-		task.Log(r)
 
 		return diags
 	})
 
 	if err != nil {
-		log.Error(err)
+		log.Error(err.Err())
 	}
 
 }
