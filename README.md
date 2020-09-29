@@ -16,20 +16,17 @@ git = "github.com/jshiv/cronicle-sample"
 for timing of the job as well as any 
 commands and tasks that make up the job. */
 schedule "example" {
-  owner = {
-    name = "cronicle"
-    email = "root@cronicle.com"
-  }
   cron = "every 5 minutes"
   
   start_date = "2015-06-01"
   end_date = "2019-09-09"
   
-  retries = 3
-  retry_delay = "5 min"
-  
   task "mytask" = {
     command = ["/bin/echo", "Hello World"]
+    retry {
+      count = 3
+      delay = 60
+    }
   }
 }
 

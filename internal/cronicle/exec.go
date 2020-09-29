@@ -2,7 +2,6 @@ package cronicle
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 

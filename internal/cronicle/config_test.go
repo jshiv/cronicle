@@ -21,17 +21,9 @@ var _ = Describe("Config", func() {
 					Cron:      "@hourly",
 					StartDate: "2019-09-10",
 					EndDate:   "2019-09-12",
-					Owner: &cronicle.Owner{
-						Name:  "bob",
-						Email: "bob@email.com",
-					},
 					Tasks: []cronicle.Task{
 						{
 							Name: "task1",
-							Owner: &cronicle.Owner{
-								Name:  "bobby",
-								Email: "bobby@email.com",
-							},
 						},
 						{
 							Name:    "task2",

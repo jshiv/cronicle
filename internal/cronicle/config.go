@@ -38,7 +38,6 @@ type Schedule struct {
 	Repo      string `hcl:"repo,optional"`
 	StartDate string `hcl:"start_date,optional"`
 	EndDate   string `hcl:"end_date,optional"`
-	Owner     *Owner `hcl:"owner,block"`
 	Tasks     []Task `hcl:"task,block"`
 	//Now is the execution time of the given schedule that will be used to
 	//fill variable task command ${datetime}. The cron scheduler generally provides
@@ -52,7 +51,6 @@ type Task struct {
 	Name         string   `hcl:"name,label"`
 	Command      []string `hcl:"command,optional"`
 	Depends      []string `hcl:"depends,optional"`
-	Owner        *Owner   `hcl:"owner,block"`
 	Repo         string   `hcl:"repo,optional"`
 	Branch       string   `hcl:"branch,optional"`
 	Commit       string   `hcl:"commit,optional"`
@@ -68,16 +66,9 @@ type Retry struct {
 	Delay int `hcl:"delay,optional"`
 }
 
-// Owner is the configuration structure that defines an owner of a schedule or task
-type Owner struct {
-	Name  string `hcl:"name"`
-	Email string `hcl:"email,optional"`
-}
-
 // Queue is the metadata associated to the message queue for distributed operation.
 // Cronicle uses vice to communicate with queues via channels.
 // https://github.com/matryer/vice
-// TODO: Add host, port blocks for addressing remote queues
 type Queue struct {
 	//Type names the message queue technology to be used
 	//options are nsq and redis
