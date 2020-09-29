@@ -58,20 +58,10 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 
 	//Execute task.Command in bash at time t with retry
 	var result exec.Result
-	result = task.Exec(t)
 	err := try.Do(func(attempt int) (bool, error) {
 		var err error
 		result = task.Exec(t)
-		switch result.ExitStatus {
-		case 0:
-			err = nil
-		case 1:
-			s := fmt.Sprintf("task %s error for %s", task.Name, result.Stderr)
-			err = errors.New(s)
-		default:
-			err = nil
-		}
-
+		err = exitStatusError(result)
 		if err != nil {
 			time.Sleep(time.Duration(task.Retry.Delay) * time.Second) // wait a minute
 		}
@@ -82,6 +72,19 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 	}
 
 	return result, nil
+}
+
+func exitStatusError(res exec.Result) error {
+	var err error
+	switch res.ExitStatus {
+	case 0:
+		err = nil
+	case 1:
+		err = errors.New(res.Stderr)
+	default:
+		err = errors.New(res.Stderr)
+	}
+	return err
 }
 
 //Log logs the exit status, stderr, git commit and other logging data.
