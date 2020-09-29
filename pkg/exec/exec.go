@@ -1,8 +1,8 @@
-package bash
+package exec
 
 import (
 	"bytes"
-	"os/exec"
+	goexec "os/exec"
 	"syscall"
 
 	log "github.com/sirupsen/logrus"
@@ -18,21 +18,20 @@ type Result struct {
 	ExitStatus int
 }
 
-//TODO Update nameing convention, i.e. Exec
 //TODO Add method for running command that does not collect stdout, just writes to stdout
 // in order to handle complex/verbose logging
-func Bash(command []string, dir string) Result {
+func Execute(command []string, dir string) Result {
 	var result Result
 	result.Command = command
-	var cmd *exec.Cmd
+	var cmd *goexec.Cmd
 	switch len(command) {
 	case 1:
-		cmd = exec.Command(command[0])
+		cmd = goexec.Command(command[0])
 	default:
-		cmd = exec.Command(command[0], command[1:]...)
+		cmd = goexec.Command(command[0], command[1:]...)
 	}
 	cmd.Dir = dir
-	// cmd := exec.Command("/bin/bash", "-c", command)
+	// cmd := goexec.Command("/bin/bash", "-c", command)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Fatal(err)
@@ -55,7 +54,7 @@ func Bash(command []string, dir string) Result {
 		// if err != nil {
 		// 	log.Warn(err)
 		// }
-		if exitError, ok := err.(*exec.ExitError); ok {
+		if exitError, ok := err.(*goexec.ExitError); ok {
 			waitStatus = exitError.Sys().(syscall.WaitStatus)
 			result.ExitStatus = waitStatus.ExitStatus()
 		}

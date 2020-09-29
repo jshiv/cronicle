@@ -3,8 +3,8 @@ package cronicle_test
 import (
 	"time"
 
-	"github.com/jshiv/cronicle/internal/bash"
 	"github.com/jshiv/cronicle/internal/cronicle"
+	"github.com/jshiv/cronicle/pkg/exec"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -23,7 +23,7 @@ var _ = Describe("Exec", func() {
 		Expect(err).To(BeNil())
 		Expect(task.Repo).To(Equal(""))
 		Expect(task.Git.Repository).To(BeNil())
-		Expect(r).To(Equal(bash.Result{}))
+		Expect(r).To(Equal(exec.Result{}))
 	})
 
 	It("task should execute with no repo given in in a .git path", func() {
@@ -38,10 +38,10 @@ var _ = Describe("Exec", func() {
 		Expect(err).To(BeNil())
 		Expect(task.Repo).To(Equal(""))
 		Expect(task.Git.Repository).To(BeNil())
-		Expect(r).To(Equal(bash.Result{}))
+		Expect(r).To(Equal(exec.Result{}))
 	})
 
-	It("Should fetch and checkout branch feature/test-branch and Should return an empty bash.Result", func() {
+	It("Should fetch and checkout branch feature/test-branch and Should return an empty exec.Result", func() {
 		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
 		schedule.Repo = "https://github.com/jshiv/cronicle-sample.git"
@@ -55,7 +55,7 @@ var _ = Describe("Exec", func() {
 		Expect(err).To(BeNil())
 		h, _ := task.Git.Repository.Head()
 		Expect(h.Name().String()).To(Equal("refs/heads/feature/test-branch"))
-		Expect(r).To(Equal(bash.Result{}))
+		Expect(r).To(Equal(exec.Result{}))
 	})
 
 	It("Should fetch and checkout local commit 699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1", func() {
@@ -72,7 +72,7 @@ var _ = Describe("Exec", func() {
 		Expect(err).To(BeNil())
 		c := task.Git.Commit
 		Expect(c.Hash.String()).To(Equal("699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1"))
-		Expect(r).To(Equal(bash.Result{
+		Expect(r).To(Equal(exec.Result{
 			Command:    []string{"python", "test.py"},
 			Stdout:     "test specific commit: SUCCESS\n",
 			Stderr:     "",
@@ -94,7 +94,7 @@ var _ = Describe("Exec", func() {
 		Expect(err).To(BeNil())
 		h, err := task.Git.Repository.Head()
 		Expect(h.Name().String()).To(Equal("refs/heads/test/checkout_specific_branch"))
-		Expect(r).To(Equal(bash.Result{
+		Expect(r).To(Equal(exec.Result{
 			Command:    []string{"python", "test.py"},
 			Stdout:     "test specific branch: SUCCESS\n",
 			Stderr:     "",
@@ -116,7 +116,7 @@ var _ = Describe("Exec", func() {
 		Expect(err).To(BeNil())
 		h, err := task.Git.Repository.Head()
 		Expect(h.Name().String()).To(Equal("refs/heads/master"))
-		Expect(r).To(Equal(bash.Result{
+		Expect(r).To(Equal(exec.Result{
 			Command:    []string{"python", "test.py"},
 			Stdout:     "test master: SUCCESS\n",
 			Stderr:     "",
@@ -133,7 +133,7 @@ var _ = Describe("Exec", func() {
 		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
 		r := task.Exec(t)
 
-		Expect(r).To(Equal(bash.Result{
+		Expect(r).To(Equal(exec.Result{
 			Command: []string{
 				"/bin/echo",
 				"2020-11-01",
@@ -158,7 +158,7 @@ var _ = Describe("Exec", func() {
 		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
 		r := task.Exec(t)
 
-		Expect(r).To(Equal(bash.Result{
+		Expect(r).To(Equal(exec.Result{
 			Command: []string{
 				"/bin/echo",
 				"2020-11-01, 2020-11-01",
