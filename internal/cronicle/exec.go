@@ -1,7 +1,7 @@
 package cronicle
 
 import (
-	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -59,16 +59,15 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 	var result exec.Result
 	err := try.Do(func(attempt int) (bool, error) {
 
-		if attempt > 1 {
-			log.WithFields(log.Fields{
-				"schedule": task.ScheduleName,
-				"task":     task.Name,
-				"retry":  attempt,
-			}).Info("Retry")
-		}
+		log.WithFields(log.Fields{
+			"schedule": task.ScheduleName,
+			"task":     task.Name,
+			"attempt":  attempt,
+		}).Info()
 		var err error
 		result = task.Exec(t)
-		err = exitStatusError(result)
+		err = result.Error
+		fmt.Println(err)
 		task.Log(result)
 		if err != nil {
 			time.Sleep(time.Duration(task.Retry.Delay) * time.Second) // wait a minute
@@ -80,19 +79,6 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 	}
 
 	return result, nil
-}
-
-func exitStatusError(res exec.Result) error {
-	var err error
-	switch res.ExitStatus {
-	case 0:
-		err = nil
-	case 1:
-		err = errors.New(res.Stderr)
-	default:
-		err = errors.New(res.Stderr)
-	}
-	return err
 }
 
 //Log logs the exit status, stderr, git commit and other logging data.
@@ -108,20 +94,13 @@ func (task *Task) Log(res exec.Result) {
 		email = "null"
 
 	}
-	if res.ExitStatus == 0 {
+
+	if res.Error != nil {
 		log.WithFields(log.Fields{
 			"schedule": task.ScheduleName,
 			"task":     task.Name,
 			"exit":     res.ExitStatus,
-			"commit":   commit,
-			"email":    email,
-			"success":  true,
-		}).Info(res.Stdout)
-	} else if res.ExitStatus == 1 {
-		log.WithFields(log.Fields{
-			"schedule": task.ScheduleName,
-			"task":     task.Name,
-			"exit":     res.ExitStatus,
+			"error":    res.Error,
 			"commit":   commit,
 			"email":    email,
 			"success":  false,
@@ -133,7 +112,8 @@ func (task *Task) Log(res exec.Result) {
 			"exit":     res.ExitStatus,
 			"commit":   commit,
 			"email":    email,
-			"success":  false,
-		}).Error(res.Stderr)
+			"success":  true,
+		}).Info(res.Stdout)
 	}
+
 }

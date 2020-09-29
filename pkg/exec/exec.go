@@ -2,10 +2,9 @@ package exec
 
 import (
 	"bytes"
+	"errors"
 	goexec "os/exec"
 	"syscall"
-
-	log "github.com/sirupsen/logrus"
 )
 
 //BashRun pulls from examples at https://zaiste.net/executing_external_commands_in_go/
@@ -16,9 +15,11 @@ type Result struct {
 	Stdout     string
 	Stderr     string
 	ExitStatus int
+	Error      error
 }
 
-//TODO Add method for running command that does not collect stdout, just writes to stdout
+//Execute executes a given command []string at dir path and returns the results as a Result struct.
+//TODO: Add method for running command that does not collect stdout, just writes to stdout
 // in order to handle complex/verbose logging
 func Execute(command []string, dir string) Result {
 	var result Result
@@ -34,11 +35,13 @@ func Execute(command []string, dir string) Result {
 	// cmd := goexec.Command("/bin/bash", "-c", command)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		log.Fatal(err)
+		result.Error = err
+		return result
 	}
 	stderr, err := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {
-		log.Fatal(err)
+		result.Error = err
+		return result
 	}
 
 	bb := bytes.NewBuffer([]byte{})
@@ -51,23 +54,32 @@ func Execute(command []string, dir string) Result {
 
 	var waitStatus syscall.WaitStatus
 	if err := cmd.Wait(); err != nil {
-		// if err != nil {
-		// 	log.Warn(err)
-		// }
 		if exitError, ok := err.(*goexec.ExitError); ok {
 			waitStatus = exitError.Sys().(syscall.WaitStatus)
 			result.ExitStatus = waitStatus.ExitStatus()
+			result.Error = errors.New(exitError.Error())
 		}
 	} else {
 		// Success
 		waitStatus = cmd.ProcessState.Sys().(syscall.WaitStatus)
 		result.ExitStatus = waitStatus.ExitStatus()
 	}
+
+	if result.Error == nil {
+		result.Error = exitStatusError(result)
+	}
 	return result
 }
 
-func LogStdout(result Result) {
-	log.WithFields(log.Fields{
-		"bash": result.Command,
-	}).Info(result.Stdout)
+func exitStatusError(res Result) error {
+	var err error
+	switch res.ExitStatus {
+	case 0:
+		err = nil
+	case 1:
+		err = errors.New(res.Stderr)
+	default:
+		err = errors.New(res.Stderr)
+	}
+	return err
 }
