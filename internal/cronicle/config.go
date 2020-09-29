@@ -62,8 +62,14 @@ type Task struct {
 
 //Retry defines the retry count and delay in number and seconds.
 type Retry struct {
+	//Count: Number of retry attemts to make after first attempt
 	Count int `hcl:"count,optional"`
-	Delay int `hcl:"delay,optional"`
+	//Seconds: Number of seconds to wait between retry attempts
+	Seconds int `hcl:"seconds,optional"`
+	//Minutes: Number of minutes to wait between retry attempts
+	Minutes int `hcl:"minutes,optional"`
+	//Hours: Number of hours to wait between retry attempts
+	Hours int `hcl:"hours,optional"`
 }
 
 // Queue is the metadata associated to the message queue for distributed operation.

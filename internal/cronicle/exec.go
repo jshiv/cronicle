@@ -70,7 +70,10 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		fmt.Println(err)
 		task.Log(result)
 		if err != nil {
-			time.Sleep(time.Duration(task.Retry.Delay) * time.Second) // wait a minute
+			duration := time.Duration(task.Retry.Seconds) * time.Second
+			duration += time.Duration(task.Retry.Minutes) * time.Minute
+			duration += time.Duration(task.Retry.Hours) * time.Hour
+			time.Sleep(duration)
 		}
 		return attempt < task.Retry.Count, err
 	})
