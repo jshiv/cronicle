@@ -56,7 +56,7 @@ type Task struct {
 	Repo         string   `hcl:"repo,optional"`
 	Branch       string   `hcl:"branch,optional"`
 	Commit       string   `hcl:"commit,optional"`
-	Retry        *Retry   `hcl:"retry,block"`
+	Retry        Retry    `hcl:"retry,block"`
 	Path         string
 	Git          Git
 	ScheduleName string

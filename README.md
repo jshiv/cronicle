@@ -61,15 +61,17 @@ schedule "example" {
   start_date = "2015-06-01"
   end_date = "2019-09-09"
   
-  retries = 3
-  
-  retry_delay = "5 min"
-  
+
   task "run" {
     repo = "github.com/jshiv/cronicle-sample2"
     path = "scripts/"
     commit = "29lsjlw09lskjglkalkjgoij2lkj"
     command = ["/bin/bash", "run.sh"]
+
+    retry {
+      count = 3
+      delay = 60
+    }
   }
 
   task "echo" {

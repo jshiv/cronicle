@@ -1,10 +1,13 @@
 package cronicle
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/jshiv/cronicle/pkg/exec"
+	"gopkg.in/matryer/try.v1"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -53,20 +56,30 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		}
 	}
 
-	// //Execute task.Command in bash at time t with retry
-	// var result exec.Result
-	// err := try.Do(func(attempt int) (bool, error) {
-	// 	var err error
-	// 	result = task.Exec(t)
-	// 	if err != nil {
-	// 		time.Sleep(1 * time.Minute) // wait a minute
-	// 	}
-	// 	return attempt < task., err
-	// })
-	// if err != nil {
-	// 	log.Fatalln("error:", err)
-	// }
-	result := task.Exec(t)
+	//Execute task.Command in bash at time t with retry
+	var result exec.Result
+	result = task.Exec(t)
+	err := try.Do(func(attempt int) (bool, error) {
+		var err error
+		result = task.Exec(t)
+		switch result.ExitStatus {
+		case 0:
+			err = nil
+		case 1:
+			s := fmt.Sprintf("task %s error for %s", task.Name, result.Stderr)
+			err = errors.New(s)
+		default:
+			err = nil
+		}
+
+		if err != nil {
+			time.Sleep(time.Duration(task.Retry.Delay) * time.Second) // wait a minute
+		}
+		return attempt < task.Retry.Count, err
+	})
+	if err != nil {
+		return result, err
+	}
 
 	return result, nil
 }
