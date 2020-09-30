@@ -18,7 +18,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/jshiv/cronicle/internal/cron"
+	"github.com/jshiv/cronicle/internal/cronicle"
 	"github.com/spf13/cobra"
 
 	"time"
@@ -67,7 +67,7 @@ to quickly create a Cobra application.`,
 			}
 		}
 		for t := now; t.After(end) == false; t = t.AddDate(0, 0, 1) {
-			cron.ExecTasks(path, task, schedule, t)
+			cronicle.ExecTasks(path, task, schedule, t)
 		}
 		fmt.Println("Reading from: " + path)
 	},

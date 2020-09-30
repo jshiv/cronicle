@@ -1,4 +1,4 @@
-package cron
+package cronicle
 
 import (
 	"encoding/json"
@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/jshiv/cronicle/internal/config"
 	"github.com/matryer/vice"
 	nsqvice "github.com/matryer/vice/queues/nsq"
 	redisvice "github.com/matryer/vice/queues/redis"
@@ -30,7 +29,7 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
-	conf, _ := config.GetConfig(cronicleFileAbs)
+	conf, _ := GetConfig(cronicleFileAbs)
 	hcl := conf.Hcl()
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
@@ -126,7 +125,7 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 //starts the cron scheduler which publishes the serialzied
 //schedules to the message queue for execution.
 //TODO Add meta job to fetch and refresh cron schedule with updated cronicle.hcl
-func StartCron(conf config.Config, schedules chan<- []byte) {
+func StartCron(conf Config, schedules chan<- []byte) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
 	c := cron.New()
@@ -152,7 +151,7 @@ func ConsumeSchedule(queue <-chan []byte, path string) {
 	}
 	for scheduleBytes := range queue {
 
-		var schedule config.Schedule
+		var schedule Schedule
 		err := json.Unmarshal(scheduleBytes, &schedule)
 		if err != nil {
 			log.Error(err)
@@ -165,7 +164,7 @@ func ConsumeSchedule(queue <-chan []byte, path string) {
 
 //ProduceSchedule produces the json of a
 //schdule to the message queue for consumption
-func ProduceSchedule(schedule config.Schedule, queue chan<- []byte) func() {
+func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 	return func() {
 		log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Queuing...")
 		schedule.Now = time.Now().In(time.Local)
@@ -184,14 +183,14 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 	}
 	fmt.Println("Reading from: " + cronicleFileAbs)
 
-	conf, _ := config.GetConfig(cronicleFileAbs)
+	conf, _ := GetConfig(cronicleFileAbs)
 
 	tasks := conf.TaskArray().FilterTasks(taskName, scheduleName)
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 
-	var c config.Config
-	execSchedule := config.Schedule{Name: "exec", Cron: now.String(), Tasks: tasks}
-	c.Schedules = []config.Schedule{execSchedule}
+	var c Config
+	execSchedule := Schedule{Name: "exec", Cron: now.String(), Tasks: tasks}
+	c.Schedules = []Schedule{execSchedule}
 	fmt.Printf("%s", slantyedCyan(string(c.Hcl().Bytes)))
 
 	for _, task := range tasks {

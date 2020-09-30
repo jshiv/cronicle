@@ -1,4 +1,4 @@
-package config_test
+package cronicle_test
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 
-	"github.com/jshiv/cronicle/internal/config"
+	config "github.com/jshiv/cronicle/internal/cronicle"
 )
 
 var _ = Describe("Init", func() {
@@ -33,9 +33,9 @@ var _ = Describe("Init", func() {
 				if err != nil {
 					fmt.Println(err)
 				}
-				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath + "/repos/jshiv/cronicle-sample.git/example/hello"))
+				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath + "/.repos/jshiv/cronicle-sample.git/example/hello"))
 				Expect(conf.Schedules[0].Tasks[0].Repo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
-				Expect(config.DirExists(croniclePath + "/repos/jshiv/cronicle-sample.git/example/hello/.git")).To(Equal(true))
+				Expect(config.DirExists(croniclePath + "/.repos/jshiv/cronicle-sample.git/example/hello/.git")).To(Equal(true))
 				conf.Schedules[0].Tasks[0].Clone()
 				Expect(conf.Schedules[0].Tasks[0].Git.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))
 

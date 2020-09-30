@@ -1,4 +1,4 @@
-package config
+package cronicle
 
 import (
 	"errors"
@@ -38,7 +38,6 @@ type Schedule struct {
 	Repo      string `hcl:"repo,optional"`
 	StartDate string `hcl:"start_date,optional"`
 	EndDate   string `hcl:"end_date,optional"`
-	Owner     *Owner `hcl:"owner,block"`
 	Tasks     []Task `hcl:"task,block"`
 	//Now is the execution time of the given schedule that will be used to
 	//fill variable task command ${datetime}. The cron scheduler generally provides
@@ -52,25 +51,30 @@ type Task struct {
 	Name         string   `hcl:"name,label"`
 	Command      []string `hcl:"command,optional"`
 	Depends      []string `hcl:"depends,optional"`
-	Owner        *Owner   `hcl:"owner,block"`
 	Repo         string   `hcl:"repo,optional"`
 	Branch       string   `hcl:"branch,optional"`
 	Commit       string   `hcl:"commit,optional"`
+	Retry        Retry    `hcl:"retry,block"`
 	Path         string
 	Git          Git
 	ScheduleName string
 }
 
-// Owner is the configuration structure that defines an owner of a schedule or task
-type Owner struct {
-	Name  string `hcl:"name"`
-	Email string `hcl:"email,optional"`
+//Retry defines the retry count and delay in number and seconds.
+type Retry struct {
+	//Count: Number of retry attemts to make after first attempt
+	Count int `hcl:"count,optional"`
+	//Seconds: Number of seconds to wait between retry attempts
+	Seconds int `hcl:"seconds,optional"`
+	//Minutes: Number of minutes to wait between retry attempts
+	Minutes int `hcl:"minutes,optional"`
+	//Hours: Number of hours to wait between retry attempts
+	Hours int `hcl:"hours,optional"`
 }
 
 // Queue is the metadata associated to the message queue for distributed operation.
 // Cronicle uses vice to communicate with queues via channels.
 // https://github.com/matryer/vice
-// TODO: Add host, port blocks for addressing remote queues
 type Queue struct {
 	//Type names the message queue technology to be used
 	//options are nsq and redis

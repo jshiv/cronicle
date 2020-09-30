@@ -1,4 +1,4 @@
-package config
+package cronicle
 
 import (
 	"time"
@@ -50,18 +50,18 @@ func (schedule Schedule) ExecuteTasks() {
 		var diags tfdiags.Diagnostics
 		taskName := dag.VertexName(v)
 		task := taskMap[taskName]
-		r, err := task.Execute(now)
+		_, err := task.Execute(now)
+
 		if err != nil {
 			diags = diags.Append(err)
 			return diags
 		}
-		task.Log(r)
 
 		return diags
 	})
 
 	if err != nil {
-		log.Error(err)
+		log.Error(err.Err())
 	}
 
 }

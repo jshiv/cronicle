@@ -1,4 +1,4 @@
-package config
+package cronicle
 
 import (
 	"encoding/json"
@@ -71,8 +71,8 @@ func MarshallHcl(conf Config, path string) string {
 }
 
 // JSON method returns a json []byte array of the struct
-func (config Config) JSON() []byte {
-	b, err := json.Marshal(&config)
+func (conf Config) JSON() []byte {
+	b, err := json.Marshal(&conf)
 	if err != nil {
 		fmt.Println(err)
 	}

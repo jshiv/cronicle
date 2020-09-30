@@ -18,7 +18,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/jshiv/cronicle/internal/cron"
+	"github.com/jshiv/cronicle/internal/cronicle"
 	"github.com/spf13/cobra"
 )
 
@@ -42,10 +42,10 @@ The run command will log schedule information to stdout including git commit inf
 		queueName, _ := cmd.Flags().GetString("queue-name")
 		addr, _ := cmd.Flags().GetString("addr")
 
-		runOptions := cron.RunOptions{RunWorker: runWorker, QueueType: queueType, QueueName: queueName, Addr: addr}
+		runOptions := cronicle.RunOptions{RunWorker: runWorker, QueueType: queueType, QueueName: queueName, Addr: addr}
 
 		fmt.Println("Reading from: " + path)
-		cron.Run(path, runOptions)
+		cronicle.Run(path, runOptions)
 	},
 }
 
