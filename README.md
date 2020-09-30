@@ -25,7 +25,7 @@ schedule "example" {
     command = ["/bin/echo", "Hello World"]
     retry {
       count = 3
-      delay = 60
+      seconds = 60
     }
   }
 }
@@ -67,7 +67,7 @@ schedule "example" {
 
     retry {
       count = 3
-      delay = 60
+      seconds = 60
     }
   }
 
