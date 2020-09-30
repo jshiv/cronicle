@@ -125,13 +125,13 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 //starts the cron scheduler which publishes the serialzied
 //schedules to the message queue for execution.
 //TODO Add meta job to fetch and refresh cron schedule with updated cronicle.hcl
-func StartCron(conf Config, schedules chan<- []byte) {
+func StartCron(conf Config, queue chan<- []byte) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
 	c := cron.New()
 	c.AddFunc("@every 6m", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
 	for _, schedule := range conf.Schedules {
-		_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, schedules))
+		_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
 		if err != nil {
 			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
 			log.Fatal(err)
