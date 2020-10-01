@@ -119,7 +119,9 @@ func GetConfig(cronicleFile string) (*Config, error) {
 		return nil, err
 	}
 
-	conf.PropigateTaskProperties(croniclePath)
+	conf.Init(croniclePath)
+	// conf.PropigateTaskProperties(croniclePath)
+
 	// if err := SetConfig(&conf, croniclePath); err != nil {
 	// 	return &conf, err
 	// }
