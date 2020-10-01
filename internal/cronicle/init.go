@@ -18,7 +18,7 @@ import (
 
 //Init initializes a default croniclePath with a .git repository,
 //Basic schedule as code in a cronicle.hcl file and a repos folder.
-func Init(croniclePath string, remote string) {
+func Init(croniclePath string, cloneRepo string) {
 
 	absCroniclePath, err := filepath.Abs(croniclePath)
 	if err != nil {
@@ -26,8 +26,8 @@ func Init(croniclePath string, remote string) {
 	}
 
 	//if remote is given, clone it to the cronicle path
-	if remote != "" {
-		_, err = git.PlainClone(absCroniclePath, false, &git.CloneOptions{URL: remote})
+	if cloneRepo != "" {
+		_, err = git.PlainClone(absCroniclePath, false, &git.CloneOptions{URL: cloneRepo})
 		if err != nil {
 			log.Error(err)
 		}
