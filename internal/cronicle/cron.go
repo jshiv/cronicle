@@ -40,11 +40,11 @@ func Run(cronicleFile string, runOptions RunOptions) {
 
 	if runOptions.QueueType == "" {
 		schedules := make(chan []byte)
-		go StartCron(*conf, schedules)
+		go StartCron(*conf, schedules, cronicleFileAbs)
 		go ConsumeSchedule(schedules, croniclePath)
 	} else {
 		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
-		go StartCron(*conf, transport.Send(runOptions.QueueName))
+		go StartCron(*conf, transport.Send(runOptions.QueueName), cronicleFileAbs)
 		if runOptions.RunWorker {
 			go ConsumeSchedule(transport.Receive(runOptions.QueueName), croniclePath)
 		}
@@ -125,10 +125,11 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 //starts the cron scheduler which publishes the serialzied
 //schedules to the message queue for execution.
 //TODO Add meta job to fetch and refresh cron schedule with updated cronicle.hcl
-func StartCron(conf Config, queue chan<- []byte) {
+func StartCron(conf Config, queue chan<- []byte, cronicleFile string) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
 	c := cron.New()
+	c.AddFunc("@every 10s", func() { RefreshCron(cronicleFile, c, queue) })
 	c.AddFunc("@every 6m", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
 	for _, schedule := range conf.Schedules {
 		_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
@@ -138,6 +139,30 @@ func StartCron(conf Config, queue chan<- []byte) {
 		}
 	}
 	c.Start()
+}
+
+func RefreshCron(cronicleFile string, c *cron.Cron, queue chan<- []byte) {
+	log.Info("Refreshing config")
+	conf, _ := GetConfig(cronicleFile)
+
+	c.Stop()
+	for _, entry := range c.Entries() {
+		// fmt.Println(entry)
+		if entry.ID > 1 {
+			c.Remove(entry.ID)
+
+		}
+	}
+
+	for _, schedule := range conf.Schedules {
+		_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
+		if err != nil {
+			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
+			log.Fatal(err)
+		}
+	}
+	c.Start()
+
 }
 
 //ConsumeSchedule consumes the byte array of a
