@@ -42,16 +42,16 @@ repos folder.
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 		croniclePath, _ := cmd.Flags().GetString("path")
-		// remote, _ := cmd.Flags().GetString("remote")
+		remote, _ := cmd.Flags().GetString("remote")
 		fmt.Println("Initialize Cronicle: " + croniclePath)
-		cronicle.Init(croniclePath)
+		cronicle.Init(croniclePath, remote)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(initCmd)
 	initCmd.Flags().String("path", "./", "cronicle path")
-	// initCmd.Flags().String("remote", "", "remote git repository containing cronicle.hcl")
+	initCmd.Flags().String("remote", "", "remote git repository containing cronicle.hcl")
 
 	// Here you will define your flags and configuration settings.
 

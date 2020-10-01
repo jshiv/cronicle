@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 
 	"github.com/fatih/color"
+	log "github.com/sirupsen/logrus"
+	"gopkg.in/src-d/go-git.v4"
+	c "gopkg.in/src-d/go-git.v4/config"
 
 	"net/url"
 
@@ -15,15 +18,24 @@ import (
 
 //Init initializes a default croniclePath with a .git repository,
 //Basic schedule as code in a cronicle.hcl file and a repos folder.
-func Init(croniclePath string) {
+func Init(croniclePath string, remote string) {
+
 	absCroniclePath, err := filepath.Abs(croniclePath)
 	if err != nil {
-		panic(err)
+		log.Error(err)
 	}
+
+	//if remote is given, clone it to the cronicle path
+	if remote != "" {
+		_, err = git.PlainClone(absCroniclePath, false, &git.CloneOptions{URL: remote})
+		if err != nil {
+			log.Error(err)
+		}
+	}
+
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	// errors.New("could not extract repos from " + slantedRed("Config"))
 	fmt.Println("Init Cronicle: " + slantyedCyan(absCroniclePath))
-	//TODO: rename repos to .repos
 	//TODO: add .gitignore blocking .repos
 	//TODO: if init executes in .git path, add .git/remote to cronicle.hcl
 	os.MkdirAll(path.Join(absCroniclePath, ".repos"), 0777)
@@ -89,6 +101,29 @@ func (conf *Config) Init(croniclePath string) error {
 	// Assign the path for each task or schedule repo
 	conf.PropigateTaskProperties(croniclePath)
 	conf.Validate()
+
+	if conf.Git != "" {
+		if !DirExists(filepath.Join(croniclePath, ".git")) {
+
+			_, err := git.PlainClone(croniclePath, false, &git.CloneOptions{URL: conf.Git})
+			if err != nil {
+				log.Error(err)
+			}
+		} else {
+			g := GetGit(croniclePath)
+			g.Open(croniclePath)
+			err := g.Repository.Fetch(&git.FetchOptions{
+				RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
+			})
+			if err != nil {
+				switch err {
+				case git.NoErrAlreadyUpToDate:
+				default:
+					return err
+				}
+			}
+		}
+	}
 
 	for _, schedule := range conf.Schedules {
 		for _, task := range schedule.Tasks {
