@@ -40,11 +40,11 @@ func Run(cronicleFile string, runOptions RunOptions) {
 
 	if runOptions.QueueType == "" {
 		schedules := make(chan []byte)
-		go StartCron(*conf, schedules, cronicleFileAbs)
+		go StartCron(cronicleFileAbs, schedules)
 		go ConsumeSchedule(schedules, croniclePath)
 	} else {
 		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
-		go StartCron(*conf, transport.Send(runOptions.QueueName), cronicleFileAbs)
+		go StartCron(cronicleFileAbs, transport.Send(runOptions.QueueName))
 		if runOptions.RunWorker {
 			go ConsumeSchedule(transport.Receive(runOptions.QueueName), croniclePath)
 		}
@@ -125,29 +125,22 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 //starts the cron scheduler which publishes the serialzied
 //schedules to the message queue for execution.
 //TODO Add meta job to fetch and refresh cron schedule with updated cronicle.hcl
-func StartCron(conf Config, queue chan<- []byte, cronicleFile string) {
+func StartCron(cronicleFile string, queue chan<- []byte) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
 	c := cron.New()
-	c.AddFunc("@every 10s", func() { RefreshCron(cronicleFile, c, queue) })
-	c.AddFunc("@every 6m", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
-	for _, schedule := range conf.Schedules {
-		_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
-		if err != nil {
-			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
-			log.Fatal(err)
-		}
-	}
 	c.Start()
+	c.AddFunc("@every 30s", func() { LoadCron(cronicleFile, c, queue) })
+	LoadCron(cronicleFile, c, queue)
 }
 
-func RefreshCron(cronicleFile string, c *cron.Cron, queue chan<- []byte) {
-	log.Info("Refreshing config")
+func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte) {
+	log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("Running...")
 	conf, _ := GetConfig(cronicleFile)
 
 	c.Stop()
 	for _, entry := range c.Entries() {
-		// fmt.Println(entry)
+		// assumes that LoadCron has entry.ID == 1
 		if entry.ID > 1 {
 			c.Remove(entry.ID)
 
