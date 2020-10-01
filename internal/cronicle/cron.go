@@ -30,6 +30,7 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
 	conf, _ := GetConfig(cronicleFileAbs)
+	confPriorGlobal = conf
 	hcl := conf.Hcl()
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
@@ -130,31 +131,44 @@ func StartCron(cronicleFile string, queue chan<- []byte) {
 
 	c := cron.New()
 	c.Start()
-	c.AddFunc("@every 30s", func() { LoadCron(cronicleFile, c, queue) })
-	LoadCron(cronicleFile, c, queue)
+	c.AddFunc("@every 30s", func() { LoadCron(cronicleFile, c, queue, false) })
+	LoadCron(cronicleFile, c, queue, true)
 }
 
-func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte) {
-	log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("Running...")
+//confPrior stores a gloabal state of the previosly loaded config for diff checking
+var confPriorGlobal *Config
+
+//LoadCron exeutes GetConfig(cronicleFile) to load the current config from file,
+//checks the given config against the global confPrior, and if there is a change,
+//stops the cron, removes all of the confPrior cron entries and adds the new conf
+//schedules to the cron.
+func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool) {
+	log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("Loading config...")
 	conf, _ := GetConfig(cronicleFile)
 
-	c.Stop()
-	for _, entry := range c.Entries() {
-		// assumes that LoadCron has entry.ID == 1
-		if entry.ID > 1 {
-			c.Remove(entry.ID)
+	priorStr := string(confPriorGlobal.Hcl().Bytes)
+	curStr := string(conf.Hcl().Bytes)
+	if curStr != priorStr || force {
+		log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("config diff detected, refreshing cron...")
+		c.Stop()
+		for _, entry := range c.Entries() {
+			// assumes that LoadCron has entry.ID == 1
+			if entry.ID > 1 {
+				c.Remove(entry.ID)
 
+			}
 		}
-	}
 
-	for _, schedule := range conf.Schedules {
-		_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
-		if err != nil {
-			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
-			log.Fatal(err)
+		for _, schedule := range conf.Schedules {
+			_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
+			if err != nil {
+				fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
+				log.Fatal(err)
+			}
 		}
+		c.Start()
 	}
-	c.Start()
+	confPriorGlobal = conf
 
 }
 
