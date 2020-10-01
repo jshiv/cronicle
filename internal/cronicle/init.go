@@ -107,7 +107,7 @@ func (conf *Config) Init(croniclePath string) error {
 
 			_, err := git.PlainClone(croniclePath, false, &git.CloneOptions{URL: conf.Git})
 			if err != nil {
-				log.Error(err)
+				return err
 			}
 		} else {
 			g := GetGit(croniclePath)
