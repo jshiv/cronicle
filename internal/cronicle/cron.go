@@ -39,9 +39,9 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	}
 
 	if runOptions.QueueType == "" {
-		schedules := make(chan []byte)
-		go StartCron(cronicleFileAbs, schedules)
-		go ConsumeSchedule(schedules, croniclePath)
+		queue := make(chan []byte)
+		go StartCron(cronicleFileAbs, queue)
+		go ConsumeSchedule(queue, croniclePath)
 	} else {
 		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
 		go StartCron(cronicleFileAbs, transport.Send(runOptions.QueueName))
