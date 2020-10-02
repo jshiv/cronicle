@@ -150,7 +150,7 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 	}
 
 	if string(confPriorGlobal.Hcl().Bytes) != string(conf.Hcl().Bytes) || force {
-		log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("config diff detected, refreshing cron...")
+		log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("Refreshing config...")
 		c.Stop()
 		for _, entry := range c.Entries() {
 			// assumes that LoadCron has entry.ID == 1
