@@ -144,7 +144,10 @@ var confPriorGlobal *Config
 //schedules to the cron.
 func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool) {
 	log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("Loading config...")
-	conf, _ := GetConfig(cronicleFile)
+	conf, err := GetConfig(cronicleFile)
+	if err != nil {
+		log.Error(err)
+	}
 
 	if string(confPriorGlobal.Hcl().Bytes) != string(conf.Hcl().Bytes) || force {
 		log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("config diff detected, refreshing cron...")
