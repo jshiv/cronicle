@@ -126,7 +126,7 @@ func (conf *Config) Init(croniclePath string) error {
 			if err := task.Validate(); err != nil {
 				return err
 			}
-			if err := task.Clone(); err != nil {
+			if _, err := Clone(task.Path, task.Repo); err != nil {
 				return err
 			}
 		}
