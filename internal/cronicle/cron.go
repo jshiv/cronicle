@@ -129,7 +129,21 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 func StartCron(cronicleFile string, queue chan<- []byte) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
-	c := cron.New()
+	conf, err := GetConfig(cronicleFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var loc *time.Location
+	if conf.Location != "" {
+		loc, err = time.LoadLocation(conf.Location)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		loc = time.Local
+	}
+
+	c := cron.New(cron.WithLocation(loc))
 	c.Start()
 	c.AddFunc("@every 30s", func() { LoadCron(cronicleFile, c, queue, false) })
 	LoadCron(cronicleFile, c, queue, true)
@@ -200,7 +214,14 @@ func ConsumeSchedule(queue <-chan []byte, path string) {
 func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 	return func() {
 		log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Queuing...")
-		schedule.Now = time.Now().In(time.Local)
+		var loc *time.Location
+		if schedule.Location != "" {
+			loc, _ = time.LoadLocation(schedule.Location)
+		} else {
+			loc = time.Local
+		}
+
+		schedule.Now = time.Now().In(loc)
 		schedule.CleanGit()
 		queue <- schedule.JSON()
 	}

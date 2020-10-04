@@ -64,6 +64,26 @@ var _ = Describe("Config", func() {
 
 	})
 
+	It("conf.PropigateTaskProperties(./path/) should propigate config Location", func() {
+		conf := cronicle.Default()
+		conf.Location = "America/New_York"
+
+		conf.PropigateTaskProperties("./path/")
+		Expect(conf.Schedules[0].Location).To(Equal("America/New_York"))
+
+	})
+
+	It("conf.PropigateTaskProperties(./path/) should propigate config Location and not overwrite given schedule.Location", func() {
+		conf := cronicle.Default()
+		conf.Location = "America/New_York"
+		conf.Schedules[0].Location = "Asia/Tokyo"
+
+		conf.PropigateTaskProperties("./path/")
+		Expect(conf.Location).To(Equal("America/New_York"))
+		Expect(conf.Schedules[0].Location).To(Equal("Asia/Tokyo"))
+
+	})
+
 	It("Should return an TaskArray", func() {
 		conf := cronicle.Default()
 		conf.Schedules[0].Tasks = append(conf.Schedules[0].Tasks, cronicle.Task{Name: "task2"})
