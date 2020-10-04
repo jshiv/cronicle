@@ -41,18 +41,27 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		return exec.Result{}, err
 	}
 
+	//Test if the given task should execute in the root croniclePath and the croncilePath is a git repo
+	taskPathIsCroniclePathWithGit := (task.Path == task.CroniclePath) && task.CronicleRepo != ""
+
 	//If a repo is given, clone the repo and task.Git.Open(task.Path)
 	if task.Repo != "" {
-		if err := task.Clone(); err != nil {
+		g, err := Clone(task.Path, task.Repo)
+		if err != nil {
 			return exec.Result{}, err
 		}
-	}
+		task.Git = g
+		err = task.Git.Checkout(task.Branch, task.Commit)
+		if err != nil {
+			return exec.Result{}, err
+		}
+	} else if taskPathIsCroniclePathWithGit {
+		err := task.Git.Open(task.CroniclePath)
+		if err != nil {
+			log.Error(err)
+			return exec.Result{}, err
+		}
 
-	//Set HEAD and commit state after checkout branch/commit
-	if task.Git.Repository != nil {
-		if err := task.Checkout(); err != nil {
-			return exec.Result{}, err
-		}
 	}
 
 	//Execute task.Command in bash at time t with retry
@@ -95,7 +104,6 @@ func (task *Task) Log(res exec.Result) {
 	} else {
 		commit = "null"
 		email = "null"
-
 	}
 
 	if res.Error != nil {

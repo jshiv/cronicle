@@ -42,40 +42,19 @@ func (g *Git) Open(worktreePath string) error {
 			return err
 		}
 		g.Worktree = wt
+
+		//Set head and Head and Commit state after opening worktree
+		g.Head, err = g.Repository.Head()
+		if err != nil {
+			return err
+		}
+		g.Commit, err = g.Repository.CommitObject(g.Head.Hash())
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
-}
-
-// GetGit returns a git struct populated with git useful repo pointers
-func GetGit(worktreePath string) Git {
-	var g Git
-	r, err := git.PlainOpen(worktreePath)
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	g.Repository = r
-
-	if r != nil {
-		if h, err := r.Head(); err != nil {
-			fmt.Println("=================")
-			fmt.Println(err)
-			fmt.Println("=================")
-
-		} else {
-			g.Head = h
-		}
-
-		if wt, err := r.Worktree(); err != nil {
-			fmt.Println(err)
-		} else {
-			g.Worktree = wt
-		}
-	}
-
-	return g
-
 }
 
 //Commit does a git commit on the repository at worktree
@@ -104,57 +83,41 @@ func Commit(worktreeDir string, msg string) {
 	fmt.Println(obj)
 }
 
-//Clone checks for the existance of task.Path/.git and clones if it does not exist
-//then executes task.Git = GetGit(task.Path)
-func (task *Task) Clone() error {
-	if !DirExists(filepath.Join(task.Path, ".git")) {
+//Clone checks for the existance of worktreeDir/.git and clones if it does not exist
+//then executes Git = GetGit(worktreeDir)
+func Clone(worktreeDir string, repo string) (Git, error) {
+	if !DirExists(filepath.Join(worktreeDir, ".git")) {
 
-		_, err := git.PlainClone(task.Path, false, &git.CloneOptions{URL: task.Repo})
+		_, err := git.PlainClone(worktreeDir, false, &git.CloneOptions{URL: repo})
 		if err != nil {
-			return err
+			return Git{}, err
 		}
 	}
 
-	if err := task.Git.Open(task.Path); err != nil {
-		return err
+	var g Git
+	if err := g.Open(worktreeDir); err != nil {
+		return g, err
 	}
 
-	if task.Branch != "" {
-		task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
-	} else {
-		task.Git.ReferenceName = plumbing.HEAD
-	}
-
-	return nil
+	return g, nil
 }
 
 //Checkout does a git fetch for task.Repo and does a git checkout for the
 //given task.Branch or task.Commit.
 //Note: Only one can be given, branch or commit.
 //Checkout requires task.Repo to be given
-func (task *Task) Checkout() error {
+func (g *Git) Checkout(branch string, commit string) error {
 
-	if task.Repo == "" {
-		return ErrRepoNotGiven
+	if branch != "" && commit != "" {
+		return ErrBranchAndCommitGiven
 	}
 
-	if err := task.Validate(); err != nil {
-		return err
-	}
-
-	var branch string
-	if task.Branch != "" {
-		branch = task.Branch
-	} else {
+	// var branch string
+	if branch == "" {
 		branch = "master"
 	}
 
-	var commit string
-	if task.Commit != "" {
-		commit = task.Commit
-	}
-
-	err := task.Git.Repository.Fetch(&git.FetchOptions{
+	err := g.Repository.Fetch(&git.FetchOptions{
 		RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
 	})
 	if err != nil {
@@ -178,39 +141,21 @@ func (task *Task) Checkout() error {
 		}
 	}
 
-	if err := task.Git.Worktree.Checkout(&checkoutOptions); err != nil {
+	if err := g.Worktree.Checkout(&checkoutOptions); err != nil {
 		return err
 	}
 
 	//Set head and commit state after checkout branch/commit
-	task.Git.Head, err = task.Git.Repository.Head()
+	g.Head, err = g.Repository.Head()
 	if err != nil {
 		return err
 	}
-	task.Git.Commit, err = task.Git.Repository.CommitObject(task.Git.Head.Hash())
+	g.Commit, err = g.Repository.CommitObject(g.Head.Hash())
 	if err != nil {
 		return err
 	}
 
 	return nil
-}
-
-//SetGit sets executes GetGit after a plain clone if a repo is given
-func (task *Task) SetGit() {
-	if !DirExists(filepath.Join(task.Path, ".git")) {
-
-		_, err := git.PlainClone(task.Path, false, &git.CloneOptions{URL: task.Repo})
-		if err != nil {
-			fmt.Println(err)
-		}
-	}
-	task.Git = GetGit(task.Path)
-
-	if task.Branch != "" {
-		task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
-	} else {
-		task.Git.ReferenceName = plumbing.HEAD
-	}
 }
 
 //CleanGit nulls non-serlizable properties of a task

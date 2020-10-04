@@ -30,6 +30,7 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
 	conf, _ := GetConfig(cronicleFileAbs)
+	confPriorGlobal = conf
 	hcl := conf.Hcl()
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
@@ -39,12 +40,12 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	}
 
 	if runOptions.QueueType == "" {
-		schedules := make(chan []byte)
-		go StartCron(*conf, schedules)
-		go ConsumeSchedule(schedules, croniclePath)
+		queue := make(chan []byte)
+		go StartCron(cronicleFileAbs, queue)
+		go ConsumeSchedule(queue, croniclePath)
 	} else {
 		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
-		go StartCron(*conf, transport.Send(runOptions.QueueName))
+		go StartCron(cronicleFileAbs, transport.Send(runOptions.QueueName))
 		if runOptions.RunWorker {
 			go ConsumeSchedule(transport.Receive(runOptions.QueueName), croniclePath)
 		}
@@ -125,19 +126,51 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 //starts the cron scheduler which publishes the serialzied
 //schedules to the message queue for execution.
 //TODO Add meta job to fetch and refresh cron schedule with updated cronicle.hcl
-func StartCron(conf Config, queue chan<- []byte) {
+func StartCron(cronicleFile string, queue chan<- []byte) {
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
 	c := cron.New()
-	c.AddFunc("@every 6m", func() { log.WithFields(log.Fields{"cronicle": "heartbeat"}).Info("Running...") })
-	for _, schedule := range conf.Schedules {
-		_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
-		if err != nil {
-			fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
-			log.Fatal(err)
-		}
-	}
 	c.Start()
+	c.AddFunc("@every 30s", func() { LoadCron(cronicleFile, c, queue, false) })
+	LoadCron(cronicleFile, c, queue, true)
+}
+
+//confPrior stores a gloabal state of the previosly loaded config for diff checking
+var confPriorGlobal *Config
+
+//LoadCron exeutes GetConfig(cronicleFile) to load the current config from file,
+//checks the given config against the global confPrior, and if there is a change,
+//stops the cron, removes all of the confPrior cron entries and adds the new conf
+//schedules to the cron.
+func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool) {
+	log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("Loading config...")
+	conf, err := GetConfig(cronicleFile)
+	if err != nil {
+		log.Error(err)
+	}
+
+	if string(confPriorGlobal.Hcl().Bytes) != string(conf.Hcl().Bytes) || force {
+		log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("Refreshing config...")
+		c.Stop()
+		for _, entry := range c.Entries() {
+			// assumes that LoadCron has entry.ID == 1
+			if entry.ID > 1 {
+				c.Remove(entry.ID)
+
+			}
+		}
+
+		for _, schedule := range conf.Schedules {
+			_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
+			if err != nil {
+				fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
+				log.Fatal(err)
+			}
+		}
+		c.Start()
+	}
+	confPriorGlobal = conf
+
 }
 
 //ConsumeSchedule consumes the byte array of a

@@ -43,6 +43,8 @@ type Schedule struct {
 	//fill variable task command ${datetime}. The cron scheduler generally provides
 	//the value.
 	Now time.Time
+	//repo given at the config level, will be overridden by repo given at schedule or task level.
+	CronicleRepo string
 }
 
 // Task is the configuration structure that defines a task (i.e., a command)
@@ -56,6 +58,8 @@ type Task struct {
 	Commit       string   `hcl:"commit,optional"`
 	Retry        Retry    `hcl:"retry,block"`
 	Path         string
+	CronicleRepo string
+	CroniclePath string
 	Git          Git
 	ScheduleName string
 }
@@ -134,6 +138,7 @@ func (conf *Config) Validate() error {
 //It also populates task.Git.ReferenceName with task.Branch or HEAD.
 func (conf *Config) PropigateTaskProperties(croniclePath string) {
 	for i := range conf.Schedules {
+		conf.Schedules[i].CronicleRepo = conf.Git
 		conf.Schedules[i].PropigateTaskProperties(croniclePath)
 	}
 }
@@ -182,7 +187,10 @@ func (schedule *Schedule) PropigateTaskProperties(croniclePath string) {
 		} else {
 			taskPath = croniclePath
 		}
+
 		schedule.Tasks[i].Path = taskPath
+		schedule.Tasks[i].CroniclePath = croniclePath
+		schedule.Tasks[i].CronicleRepo = schedule.CronicleRepo
 		schedule.Tasks[i].Repo = repo
 		schedule.Tasks[i].ScheduleName = schedule.Name
 	}

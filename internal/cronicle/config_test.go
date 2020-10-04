@@ -54,6 +54,16 @@ var _ = Describe("Config", func() {
 
 	})
 
+	It("conf.PropigateTaskProperties(./path/) should propigate config properties croniclePath and cronicleRepo", func() {
+		conf := cronicle.Default()
+		conf.Git = "https://github.com/jshiv/cronicle-sample.git"
+
+		conf.PropigateTaskProperties("./path/")
+		Expect(conf.Schedules[0].Tasks[0].CronicleRepo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
+		Expect(conf.Schedules[0].Tasks[0].Path).To(Equal("./path/"))
+
+	})
+
 	It("Should return an TaskArray", func() {
 		conf := cronicle.Default()
 		conf.Schedules[0].Tasks = append(conf.Schedules[0].Tasks, cronicle.Task{Name: "task2"})
