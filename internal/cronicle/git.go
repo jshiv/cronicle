@@ -42,6 +42,16 @@ func (g *Git) Open(worktreePath string) error {
 			return err
 		}
 		g.Worktree = wt
+
+		//Set head and Head and Commit state after opening worktree
+		g.Head, err = g.Repository.Head()
+		if err != nil {
+			return err
+		}
+		g.Commit, err = g.Repository.CommitObject(g.Head.Hash())
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -104,6 +114,25 @@ func Commit(worktreeDir string, msg string) {
 	fmt.Println(obj)
 }
 
+//Clone checks for the existance of worktreeDir/.git and clones if it does not exist
+//then executes Git = GetGit(worktreeDir)
+func Clone(worktreeDir string, repo string) (Git, error) {
+	if !DirExists(filepath.Join(worktreeDir, ".git")) {
+
+		_, err := git.PlainClone(worktreeDir, false, &git.CloneOptions{URL: repo})
+		if err != nil {
+			return Git{}, err
+		}
+	}
+
+	var g Git
+	if err := g.Open(worktreeDir); err != nil {
+		return g, err
+	}
+
+	return g, nil
+}
+
 //Clone checks for the existance of task.Path/.git and clones if it does not exist
 //then executes task.Git = GetGit(task.Path)
 func (task *Task) Clone() error {
@@ -123,6 +152,62 @@ func (task *Task) Clone() error {
 		task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
 	} else {
 		task.Git.ReferenceName = plumbing.HEAD
+	}
+
+	return nil
+}
+
+//Checkout does a git fetch for task.Repo and does a git checkout for the
+//given task.Branch or task.Commit.
+//Note: Only one can be given, branch or commit.
+//Checkout requires task.Repo to be given
+func (g *Git) Checkout(branch string, commit string) error {
+
+	if branch != "" && commit != "" {
+		return ErrBranchAndCommitGiven
+	}
+
+	// var branch string
+	if branch == "" {
+		branch = "master"
+	}
+
+	err := g.Repository.Fetch(&git.FetchOptions{
+		RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
+	})
+	if err != nil {
+		switch err {
+		case git.NoErrAlreadyUpToDate:
+		default:
+			return err
+		}
+	}
+
+	var checkoutOptions git.CheckoutOptions
+	if commit != "" {
+		h := plumbing.NewHash(commit)
+		checkoutOptions = git.CheckoutOptions{
+			Create: false, Force: false, Hash: h,
+		}
+	} else {
+		b := plumbing.NewBranchReferenceName(branch)
+		checkoutOptions = git.CheckoutOptions{
+			Create: false, Force: false, Branch: b,
+		}
+	}
+
+	if err := g.Worktree.Checkout(&checkoutOptions); err != nil {
+		return err
+	}
+
+	//Set head and commit state after checkout branch/commit
+	g.Head, err = g.Repository.Head()
+	if err != nil {
+		return err
+	}
+	g.Commit, err = g.Repository.CommitObject(g.Head.Hash())
+	if err != nil {
+		return err
 	}
 
 	return nil

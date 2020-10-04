@@ -102,25 +102,21 @@ func (conf *Config) Init(croniclePath string) error {
 	conf.PropigateTaskProperties(croniclePath)
 	conf.Validate()
 
+	//If conf.Git is a given repo, clone and fetch
 	if conf.Git != "" {
-		if !DirExists(filepath.Join(croniclePath, ".git")) {
-
-			_, err := git.PlainClone(croniclePath, false, &git.CloneOptions{URL: conf.Git})
-			if err != nil {
+		g, err := Clone(croniclePath, conf.Git)
+		if err != nil {
+			return err
+		}
+		g.Open(croniclePath)
+		err = g.Repository.Fetch(&git.FetchOptions{
+			RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
+		})
+		if err != nil {
+			switch err {
+			case git.NoErrAlreadyUpToDate:
+			default:
 				return err
-			}
-		} else {
-			g := GetGit(croniclePath)
-			g.Open(croniclePath)
-			err := g.Repository.Fetch(&git.FetchOptions{
-				RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
-			})
-			if err != nil {
-				switch err {
-				case git.NoErrAlreadyUpToDate:
-				default:
-					return err
-				}
 			}
 		}
 	}
