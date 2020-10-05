@@ -20,6 +20,7 @@ type Config struct {
 	// Repos points at external dependent repos that maintain their own schedules remotly.
 	Repos []string `hcl:"repos,optional"`
 	// Timezone Location to run cron in. i.e. "America/New_York" [IANA Time Zone database]
+	// https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 	Timezone string `hcl:"timezone,optional"`
 }
 
@@ -42,6 +43,7 @@ type Schedule struct {
 	EndDate   string `hcl:"end_date,optional"`
 	Tasks     []Task `hcl:"task,block"`
 	// Timezone Location to run cron in. i.e. "America/New_York" [IANA Time Zone database]
+	// https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 	Timezone string `hcl:"timezone,optional"`
 	//Now is the execution time of the given schedule that will be used to
 	//fill variable task command ${datetime}. The cron scheduler generally provides
