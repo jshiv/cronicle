@@ -48,10 +48,10 @@ var _ = Describe("Config", func() {
 		conf.Schedules[0].Tasks[0].Branch = "feature/test-branch"
 
 		conf.PropigateTaskProperties("./path/")
-		Expect(conf.Schedules[0].Tasks[0].ScheduleName).To(Equal("example"))
+		Expect(conf.Schedules[0].Tasks[0].ScheduleName).To(Equal("foo"))
 		Expect(conf.Schedules[0].Tasks[0].Repo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
 		Expect(conf.Schedules[0].Tasks[0].Branch).To(Equal("feature/test-branch"))
-		Expect(conf.Schedules[0].Tasks[0].Path).To(Equal("path/.repos/jshiv/cronicle-sample.git/example/hello"))
+		Expect(conf.Schedules[0].Tasks[0].Path).To(Equal("path/.repos/jshiv/cronicle-sample.git/foo/bar"))
 
 	})
 
@@ -100,7 +100,7 @@ var _ = Describe("Config", func() {
 		tasks := conf.TaskArray()
 		Expect(len(tasks)).To(Equal(2))
 		task := tasks[0]
-		Expect(task.Name).To(Equal("hello"))
+		Expect(task.Name).To(Equal("bar"))
 	})
 
 	It("Should FilterTask to all tasks if taskName is empty and scheduleName is empty", func() {
@@ -125,16 +125,16 @@ var _ = Describe("Config", func() {
 		conf := cronicle.Default()
 		conf.Schedules[0].Tasks = append(conf.Schedules[0].Tasks, cronicle.Task{Name: "task2"})
 		conf.PropigateTaskProperties("./path")
-		tasks := conf.TaskArray().FilterTasks("hello", "example")
+		tasks := conf.TaskArray().FilterTasks("bar", "foo")
 		Expect(len(tasks)).To(Equal(1))
 		task := tasks[0]
-		Expect(task.Name).To(Equal("hello"))
+		Expect(task.Name).To(Equal("bar"))
 	})
 
 	It("Should FilterTask to none if taskName = hello and scheduleName = ex", func() {
 		conf := cronicle.Default()
 		conf.Schedules[0].Tasks = append(conf.Schedules[0].Tasks, cronicle.Task{Name: "task2"})
-		tasks := conf.TaskArray().FilterTasks("hello", "ex")
+		tasks := conf.TaskArray().FilterTasks("bar", "fo")
 		Expect(len(tasks)).To(Equal(0))
 	})
 

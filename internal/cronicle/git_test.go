@@ -27,10 +27,10 @@ var _ = Describe("git", func() {
 		err = task.Git.Checkout(task.Branch, task.Commit)
 		Expect(err).To(BeNil())
 
-		Expect(task.Path).To(Equal(taskPath + "/.repos/jshiv/cronicle-sample.git/example/hello"))
+		Expect(task.Path).To(Equal(taskPath + "/.repos/jshiv/cronicle-sample.git/foo/bar"))
 		Expect(task.Repo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
 		Expect(task.Git.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))
-		Expect(cronicle.DirExists(taskPath + "/.repos/jshiv/cronicle-sample.git/example/hello/.git")).To(Equal(true))
+		Expect(cronicle.DirExists(taskPath + "/.repos/jshiv/cronicle-sample.git/foo/bar/.git")).To(Equal(true))
 	})
 
 	It("Git.Open should populate the Git from cloned taskPath from testRepo", func() {

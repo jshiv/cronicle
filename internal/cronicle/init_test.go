@@ -34,9 +34,9 @@ var _ = Describe("Init", func() {
 				if err != nil {
 					fmt.Println(err)
 				}
-				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath + "/.repos/jshiv/cronicle-sample.git/example/hello"))
+				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath + "/.repos/jshiv/cronicle-sample.git/foo/bar"))
 				Expect(conf.Schedules[0].Tasks[0].Repo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
-				Expect(config.DirExists(croniclePath + "/.repos/jshiv/cronicle-sample.git/example/hello/.git")).To(Equal(true))
+				Expect(config.DirExists(croniclePath + "/.repos/jshiv/cronicle-sample.git/foo/bar/.git")).To(Equal(true))
 				g, err := cronicle.Clone(conf.Schedules[0].Tasks[0].Path, conf.Schedules[0].Tasks[0].Repo)
 				Expect(err).To(BeNil())
 				Expect(g.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))

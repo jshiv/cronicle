@@ -217,11 +217,11 @@ func (schedule *Schedule) PropigateTaskProperties(croniclePath string) {
 func Default() Config {
 
 	var task Task
-	task.Name = "hello"
+	task.Name = "bar"
 	task.Command = []string{"/bin/echo", "Hello World --date=${date}"}
 
 	var schedule Schedule
-	schedule.Name = "example"
+	schedule.Name = "foo"
 	schedule.Cron = "@every 5s"
 	schedule.Tasks = []Task{task}
 
