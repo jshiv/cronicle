@@ -69,7 +69,7 @@ var _ = Describe("Parse", func() {
 		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
 		// schedule.Now = time.Now().In(time.Local)
-		s := `{"Name":"example","Cron":"@every 5s","Repo":"","StartDate":"","EndDate":"","Tasks":[{"Name":"hello","Command":["/bin/echo","Hello World --date=${date}"],"Depends":null,"Repo":"","Branch":"","Commit":"","Retry":{"Count":0,"Seconds":0,"Minutes":0,"Hours":0},"Path":"","CronicleRepo":"","CroniclePath":"","Git":{"Worktree":null,"Repository":null,"Head":null,"Hash":null,"Commit":null,"ReferenceName":""},"ScheduleName":""}],"Timezone":"","Now":"0001-01-01T00:00:00Z","CronicleRepo":""}`
+		s := `{"Name":"example","Cron":"@every 5s","Timezone":"","StartDate":"","EndDate":"","Repo":"","Tasks":[{"Name":"hello","Command":["/bin/echo","Hello World --date=${date}"],"Depends":null,"Repo":"","Branch":"","Commit":"","Retry":{"Count":0,"Seconds":0,"Minutes":0,"Hours":0},"Path":"","CronicleRepo":"","CroniclePath":"","Git":{"Worktree":null,"Repository":null,"Head":null,"Hash":null,"Commit":null,"ReferenceName":""},"ScheduleName":""}],"Now":"0001-01-01T00:00:00Z","CronicleRepo":""}`
 
 		Expect(schedule.JSON()).To(Equal([]byte(s)))
 	})

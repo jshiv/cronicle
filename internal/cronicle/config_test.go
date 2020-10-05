@@ -15,8 +15,7 @@ var _ = Describe("Config", func() {
 	It("Should be configurable from hcl", func() {
 		// not testing anything, just an informative dummy
 		testConfig := cronicle.Config{
-			Version: "0.1",
-			Git:     "github.com/myname/schedule1",
+			Git: "github.com/myname/schedule1",
 			Schedules: []cronicle.Schedule{
 				{
 					Name:      "My-Schedule",
