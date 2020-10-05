@@ -14,7 +14,7 @@ import (
 // TODO: Add Version string `hcl:"version,optional"`
 type Config struct {
 	// Remote repository containing version controlled cronicle.hcl
-	Git string `hcl:"git,optional"`
+	Remote string `hcl:"remote,optional"`
 	// Repos points at external dependent repos that maintain their own schedules remotly.
 	Repos []string `hcl:"repos,optional"`
 	// Timezone Location to run cron in. i.e. "America/New_York" [IANA Time Zone database]
@@ -24,13 +24,6 @@ type Config struct {
 	Queue     Queue      `hcl:"queue,block"`
 	Schedules []Schedule `hcl:"schedule,block"`
 }
-
-// // GitRemote provides the remote repo info for the main cronicle scheduler
-// type GitRemote struct {
-// 	Remote string `hcl:"remote,optional"`
-// 	Branch string `hcl:"branch,optional"`
-// 	Commit string `hcl:"commit,optional"`
-// }
 
 // Schedule is the configuration structure that defines a cron job consisting of tasks.
 type Schedule struct {
@@ -160,7 +153,7 @@ func (conf *Config) PropigateTaskProperties(croniclePath string) {
 		if conf.Schedules[i].Timezone == "" {
 			conf.Schedules[i].Timezone = conf.Timezone
 		}
-		conf.Schedules[i].CronicleRepo = conf.Git
+		conf.Schedules[i].CronicleRepo = conf.Remote
 		conf.Schedules[i].PropigateTaskProperties(croniclePath)
 	}
 }

@@ -53,10 +53,10 @@ var _ = Describe("git", func() {
 		Expect(cronicle.DirExists(task.Path)).To(Equal(true))
 	})
 
-	It("Git.Open should populate the Git from task.CroniclePath from conf.Git", func() {
+	It("Git.Open should populate the Git from task.CroniclePath from conf.Remote", func() {
 		conf := cronicle.Default()
 		// conf.Schedules[0].Repo = testRepoPath
-		conf.Git = "https://github.com/jshiv/cronicle-sample.git"
+		conf.Remote = "https://github.com/jshiv/cronicle-sample.git"
 
 		conf.Init("./cronicle-sample")
 		// conf.PropigateTaskProperties("./cronicle-sample/")

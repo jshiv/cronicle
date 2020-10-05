@@ -104,9 +104,9 @@ func (conf *Config) Init(croniclePath string) error {
 		return err
 	}
 
-	//If conf.Git is a given repo, clone and fetch
-	if conf.Git != "" {
-		g, err := Clone(croniclePath, conf.Git)
+	//If conf.Remote is a given repo, clone and fetch
+	if conf.Remote != "" {
+		g, err := Clone(croniclePath, conf.Remote)
 		if err != nil {
 			return err
 		}
