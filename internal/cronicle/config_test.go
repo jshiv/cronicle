@@ -1,6 +1,8 @@
 package cronicle_test
 
 import (
+	"errors"
+
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/jshiv/cronicle/internal/cronicle"
@@ -66,21 +68,30 @@ var _ = Describe("Config", func() {
 
 	It("conf.PropigateTaskProperties(./path/) should propigate config Location", func() {
 		conf := cronicle.Default()
-		conf.Location = "America/New_York"
+		conf.Timezone = "America/New_York"
 
 		conf.PropigateTaskProperties("./path/")
-		Expect(conf.Schedules[0].Location).To(Equal("America/New_York"))
+		Expect(conf.Schedules[0].Timezone).To(Equal("America/New_York"))
 
 	})
 
-	It("conf.PropigateTaskProperties(./path/) should propigate config Location and not overwrite given schedule.Location", func() {
+	It("conf.PropigateTaskProperties(./path/) should propigate config Location", func() {
 		conf := cronicle.Default()
-		conf.Location = "America/New_York"
-		conf.Schedules[0].Location = "Asia/Tokyo"
+		conf.Timezone = "Not_a_Timezone"
+
+		err := conf.Validate()
+		Expect(err).To(Equal(errors.New("unknown time zone Not_a_Timezone")))
+
+	})
+
+	It("conf.PropigateTaskProperties(./path/) should propigate config Location and not overwrite given schedule.Timezone", func() {
+		conf := cronicle.Default()
+		conf.Timezone = "America/New_York"
+		conf.Schedules[0].Timezone = "Asia/Tokyo"
 
 		conf.PropigateTaskProperties("./path/")
-		Expect(conf.Location).To(Equal("America/New_York"))
-		Expect(conf.Schedules[0].Location).To(Equal("Asia/Tokyo"))
+		Expect(conf.Timezone).To(Equal("America/New_York"))
+		Expect(conf.Schedules[0].Timezone).To(Equal("Asia/Tokyo"))
 
 	})
 

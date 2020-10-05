@@ -20,7 +20,7 @@ type Config struct {
 	// Repos points at external dependent repos that maintain their own schedules remotly.
 	Repos []string `hcl:"repos,optional"`
 	// Timezone Location to run cron in. i.e. "America/New_York" [IANA Time Zone database]
-	Location string `hcl:"location,optional"`
+	Timezone string `hcl:"timezone,optional"`
 }
 
 // // GitRemote provides the remote repo info for the main cronicle scheduler
@@ -42,7 +42,7 @@ type Schedule struct {
 	EndDate   string `hcl:"end_date,optional"`
 	Tasks     []Task `hcl:"task,block"`
 	// Timezone Location to run cron in. i.e. "America/New_York" [IANA Time Zone database]
-	Location string `hcl:"location,optional"`
+	Timezone string `hcl:"timezone,optional"`
 	//Now is the execution time of the given schedule that will be used to
 	//fill variable task command ${datetime}. The cron scheduler generally provides
 	//the value.
@@ -124,7 +124,19 @@ func (task *Task) Validate() error {
 //on a whole config struct.
 func (conf *Config) Validate() error {
 
+	if conf.Timezone != "" {
+		if _, err := time.LoadLocation(conf.Timezone); err != nil {
+			return err
+		}
+	}
+
 	for _, schedule := range conf.Schedules {
+		if schedule.Timezone != "" {
+			if _, err := time.LoadLocation(schedule.Timezone); err != nil {
+				return err
+			}
+		}
+
 		if schedule.Name == "" {
 			return ErrScheduleNameEmpty
 		}
@@ -142,8 +154,8 @@ func (conf *Config) Validate() error {
 //It also populates task.Git.ReferenceName with task.Branch or HEAD.
 func (conf *Config) PropigateTaskProperties(croniclePath string) {
 	for i := range conf.Schedules {
-		if conf.Schedules[i].Location == "" {
-			conf.Schedules[i].Location = conf.Location
+		if conf.Schedules[i].Timezone == "" {
+			conf.Schedules[i].Timezone = conf.Timezone
 		}
 		conf.Schedules[i].CronicleRepo = conf.Git
 		conf.Schedules[i].PropigateTaskProperties(croniclePath)

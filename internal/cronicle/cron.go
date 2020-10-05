@@ -134,8 +134,8 @@ func StartCron(cronicleFile string, queue chan<- []byte) {
 		log.Fatal(err)
 	}
 	var loc *time.Location
-	if conf.Location != "" {
-		loc, err = time.LoadLocation(conf.Location)
+	if conf.Timezone != "" {
+		loc, err = time.LoadLocation(conf.Timezone)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -215,8 +215,8 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 	return func() {
 		log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Queuing...")
 		var loc *time.Location
-		if schedule.Location != "" {
-			loc, _ = time.LoadLocation(schedule.Location)
+		if schedule.Timezone != "" {
+			loc, _ = time.LoadLocation(schedule.Timezone)
 		} else {
 			loc = time.Local
 		}
