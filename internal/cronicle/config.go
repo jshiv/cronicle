@@ -11,17 +11,18 @@ import (
 
 // Config is the configuration structure for the cronicle checker.
 // https://raw.githubusercontent.com/mitchellh/golicense/master/config/config.go
+// TODO: Add Version string `hcl:"version,optional"`
 type Config struct {
-	Version string `hcl:"version,optional"`
-	Git     string `hcl:"git,optional"`
-	// GitRemote *GitRemote `hcl:"git,block"`
-	Queue     Queue      `hcl:"queue,block"`
-	Schedules []Schedule `hcl:"schedule,block"`
+	// Remote repository containing version controlled cronicle.hcl
+	Git string `hcl:"git,optional"`
 	// Repos points at external dependent repos that maintain their own schedules remotly.
 	Repos []string `hcl:"repos,optional"`
 	// Timezone Location to run cron in. i.e. "America/New_York" [IANA Time Zone database]
 	// https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 	Timezone string `hcl:"timezone,optional"`
+	// GitRemote *GitRemote `hcl:"git,block"`
+	Queue     Queue      `hcl:"queue,block"`
+	Schedules []Schedule `hcl:"schedule,block"`
 }
 
 // // GitRemote provides the remote repo info for the main cronicle scheduler
@@ -36,15 +37,15 @@ type Schedule struct {
 	// Cron is the schedule interval. The field accepts standard cron
 	// and other configurations listed here https://godoc.org/gopkg.in/robfig/cron.v2
 	// i.e. ["@hourly", "@every 1h30m", "0 30 * * * *", "TZ=Asia/Tokyo 30 04 * * * *"]
-	Name      string `hcl:"name,label"`
-	Cron      string `hcl:"cron,optional"`
-	Repo      string `hcl:"repo,optional"`
-	StartDate string `hcl:"start_date,optional"`
-	EndDate   string `hcl:"end_date,optional"`
-	Tasks     []Task `hcl:"task,block"`
+	Name string `hcl:"name,label"`
+	Cron string `hcl:"cron,optional"`
 	// Timezone Location to run cron in. i.e. "America/New_York" [IANA Time Zone database]
 	// https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
-	Timezone string `hcl:"timezone,optional"`
+	Timezone  string `hcl:"timezone,optional"`
+	StartDate string `hcl:"start_date,optional"`
+	EndDate   string `hcl:"end_date,optional"`
+	Repo      string `hcl:"repo,optional"`
+	Tasks     []Task `hcl:"task,block"`
 	//Now is the execution time of the given schedule that will be used to
 	//fill variable task command ${datetime}. The cron scheduler generally provides
 	//the value.
