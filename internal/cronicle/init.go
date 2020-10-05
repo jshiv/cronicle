@@ -100,7 +100,9 @@ func (schedule *Schedule) CleanGit() {
 func (conf *Config) Init(croniclePath string) error {
 	// Assign the path for each task or schedule repo
 	conf.PropigateTaskProperties(croniclePath)
-	conf.Validate()
+	if err := conf.Validate(); err != nil {
+		return err
+	}
 
 	//If conf.Git is a given repo, clone and fetch
 	if conf.Git != "" {

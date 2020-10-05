@@ -1,6 +1,7 @@
 package cronicle_test
 
 import (
+	"os"
 	"path/filepath"
 
 	. "github.com/onsi/ginkgo"
@@ -65,11 +66,6 @@ var _ = Describe("git", func() {
 		Expect(cronicle.DirExists(task.Path)).To(Equal(true))
 		Expect(cronicle.DirExists(filepath.Join(task.Path, ".git"))).To(Equal(true))
 
-		// g, err := cronicle.Clone(task.CroniclePath, task.CronicleRepo)
-		// Expect(err).To(BeNil())
-		// task.Git = g
-		// err := task.Git.Checkout("", "")
-		// Expect(err).To(BeNil())
 		task.CleanGit()
 		err := task.Git.Open(task.CroniclePath)
 		Expect(err).To(BeNil())
@@ -77,6 +73,7 @@ var _ = Describe("git", func() {
 		Expect(task.Git.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))
 		// Expect(task.Git.Commit.).To(Equal(""))
 		Expect(cronicle.DirExists(task.Path)).To(Equal(true))
+		os.RemoveAll("./cronicle-sample")
 	})
 
 })
