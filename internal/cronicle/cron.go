@@ -222,8 +222,25 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 		}
 
 		schedule.Now = time.Now().In(loc)
-		schedule.CleanGit()
-		queue <- schedule.JSON()
+
+		var endDate time.Time
+		if schedule.EndDate == "" {
+			//if EndDate is not given, default to 1 Year from now
+			endDate = schedule.Now.Add(time.Duration(1) * time.Hour * 24 * 365)
+		} else {
+			endDate, _ = time.Parse("2006-01-02", schedule.EndDate)
+		}
+		startDate, _ := time.Parse("2006-01-02", schedule.StartDate)
+		if schedule.Now.After(endDate) || schedule.Now.Before(startDate) {
+			s := fmt.Sprintf("now=%s is not between start_date=%s and end_date=%s... Schedule will not execute.", schedule.Now, startDate, endDate)
+			log.WithFields(log.Fields{
+				"schedule": schedule.Name,
+			}).Warn(s)
+		} else {
+			schedule.CleanGit()
+			queue <- schedule.JSON()
+		}
+
 	}
 }
 
