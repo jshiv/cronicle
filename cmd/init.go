@@ -16,10 +16,9 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/jshiv/cronicle/internal/cronicle"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -43,7 +42,7 @@ repos folder.
 	Run: func(cmd *cobra.Command, args []string) {
 		croniclePath, _ := cmd.Flags().GetString("path")
 		clone, _ := cmd.Flags().GetString("clone")
-		fmt.Println("Initialize Cronicle: " + croniclePath)
+		log.Info("Initialize Cronicle: " + croniclePath)
 		cronicle.Init(croniclePath, clone)
 	},
 }

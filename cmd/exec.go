@@ -16,9 +16,8 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/jshiv/cronicle/internal/cronicle"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"time"
@@ -35,7 +34,6 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("exec called")
 		path, _ := cmd.Flags().GetString("path")
 		task, _ := cmd.Flags().GetString("task")
 		schedule, _ := cmd.Flags().GetString("schedule")
@@ -48,7 +46,7 @@ to quickly create a Cobra application.`,
 		} else {
 			//TODO: Add flags for timeFlag format and timezone
 			if n, err := time.Parse(time.RFC3339, timeFlag); err != nil {
-				fmt.Println(err)
+				log.Error(err)
 			} else {
 				now = n.Local()
 			}
@@ -61,7 +59,7 @@ to quickly create a Cobra application.`,
 		} else {
 			//TODO: Add flags for endFlag format and timezone
 			if n, err := time.Parse(time.RFC3339, endFlag); err != nil {
-				fmt.Println(err)
+				log.Error(err)
 			} else {
 				end = n.Local()
 			}
@@ -69,7 +67,7 @@ to quickly create a Cobra application.`,
 		for t := now; t.After(end) == false; t = t.AddDate(0, 0, 1) {
 			cronicle.ExecTasks(path, task, schedule, t)
 		}
-		fmt.Println("Reading from: " + path)
+		log.Info("Reading from: " + path)
 	},
 }
 

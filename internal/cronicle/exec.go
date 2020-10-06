@@ -1,7 +1,6 @@
 package cronicle
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -76,7 +75,6 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		var err error
 		result = task.Exec(t)
 		err = result.Error
-		fmt.Println(err)
 		task.Log(result)
 		if err != nil {
 			duration := time.Duration(task.Retry.Seconds) * time.Second

@@ -2,7 +2,6 @@ package cronicle
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 
 	"regexp"
@@ -12,6 +11,8 @@ import (
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // HclWriteFile contains the encoded hclwrite.File and the byte array of the file with
@@ -54,8 +55,6 @@ func MarshallHcl(conf Config, path string) string {
 	gohcl.EncodeIntoBody(&conf, f.Body())
 	r := regexp.MustCompile("[$]+")
 	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
-	fmt.Printf("%s", b)
-	fmt.Println("writing to file")
 	destination, err := os.Create(path)
 	if err != nil {
 		panic(err)
@@ -64,7 +63,7 @@ func MarshallHcl(conf Config, path string) string {
 	_, writeErr := destination.Write(b)
 	// _, writeErr := f.WriteTo(destination)
 	if writeErr != nil {
-		fmt.Printf("write error")
+		log.Error("write error")
 	}
 	destination.Close()
 	return path
@@ -74,7 +73,7 @@ func MarshallHcl(conf Config, path string) string {
 func (conf Config) JSON() []byte {
 	b, err := json.Marshal(&conf)
 	if err != nil {
-		fmt.Println(err)
+		log.Error(err)
 	}
 	return b
 }
@@ -83,7 +82,7 @@ func (conf Config) JSON() []byte {
 func (schedule Schedule) JSON() []byte {
 	b, err := json.Marshal(&schedule)
 	if err != nil {
-		fmt.Println(err)
+		log.Error(err)
 	}
 	return b
 }
@@ -92,7 +91,7 @@ func (schedule Schedule) JSON() []byte {
 func (task Task) JSON() []byte {
 	b, err := json.Marshal(&task)
 	if err != nil {
-		fmt.Println(err)
+		log.Error(err)
 	}
 	return b
 }

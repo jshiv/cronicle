@@ -16,9 +16,8 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/jshiv/cronicle/internal/cronicle"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -44,7 +43,7 @@ The run command will log schedule information to stdout including git commit inf
 
 		runOptions := cronicle.RunOptions{RunWorker: runWorker, QueueType: queueType, QueueName: queueName, Addr: addr}
 
-		fmt.Println("Reading from: " + path)
+		log.Info("Reading from: " + path)
 		cronicle.Run(path, runOptions)
 	},
 }
@@ -56,8 +55,8 @@ func init() {
 	queueDesc := `
 	message broker technology for distributed schedule execution, 
 	Options: 
-		redis [distributed on localhost]
-		nsq [run on cluster with nsqd]
+		redis [distributed on localhost:6379]
+		nsq [run on cluster with nsqd:4150]
 	Configurable via the queue.type field in cronicle.hcl
 	`
 	runCmd.Flags().String("queue", "", queueDesc)

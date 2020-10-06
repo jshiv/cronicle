@@ -1,7 +1,6 @@
 package cronicle_test
 
 import (
-	"fmt"
 	"os"
 	"testing"
 
@@ -30,7 +29,6 @@ var _ = BeforeSuite(func() {
 
 	p, _ := filepath.Abs("./test_repo/")
 	testRepoPath = filepath.Join(p, ".git")
-	fmt.Println(testRepoPath)
 	kemi.Unpack("test_repo.tar.gz", "./")
 
 })

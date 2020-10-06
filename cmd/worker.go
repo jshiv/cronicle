@@ -16,10 +16,10 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/jshiv/cronicle/internal/cronicle"
 	"github.com/spf13/cobra"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // workerCmd represents the worker command
@@ -53,7 +53,7 @@ Multipule workers can be started, they will take turns consuming from the queue.
 		queueName, _ := cmd.Flags().GetString("queue-name")
 		addr, _ := cmd.Flags().GetString("addr")
 
-		fmt.Println("Starting Worker from: " + path)
+		log.Info("Starting Worker from: " + path)
 		runOptions := cronicle.RunOptions{RunWorker: true, QueueType: queueType, QueueName: queueName, Addr: addr}
 		cronicle.StartWorker(path, runOptions)
 	},

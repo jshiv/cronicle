@@ -101,7 +101,6 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 			MaxRetries: 0,
 		}
 		client := redis.NewClient(opts)
-		fmt.Println(client)
 		opt := redisvice.WithClient(client)
 		transport := redisvice.New(opt)
 		return transport

@@ -56,7 +56,6 @@ func Init(croniclePath string, cloneRepo string) {
 func GetRepos(conf *Config) map[string]bool {
 	repos := map[string]bool{}
 	for _, repo := range conf.Repos {
-		fmt.Println(repo)
 		repos[repo] = true
 	}
 	for _, sched := range conf.Schedules {
@@ -156,10 +155,7 @@ func GetConfig(cronicleFile string) (*Config, error) {
 	repos := GetRepos(&conf)
 	for repo := range repos {
 		repoPath, _ := LocalRepoDir(croniclePath, repo)
-		fmt.Println("sub repo path:  " + repoPath)
 		repoCronicleFile := filepath.Join(repoPath, "cronicle.hcl")
-		fmt.Println("sub repo file:  " + repoCronicleFile)
-		fmt.Println(fileExists(repoCronicleFile))
 		if fileExists(repoCronicleFile) {
 			repoConf, _ := GetConfig(repoCronicleFile)
 			for _, repoSched := range repoConf.Schedules {
