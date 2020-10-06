@@ -29,14 +29,16 @@ INFO[2020-10-05T05:24:38Z] Hello World --date=2020-10-05                 commit=
 
 ## Breakdown of `cronicle.hcl`
 
-### remote (optional)
+### `remote` (optional)
+__Note: setting remote requires that any changes to the cronicle repo to be made through 
+the remote git repo, any local changes will be removed by `git checkout`__
 ```hcl
 // remote enables the cronicle.hcl file to be tracked by a remote git repo
 // a heartbeat process will fetch and refresh the config from this remote.
 remote = "https://github.com/jshiv/cronicle-sample.git"
 ```
 
-### repos (optional)
+### `repos` (optional)
 ```
 // repos is a list of remote repositories containing schedules
 // that will be added to the main cron.
@@ -94,5 +96,17 @@ the run command starts the scheduler.
 ```bash
 cronicle run
 ```
+
+the exec command will execute a named task/schedule for a given time or daterange.
+```bash
+cronicle exec --task bar
+```
+
+the worker will start a schedule consumer when `cronicle run --queue ` is in distributed mode.
+```bash
+cronicle worker --queue redis
+```
+
+
 
 
