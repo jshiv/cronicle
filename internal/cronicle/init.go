@@ -9,7 +9,6 @@ import (
 	"github.com/fatih/color"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/src-d/go-git.v4"
-	c "gopkg.in/src-d/go-git.v4/config"
 
 	"net/url"
 
@@ -110,16 +109,8 @@ func (conf *Config) Init(croniclePath string) error {
 		if err != nil {
 			return err
 		}
-		g.Open(croniclePath)
-		err = g.Repository.Fetch(&git.FetchOptions{
-			RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
-		})
-		if err != nil {
-			switch err {
-			case git.NoErrAlreadyUpToDate:
-			default:
-				return err
-			}
+		if err := g.Checkout("", ""); err != nil {
+			return err
 		}
 	}
 
