@@ -56,12 +56,12 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 			return exec.Result{}, err
 		}
 	} else if taskPathIsCroniclePathWithGit {
-		err := task.Git.Open(task.CroniclePath)
+		var err error
+		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo)
 		if err != nil {
 			log.Error(err)
 			return exec.Result{}, err
 		}
-
 	}
 
 	//Execute task.Command in bash at time t with retry
