@@ -118,8 +118,10 @@ func (conf *Config) Init(croniclePath string) error {
 			if err := task.Validate(); err != nil {
 				return err
 			}
-			if _, err := Clone(task.Path, task.Repo); err != nil {
-				return err
+			if task.Repo != "" {
+				if _, err := Clone(task.Path, task.Repo); err != nil {
+					return err
+				}
 			}
 		}
 	}

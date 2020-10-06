@@ -1,19 +1,30 @@
-version = ""
-git     = ""
+repos    = null
+timezone = ""
 
-schedule "example" {
+queue {
+  type = ""
+  addr = ""
+}
+
+schedule "foo" {
   cron       = "@every 5s"
-  repo       = ""
+  timezone   = ""
   start_date = ""
   end_date   = ""
+  repo       = ""
 
-  task "hello" {
+  task "bar" {
     command = ["/bin/echo", "Hello World", "--date=${date}"]
     depends = null
     repo    = ""
     branch  = ""
     commit  = ""
+
+    retry {
+      count   = 0
+      seconds = 0
+      minutes = 0
+      hours   = 0
+    }
   }
 }
-
-repos = null

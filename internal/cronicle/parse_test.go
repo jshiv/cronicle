@@ -2,7 +2,6 @@ package cronicle_test
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 
 	. "github.com/onsi/ginkgo"
@@ -36,7 +35,7 @@ var _ = Describe("Parse", func() {
 
 		var conf cronicle.Config
 		err := hclsimple.DecodeFile("./test/config.hcl", &cronicle.CommandEvalContext, &conf)
-		fmt.Println(err)
+		Expect(err).To(BeNil())
 		Expect(conf.Schedules[0].Tasks[0].Command).To(Equal([]string{"/bin/echo", "Hello World", "--date=${date}"}))
 	})
 
@@ -60,7 +59,7 @@ var _ = Describe("Parse", func() {
 
 		var c cronicle.Config
 		err := hclsimple.DecodeFile(p, &cronicle.CommandEvalContext, &c)
-		fmt.Println(err)
+		Expect(err).To(BeNil())
 		Expect(conf).To(Equal(c))
 		os.RemoveAll(p)
 	})
@@ -81,9 +80,7 @@ var _ = Describe("Parse", func() {
 		j := schedule.JSON()
 		var sched cronicle.Schedule
 		err := json.Unmarshal(j, &sched)
-		if err != nil {
-			fmt.Println(err)
-		}
+		Expect(err).To(BeNil())
 		Expect(sched).To(Equal(schedule))
 	})
 
