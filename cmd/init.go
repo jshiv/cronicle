@@ -31,9 +31,8 @@ For example:
 
 cronicle init --path ./cronicle
 tree -a cronicle
-├── .git
 ├── cronicle.hcl
-└── repos
+└── .repos
 
 This directory will contain the root cronicle.hcl file and git repository. This is where
 the main schedule will be defined and run. Subsequent schedules will be cloned into the 
