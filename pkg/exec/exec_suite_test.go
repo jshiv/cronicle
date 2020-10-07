@@ -1,4 +1,4 @@
-package bash_test
+package exec
 
 import (
 	"testing"
@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func TestBash(t *testing.T) {
+func TestExec(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "Bash Suite")
+	RunSpecs(t, "Exec Suite")
 }

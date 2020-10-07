@@ -1,108 +1,115 @@
 # cronicle
-git integrated workflow scheduler that provides a pull model for CI/CD and versioning on job execution.
+git integrated distributed workflow scheduler that provides a pull model for CI/CD and versioning on job execution.
 
-## Development Phase: Alpha
+Usage
 
-Usage[Vision] 
+The tool will use a cronicle.hcl file to maintain a `schedule as code`.
 
-The tool will use a Cronicle.hcl file to maintain `schedule as code`.
-A bash job scheduler could look like:
+`cronicle init --path cron` will produce a default file:
 ```hcl
-#Cronicle.hcl 
-version = "0.0.1"
-  
-// root remote schedule repository (optional)
-git = "github.com/jshiv/cronicle-sample"
+//cronicle.hcl
+queue {}
 
-/* The schedule contains the details 
-for timing of the job as well as any 
-commands and tasks that make up the job. */
 schedule "example" {
-  owner = {
-    name = "cronicle"
-    email = "root@cronicle.com"
-  }
-  cron = "every 5 minutes"
-  
-  start_date = "2015-06-01"
-  end_date = "2019-09-09"
-  
-  retries = 3
-  retry_delay = "5 min"
-  
-  task "mytask" = {
-    command = ["/bin/echo", "Hello World"]
+  cron       = "@every 5s"
+
+  task "hello" {
+    command = ["python", "run.py"]
+    repo    = "https://github.com/jshiv/cronicle-sample.git"
+    retry {}
   }
 }
-
 ```
 
-A More complete example might look like:
-```hcl
-#Cronicle.hcl
-version = "0.0.1"
+`cronicle run --path cron/cronicle.hcl`
+```
+INFO[2020-10-06T21:44:16-07:00] Starting Scheduler...                         cronicle=start
+INFO[2020-10-06T21:44:16-07:00] Loading config...                             cronicle=heartbeat path=./cronicle.hcl
+INFO[2020-10-06T21:44:21-07:00] Queuing...                                    schedule=example
+INFO[2020-10-06T21:44:21-07:00]                                               attempt=1 schedule=example task=hello
+INFO[2020-10-06T21:44:21-07:00] X: 0.360346904169                             commit=f99ad6af7de email=jason.shiverick@gmail.com exit=0 schedule=example success=true task=hello
+```
 
-/* git is a list of remote repositories 
-that will be added to the job scheduler. */
+## Breakdown of `cronicle.hcl`
+
+### `remote` (optional)
+__Note: setting remote requires that any changes to the cronicle repo to be made through 
+the remote git repo, any local changes will be removed by `git checkout`.__
+```hcl
+// remote enables the cronicle.hcl file to be tracked by a remote git repo
+// a heartbeat process will fetch and refresh the config from this remote.
+remote = "https://github.com/jshiv/cronicle-sample.git"
+```
+
+### `repos` (optional)
+```
+// repos is a list of remote repositories containing schedules
+// that will be added to the main cron.
 repos = [
-    "github.com/jshiv/cronicle-sample1",
-    "github.com/jshiv/cronicle-sample2",
-    "github.com/jshiv/cronicle-sample3"
+    "https://github.com/jshiv/cronicle-sample.git",
 ]
+```
 
-// root remote schedule repository (optional)
-git = "github.com/jshiv/cronicle-sample"
+### timezone (optional)
+```
+// timezone sets the timezone location to run cron and execute tasks by.
+// default local
+timezone = ""
+```
 
-schedule "example" {
-  owner = {
-    name = "cronicle"
-    email = "root@cronicle.com"
-  }
-  cron = "every 5 minutes"
-  
-  start_date = "2015-06-01"
-  end_date = "2019-09-09"
-  
-  retries = 3
-  
-  retry_delay = "5 min"
-  
-  task "run" {
-    repo = "github.com/jshiv/cronicle-sample2"
-    path = "scripts/"
-    commit = "29lsjlw09lskjglkalkjgoij2lkj"
-    command = ["/bin/bash", "run.sh"]
-  }
+### schedule
+```
+schedule "foo" {
+  cron       = "@every 5s"
+  timezone   = ""
+  start_date = ""
+  end_date   = ""
+  repo       = ""
 
-  task "echo" {
-    command = ["/bin/echo", "Second Task"]
-  }
-  
-  task "finish" {
-    command =  ["/bin/echo", "Completed"]
-    depends = ["run", "echo"]
+  task "bar" {
+    command = ["/bin/echo", "Hello World --date=${date}"]
+    depends = null
+    repo    = ""
+    branch  = ""
+    commit  = ""
+
+    retry {
+      count   = 0
+      seconds = 0
+      minutes = 0
+      hours   = 0
+    }
   }
 }
-
 ```
+
 
 # Bash Commands
 
-The init command sets up a new schedule repository with a sample Conicle.yml file
+The init command sets up a new schedule repository with a sample conicle.hcl file
 ```bash
 cronicle init
 tree
 .
-├── .git
-├── .gitignore
-├── Cronicle.yml
-├── logs
-└── repos
+├── cronicle.hcl
+└── .repos
 ```
 
 the run command starts the scheduler.
 ```bash
 cronicle run
 ```
+
+the exec command will execute a named task/schedule for a given time or daterange.
+```bash
+cronicle exec --task bar
+```
+
+the worker will start a schedule consumer when `cronicle run --queue ` is in distributed mode.
+```bash
+cronicle worker --queue redis
+```
+
+
 
 

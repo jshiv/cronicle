@@ -16,40 +16,40 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
+	"github.com/jshiv/cronicle/internal/cronicle"
 
-	"github.com/jshiv/cronicle/internal/config"
-
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 // initCmd represents the init command
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Creates a Cronicle git repo including a default Cronicle.hcl file and repos folder.",
+	Short: "Creates a Cronicle git repo including a default cronicle.hcl file and repos folder.",
 	Long: `The cronicle init command will instantiate a Cronicle repository in the current directory
 For example:
 
 cronicle init --path ./cronicle
 tree -a cronicle
-├── .git
-├── Cronicle.hcl
-└── repos
+├── cronicle.hcl
+└── .repos
 
-This directory will contain the root Cronicle.hcl file and git repository. This is where
+This directory will contain the root cronicle.hcl file and git repository. This is where
 the main schedule will be defined and run. Subsequent schedules will be cloned into the 
 repos folder.
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 		croniclePath, _ := cmd.Flags().GetString("path")
-		fmt.Println("Initialize Cronicle: " + croniclePath)
-		config.Init(croniclePath)
+		clone, _ := cmd.Flags().GetString("clone")
+		log.Info("Initialize Cronicle: " + croniclePath)
+		cronicle.Init(croniclePath, clone)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(initCmd)
-	initCmd.Flags().String("path", "./", "new cronicle path")
+	initCmd.Flags().String("path", "./", "cronicle path")
+	initCmd.Flags().String("clone", "", "clone remote git repository into --path, convenience flag for setting up a new project")
 
 	// Here you will define your flags and configuration settings.
 

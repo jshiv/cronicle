@@ -1,34 +1,34 @@
-package cron_test
+package cronicle_test
 
 import (
-	"fmt"
 	"os"
 	"testing"
 
+	"github.com/gernest/kemi"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
 	"path/filepath"
 
-	"github.com/gernest/kemi"
-	"github.com/jshiv/cronicle/internal/config"
+	"github.com/jshiv/cronicle/internal/cronicle"
 )
 
-func TestCron(t *testing.T) {
+func TestConfig(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "Cron Suite")
+	RunSpecs(t, "Config Suite")
 }
 
 var croniclePath string
+var taskPath string
 var testRepoPath string
 
 var _ = BeforeSuite(func() {
 	croniclePath, _ = filepath.Abs("./testconfig/")
-	config.Init(croniclePath)
+	taskPath, _ = filepath.Abs("./test_task/")
+	cronicle.Init(croniclePath, "")
 
 	p, _ := filepath.Abs("./test_repo/")
 	testRepoPath = filepath.Join(p, ".git")
-	fmt.Println(testRepoPath)
 	kemi.Unpack("test_repo.tar.gz", "./")
 
 })
@@ -36,5 +36,6 @@ var _ = BeforeSuite(func() {
 var _ = AfterSuite(func() {
 	os.RemoveAll("./testconfig")
 	os.RemoveAll("./test_repo/")
+	os.RemoveAll("./test_task/")
 
 })

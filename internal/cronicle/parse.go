@@ -1,7 +1,7 @@
-package config
+package cronicle
 
 import (
-	"fmt"
+	"encoding/json"
 	"os"
 
 	"regexp"
@@ -11,6 +11,8 @@ import (
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // HclWriteFile contains the encoded hclwrite.File and the byte array of the file with
@@ -53,8 +55,6 @@ func MarshallHcl(conf Config, path string) string {
 	gohcl.EncodeIntoBody(&conf, f.Body())
 	r := regexp.MustCompile("[$]+")
 	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
-	fmt.Printf("%s", b)
-	fmt.Println("writing to file")
 	destination, err := os.Create(path)
 	if err != nil {
 		panic(err)
@@ -63,16 +63,52 @@ func MarshallHcl(conf Config, path string) string {
 	_, writeErr := destination.Write(b)
 	// _, writeErr := f.WriteTo(destination)
 	if writeErr != nil {
-		fmt.Printf("write error")
+		log.Error("write error")
 	}
 	destination.Close()
 	return path
 }
 
-// GetHcl returns a hcl File object from a given Config
-func GetHcl(conf Config) HclWriteFile {
+// JSON method returns a json []byte array of the struct
+func (conf Config) JSON() []byte {
+	b, err := json.Marshal(&conf)
+	if err != nil {
+		log.Error(err)
+	}
+	return b
+}
+
+// JSON method returns a json []byte array of the struct
+func (schedule Schedule) JSON() []byte {
+	b, err := json.Marshal(&schedule)
+	if err != nil {
+		log.Error(err)
+	}
+	return b
+}
+
+// JSON method returns a json []byte array of the struct
+func (task Task) JSON() []byte {
+	b, err := json.Marshal(&task)
+	if err != nil {
+		log.Error(err)
+	}
+	return b
+}
+
+//Hcl returns a hcl File object from a given Config
+func (conf Config) Hcl() HclWriteFile {
 	f := hclwrite.NewEmptyFile()
 	gohcl.EncodeIntoBody(&conf, f.Body())
+	r := regexp.MustCompile("[$]+")
+	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
+	return HclWriteFile{File: *f, Bytes: b}
+}
+
+//Hcl returns a hcl File object from a given task
+func (task Task) Hcl() HclWriteFile {
+	f := hclwrite.NewEmptyFile()
+	gohcl.EncodeIntoBody(&task, f.Body())
 	r := regexp.MustCompile("[$]+")
 	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
 	return HclWriteFile{File: *f, Bytes: b}

@@ -1,0 +1,39 @@
+[sources.croncile]
+  type = "stdin"
+
+[transforms.cronicle_log]
+  inputs = ["croncile"]
+  type = "logfmt_parser"
+  field = "message"
+  drop_field=true
+  types.exit = "int" # example
+  types.email = "string" # example
+  types.commit = "string" # example
+  types.success = "bool" # example
+  types.task = "string"
+  types.schedule = "string"
+  types.time = "timestamp" # example
+  types.msg = "string"
+  types.level = "string"
+  types.schedule = "string"
+  types.cronicle = "string"
+
+[sinks.console]
+  inputs = ["cronicle_log"]
+  type = "console"
+  encoding.codec = "json"
+
+[sinks.loki]
+  # General
+  type = "loki" # required
+  inputs = ["cronicle_log"] # required
+  endpoint = "http://localhost:3100" # required
+  healthcheck = true # optional, default
+  remove_label_fields = true # optional, don't duplicate labels
+  # Encoding
+  encoding.codec = "json" # optional, default
+  labels.key = "cronicle"
+  labels.task = "{{ task }}"
+  labels.schedule = "{{ schedule }}"
+  labels.success = "{{ success }}"
+  labels.cronicle = "{{ cronicle }}"

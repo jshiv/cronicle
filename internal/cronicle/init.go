@@ -1,4 +1,4 @@
-package config
+package cronicle
 
 import (
 	"fmt"
@@ -7,37 +7,47 @@ import (
 	"path/filepath"
 
 	"github.com/fatih/color"
+	log "github.com/sirupsen/logrus"
+	"gopkg.in/src-d/go-git.v4"
 
 	"net/url"
 
 	"github.com/hashicorp/hcl/v2/hclsimple"
-	"gopkg.in/src-d/go-git.v4"
 )
 
 //Init initializes a default croniclePath with a .git repository,
-//Basic schedule as code in a Cronicle.hcl file and a repos folder.
-func Init(croniclePath string) {
+//Basic schedule as code in a cronicle.hcl file and a repos folder.
+func Init(croniclePath string, cloneRepo string) {
+
 	absCroniclePath, err := filepath.Abs(croniclePath)
 	if err != nil {
-		panic(err)
+		log.Error(err)
 	}
+
+	//if remote is given, clone it to the cronicle path
+	if cloneRepo != "" {
+		_, err = git.PlainClone(absCroniclePath, false, &git.CloneOptions{URL: cloneRepo})
+		if err != nil {
+			log.Error(err)
+		}
+	}
+
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	// errors.New("could not extract repos from " + slantedRed("Config"))
 	fmt.Println("Init Cronicle: " + slantyedCyan(absCroniclePath))
-	os.MkdirAll(path.Join(absCroniclePath, "repos"), 0777)
-	_, err = git.PlainInit(absCroniclePath, false)
-	if err != nil {
-		fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("git: %s", err))
-	}
-	cronicleFile := path.Join(absCroniclePath, "Cronicle.hcl")
+	//TODO: add .gitignore blocking .repos
+	//TODO: if init executes in .git path, add .git/remote to cronicle.hcl
+	os.MkdirAll(path.Join(absCroniclePath, ".repos"), 0777)
+	cronicleFile := path.Join(absCroniclePath, "cronicle.hcl")
 	if fileExists(cronicleFile) {
 		conf, _ := GetConfig(cronicleFile)
-		hcl := GetHcl(*conf)
+		hcl := conf.Hcl()
 		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 		// CloneRepos(absCroniclePath, conf)
 	} else {
 		MarshallHcl(Default(), cronicleFile)
-		Commit(absCroniclePath, "Cronicle Initial Commit")
+		// TODO pull cronicle repo, if config.repo != "", do not creat .git
+		// Commit(absCroniclePath, "Cronicle Initial Commit")
 	}
 
 }
@@ -46,7 +56,6 @@ func Init(croniclePath string) {
 func GetRepos(conf *Config) map[string]bool {
 	repos := map[string]bool{}
 	for _, repo := range conf.Repos {
-		fmt.Println(repo)
 		repos[repo] = true
 	}
 	for _, sched := range conf.Schedules {
@@ -63,10 +72,10 @@ func GetRepos(conf *Config) map[string]bool {
 	return repos
 }
 
-//LocalRepoDir takes a Cronicle.hcl path and a github repo URL and converts
+//LocalRepoDir takes a cronicle.hcl path and a github repo URL and converts
 //it to the local clone of that repo
 func LocalRepoDir(croniclePath string, repo string) (string, error) {
-	reposDir := path.Join(croniclePath, "repos")
+	reposDir := path.Join(croniclePath, ".repos")
 	u, err := url.Parse(repo)
 	if err != nil {
 		return "", err
@@ -76,68 +85,50 @@ func LocalRepoDir(croniclePath string, repo string) (string, error) {
 	return localRepoDir, nil
 }
 
-//SetConfig populates task repo path, runs git clone for any sub repos,
+//CleanGit nulls non-serlizable properties of a schedule
+//task.Git = Git{}
+func (schedule *Schedule) CleanGit() {
+	for i := range schedule.Tasks {
+		schedule.Tasks[i].CleanGit()
+	}
+}
+
+//Init populates task repo path, runs git clone for any sub repos,
 //and assigns Git meta data to the task
-func SetConfig(conf *Config, croniclePath string) error {
+func (conf *Config) Init(croniclePath string) error {
 	// Assign the path for each task or schedule repo
-	for sdx, schedule := range conf.Schedules {
-		for tdx, task := range schedule.Tasks {
-			err := task.Validate()
-			if err != nil {
+	conf.PropigateTaskProperties(croniclePath)
+	if err := conf.Validate(); err != nil {
+		return err
+	}
+
+	//If conf.Remote is a given repo, clone and fetch
+	if conf.Remote != "" {
+		g, err := Clone(croniclePath, conf.Remote)
+		if err != nil {
+			return err
+		}
+		if err := g.Checkout("", ""); err != nil {
+			return err
+		}
+	}
+
+	for _, schedule := range conf.Schedules {
+		for _, task := range schedule.Tasks {
+			if err := task.Validate(); err != nil {
 				return err
 			}
-			var path string
-			var taskPath string
-			var repo string
-
-			// If the task is associated to a repo
 			if task.Repo != "" {
-				repo = task.Repo
-				// If a Schedule is associated to a repo, all sub tasks are by default associated
-			} else if schedule.Repo != "" {
-				repo = schedule.Repo
-				// Else the repo is the cronicle repo
-			} else {
-				//TODO: make remote cronicle repo rathar than ""
-				repo = ""
-			}
-			// If the task is associated to a repo, put it in the repos directory
-			if task.Repo != "" {
-				path, _ = LocalRepoDir(croniclePath, task.Repo)
-				// If a Schedule is associated to a repo, all sub tasks are by default associated
-			} else if schedule.Repo != "" {
-				path, _ = LocalRepoDir(croniclePath, schedule.Repo)
-				// Else the path is the root croniclePath
-			} else {
-				path = croniclePath
-			}
-
-			// If the given task is associatated to a repo, clone the task to an independent path
-			if repo != "" {
-				taskPath = filepath.Join(path, schedule.Name, task.Name)
-				// Else the task is associated to the root croniclePath
-			} else {
-				taskPath = croniclePath
-			}
-			conf.Schedules[sdx].Tasks[tdx].Path = taskPath
-			conf.Schedules[sdx].Tasks[tdx].Repo = repo
-
-			// Clone the repo if there is no .git directory in taskPath
-			if !DirExists(filepath.Join(taskPath, ".git")) {
-
-				_, err := git.PlainClone(taskPath, false, &git.CloneOptions{URL: repo})
-				if err != nil {
+				if _, err := Clone(task.Path, task.Repo); err != nil {
 					return err
 				}
 			}
-			conf.Schedules[sdx].Tasks[tdx].Git = GetGit(taskPath)
-
 		}
 	}
 	return nil
 }
 
-// GetConfig returns the Config specified by the given Cronicle.hcl file
+// GetConfig returns the Config specified by the given cronicle.hcl file
 // Including any Cronicle files specified by in the repos directory.
 func GetConfig(cronicleFile string) (*Config, error) {
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
@@ -153,9 +144,12 @@ func GetConfig(cronicleFile string) (*Config, error) {
 		return nil, err
 	}
 
-	if err := SetConfig(&conf, croniclePath); err != nil {
-		return &conf, err
-	}
+	conf.Init(croniclePath)
+	// conf.PropigateTaskProperties(croniclePath)
+
+	// if err := SetConfig(&conf, croniclePath); err != nil {
+	// 	return &conf, err
+	// }
 
 	// Collect any sub level Cronicle files if they exist
 	// then append all schedules to conf.Schedules
@@ -163,10 +157,7 @@ func GetConfig(cronicleFile string) (*Config, error) {
 	repos := GetRepos(&conf)
 	for repo := range repos {
 		repoPath, _ := LocalRepoDir(croniclePath, repo)
-		fmt.Println("sub repo path:  " + repoPath)
-		repoCronicleFile := filepath.Join(repoPath, "Cronicle.hcl")
-		fmt.Println("sub repo file:  " + repoCronicleFile)
-		fmt.Println(fileExists(repoCronicleFile))
+		repoCronicleFile := filepath.Join(repoPath, "cronicle.hcl")
 		if fileExists(repoCronicleFile) {
 			repoConf, _ := GetConfig(repoCronicleFile)
 			for _, repoSched := range repoConf.Schedules {

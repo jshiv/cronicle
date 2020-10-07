@@ -16,34 +16,60 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
-
-	"github.com/jshiv/cronicle/internal/cron"
+	"github.com/jshiv/cronicle/internal/cronicle"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 // runCmd represents the run command
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Cronicle run reads in the Cronicle.hcl schedule and starts running tasks",
-	Long: `The cronicle run command starts the cron scheduler for the specified Cronicle.hcl file.
+	Short: "Cronicle run reads in the cronicle.hcl schedule and starts running tasks",
+	Long: `The cronicle run command starts the cron scheduler for the specified cronicle.hcl file.
 For example:
 
 cronicle init --path cronicle
-cronicle run --path cronicle/Cronicle.hcl
+cronicle run --path cronicle/cronicle.hcl
 
 The run command will log schedule information to stdout including git commit info.`,
 	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
 		path, _ := cmd.Flags().GetString("path")
-		fmt.Println("Reading from: " + path)
-		cron.Run(path)
+
+		runWorker, _ := cmd.Flags().GetBool("worker")
+		queueType, _ := cmd.Flags().GetString("queue")
+		queueName, _ := cmd.Flags().GetString("queue-name")
+		addr, _ := cmd.Flags().GetString("addr")
+
+		runOptions := cronicle.RunOptions{RunWorker: runWorker, QueueType: queueType, QueueName: queueName, Addr: addr}
+
+		log.Info("Reading from: " + path)
+		cronicle.Run(path, runOptions)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(runCmd)
-	runCmd.Flags().String("path", "./Cronicle.hcl", "Path to a Cronicle.hcl file")
+	runCmd.Flags().String("path", "./cronicle.hcl", "Path to a cronicle.hcl file")
+	runCmd.Flags().Bool("worker", true, "start a worker thread to consume tasks in distributed mode")
+	queueDesc := `
+	message broker technology for distributed schedule execution, 
+	Options: 
+		redis [distributed on localhost:6379]
+		nsq [run on cluster with nsqd:4150]
+	Configurable via the queue.type field in cronicle.hcl
+	`
+	runCmd.Flags().String("queue", "", queueDesc)
+	runCmd.Flags().String("queue-name", "cronicle", "Name of the queue to message schedules over.")
+
+	addrDesc := `
+	host:port of the queue service leader, 
+	Options: 
+		redis server[default: 127.0.0.1:6379]
+		nsq   NSQLookupd service [default: localhost:4150 nsqd dameon]
+	Configurable via the queue.addr field in cronicle.hcl
+	`
+	runCmd.Flags().String("addr", "", addrDesc)
 
 	// Here you will define your flags and configuration settings.
 
