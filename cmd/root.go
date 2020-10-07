@@ -31,17 +31,17 @@ var cfgFile string
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "cronicle",
-	Short: "cronicle is a distributed, git integrated cron based task engine.",
-	Long: `cronicle is a distributed, "schedule as code" cron based task engine.
-cronicle git integration provides a pull model for CI/CD and versioning on job execution.
-tasks in cronicle can be associated to a remote git repo, which allows tasks to execute
+	Short: "Cronicle is a distributed, git integrated cron based task engine.",
+	Long: `Cronicle is a distributed, "schedule as code" cron based task engine.
+Cronicle git integration provides a pull model for CI/CD and versioning on job execution.
+Tasks in cronicle can be associated to a remote git repo, which allows tasks to execute
 against a specific version of a code base. 
 
 Executing the following example cronicle.hcl with
 "cronicle run --path ./cronicle.hcl"
 will clone the repo https://github.com/jshiv/cronicle-sample.git 
 into .repos/jshiv/cronicle-sample.git/example/hello/
-and execute the command "python run.py" from there every 5 seconds.
+and execute the command "python run.py" from the new path every 5 seconds.
 
 //cronicle.hcl
 queue {}
