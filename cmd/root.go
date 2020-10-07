@@ -31,13 +31,31 @@ var cfgFile string
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "cronicle",
-	Short: "A brief description of your application",
-	Long: `A longer description that spans multiple lines and likely contains
-examples and usage of using your application. For example:
+	Short: "cronicle is a distributed, git integrated cron based task engine.",
+	Long: `cronicle is a distributed, "schedule as code" cron basded task engine.
+cronicle git integration provides a pull model for CI/CD and versioning on job execution.
+tasks in cronicle can be associated to a remote git repo, which allows tasks to execute
+against a specific version of a code base. 
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+Executing the following example cronicle.hcl with
+"cronicle run --path ./cronicle.hcl"
+will clone the repo https://github.com/jshiv/cronicle-sample.git 
+into .repos/jshiv/cronicle-sample.git/example/hello/
+and execute the command "python run.py" from there every 5 seconds.
+
+//cronicle.hcl
+queue {}
+
+schedule "example" {
+  cron       = "@every 5s"
+
+  task "hello" {
+    command = ["python", "run.py"]
+    repo    = "https://github.com/jshiv/cronicle-sample.git"
+    retry {}
+  }
+}
+`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	//	Run: func(cmd *cobra.Command, args []string) { },
