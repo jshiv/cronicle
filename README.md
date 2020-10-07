@@ -7,31 +7,34 @@ The tool will use a cronicle.hcl file to maintain a `schedule as code`.
 
 `cronicle init --path cron` will produce a default file:
 ```hcl
-#cronicle.hcl 
+//cronicle.hcl
+queue {}
 
-schedule "foo" {
+schedule "example" {
   cron       = "@every 5s"
 
-  task "bar" {
-    command = ["/bin/echo", "Hello World --date=${date}"]
+  task "hello" {
+    command = ["python", "run.py"]
+    repo    = "https://github.com/jshiv/cronicle-sample.git"
+    retry {}
   }
 }
 ```
 
 `cronicle run --path cron/cronicle.hcl`
 ```
-INFO[2020-10-05T05:24:33Z] Starting Scheduler...                         cronicle=start
-INFO[2020-10-05T05:24:33Z] Loading config...                             cronicle=heartbeat path=./cron/cronicle.hcl
-INFO[2020-10-05T05:24:33Z] Refreshing config...                          cronicle=heartbeat path=./cron/cronicle.hcl
-INFO[2020-10-05T05:24:38Z] Queuing...                                    schedule=foo
-INFO[2020-10-05T05:24:38Z] Hello World --date=2020-10-05                 commit=null email=null exit=0 schedule=foo success=true task=bar
+INFO[2020-10-06T21:44:16-07:00] Starting Scheduler...                         cronicle=start
+INFO[2020-10-06T21:44:16-07:00] Loading config...                             cronicle=heartbeat path=./cronicle.hcl
+INFO[2020-10-06T21:44:21-07:00] Queuing...                                    schedule=example
+INFO[2020-10-06T21:44:21-07:00]                                               attempt=1 schedule=example task=hello
+INFO[2020-10-06T21:44:21-07:00] X: 0.360346904169                             commit=f99ad6af7de email=jason.shiverick@gmail.com exit=0 schedule=example success=true task=hello
 ```
 
 ## Breakdown of `cronicle.hcl`
 
 ### `remote` (optional)
 __Note: setting remote requires that any changes to the cronicle repo to be made through 
-the remote git repo, any local changes will be removed by `git checkout`__
+the remote git repo, any local changes will be removed by `git checkout`.__
 ```hcl
 // remote enables the cronicle.hcl file to be tracked by a remote git repo
 // a heartbeat process will fetch and refresh the config from this remote.
