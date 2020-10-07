@@ -32,7 +32,7 @@ var cfgFile string
 var rootCmd = &cobra.Command{
 	Use:   "cronicle",
 	Short: "cronicle is a distributed, git integrated cron based task engine.",
-	Long: `cronicle is a distributed, "schedule as code" cron basded task engine.
+	Long: `cronicle is a distributed, "schedule as code" cron based task engine.
 cronicle git integration provides a pull model for CI/CD and versioning on job execution.
 tasks in cronicle can be associated to a remote git repo, which allows tasks to execute
 against a specific version of a code base. 
