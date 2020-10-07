@@ -27,12 +27,22 @@ import (
 var execCmd = &cobra.Command{
 	Use:   "exec",
 	Short: "cronicle exec executes a specified task or schedule",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Long: `exec allows for task execution outside of the cron context.
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+For example to load the local cronicle file and execute task "bar" in 
+schedule "foo" you could run:
+	cronicle exec --path ./cronicle.hcl --schedule foo --task bar --time 2020-01-02T15:04:05-08:00
+The schedule/task list will be filtered down and executed.
+Any ${date} or ${timestamp} command templates will be filled with 
+the timestamp given by --time which defaults to the current timestamp. 
+
+In order to provide a backfill mechaninism, the flag --end is provided,
+and if given cronicle will loop over a date range from --time to --end 
+filling any ${date} values and executing the given tasks for each date in 
+the range.
+
+cronicle init
+cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 	Run: func(cmd *cobra.Command, args []string) {
 		path, _ := cmd.Flags().GetString("path")
 		task, _ := cmd.Flags().GetString("task")

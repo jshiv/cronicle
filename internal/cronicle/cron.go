@@ -251,20 +251,13 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Reading from: " + cronicleFileAbs)
+	log.Info("Loading " + cronicleFileAbs)
 
 	conf, _ := GetConfig(cronicleFileAbs)
 
 	tasks := conf.TaskArray().FilterTasks(taskName, scheduleName)
-	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
-
-	var c Config
-	execSchedule := Schedule{Name: "exec", Cron: now.String(), Tasks: tasks}
-	c.Schedules = []Schedule{execSchedule}
-	fmt.Printf("%s", slantyedCyan(string(c.Hcl().Bytes)))
 
 	for _, task := range tasks {
-		r, _ := task.Execute(now)
-		task.Log(r)
+		task.Execute(now)
 	}
 }
