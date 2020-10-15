@@ -41,8 +41,9 @@ repos folder.
 	Run: func(cmd *cobra.Command, args []string) {
 		croniclePath, _ := cmd.Flags().GetString("path")
 		clone, _ := cmd.Flags().GetString("clone")
+		sshKey, _ := cmd.Flags().GetString("ssh-key")
 		log.Info("Initialize Cronicle: " + croniclePath)
-		cronicle.Init(croniclePath, clone)
+		cronicle.Init(croniclePath, clone, sshKey)
 	},
 }
 
@@ -50,6 +51,7 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 	initCmd.Flags().String("path", "./", "cronicle path")
 	initCmd.Flags().String("clone", "", "clone remote git repository into --path, convenience flag for setting up a new project")
+	initCmd.Flags().String("ssh-key", "~/.ssh/id_rsa", "path to private ssh-key that has read access to remote")
 
 	// Here you will define your flags and configuration settings.
 
