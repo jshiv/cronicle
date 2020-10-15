@@ -9,6 +9,16 @@ import (
 	c "gopkg.in/src-d/go-git.v4/config"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
+
+	"io/ioutil"
+	"os"
+	"path"
+	"strings"
+
+	"golang.org/x/crypto/ssh"
+	"gopkg.in/src-d/go-git.v4/plumbing/transport"
+	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"
+	gitssh "gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 )
 
 // Git is the struct which associates common data structures from the go-git library.
@@ -19,6 +29,7 @@ type Git struct {
 	Hash          *plumbing.Hash
 	Commit        *object.Commit
 	ReferenceName plumbing.ReferenceName
+	authMethod    transport.AuthMethod
 }
 
 //Open populates a git struct for the given worktreePath
@@ -88,7 +99,16 @@ func Commit(worktreeDir string, msg string) {
 func Clone(worktreeDir string, repo string) (Git, error) {
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
 
-		_, err := git.PlainClone(worktreeDir, false, &git.CloneOptions{URL: repo})
+		// var cloneOptions git.CloneOptions
+		// if sshKey != "" {
+		// 	auth, err := sshKeyFromFile(sshKeyPath)
+		// 	cloneOptions = git.CloneOptions{URL: repo, Auth: auth}
+		// } else {
+		// 	cloneOptions = git.CloneOptions{URL: repo}
+		// }
+		cloneOptions := git.CloneOptions{URL: repo}
+
+		_, err := git.PlainClone(worktreeDir, false, &cloneOptions)
 		if err != nil {
 			return Git{}, err
 		}
@@ -162,4 +182,35 @@ func (g *Git) Checkout(branch string, commit string) error {
 //task.Git = Git{}
 func (task *Task) CleanGit() {
 	task.Git = Git{}
+}
+
+func usernamePassword(username, password string) (transport.AuthMethod, error) {
+	return &http.BasicAuth{
+		Username: username,
+		Password: password,
+	}, nil
+}
+
+func sshKeyFromFile(fp string) (transport.AuthMethod, error) {
+	if strings.HasPrefix(fp, "~/") {
+		home, _ := os.UserHomeDir()
+		fp = path.Join(home, fp[2:])
+	}
+	key, err := ioutil.ReadFile(fp)
+	if err != nil {
+		return nil, err
+	}
+	return sshKey(key)
+}
+
+func sshKey(key []byte) (transport.AuthMethod, error) {
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+
+	return &gitssh.PublicKeys{
+		User:   "git",
+		Signer: signer,
+	}, nil
 }
