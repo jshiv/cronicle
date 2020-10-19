@@ -15,34 +15,42 @@ var _ = Describe("git", func() {
 
 	It("cronicle.Clone should fetch and populate the a Git object into task.Path from https://github.com/jshiv/cronicle-sample.git", func() {
 		conf := cronicle.Default()
-		conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
+		conf.Schedules[0].Repo = &cronicle.Repo{URL: "https://github.com/jshiv/cronicle-sample.git"}
 
 		conf.PropigateTaskProperties(taskPath)
 		task := conf.Schedules[0].Tasks[0]
 		// err := task.Clone()
-		g, err := cronicle.Clone(task.Path, task.Repo)
+		repo := cronicle.Repo{URL: task.Repo.URL, DeployKey: ""}
+		task.Repo = &repo
+		auth, err := repo.Auth()
+		Expect(err).To(BeNil())
+		g, err := cronicle.Clone(task.Path, task.Repo.URL, auth)
 		Expect(err).To(BeNil())
 		task.Git = g
 
-		err = task.Git.Checkout(task.Branch, task.Commit)
+		err = task.Git.Checkout(task.Repo.Branch, task.Repo.Commit)
 		Expect(err).To(BeNil())
 
 		Expect(task.Path).To(Equal(taskPath + "/.repos/jshiv/cronicle-sample.git/foo/bar"))
-		Expect(task.Repo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
+		Expect(task.Repo.URL).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
 		Expect(task.Git.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))
 		Expect(cronicle.DirExists(taskPath + "/.repos/jshiv/cronicle-sample.git/foo/bar/.git")).To(Equal(true))
 	})
 
 	It("Git.Open should populate the Git from cloned taskPath from testRepo", func() {
 		conf := cronicle.Default()
-		conf.Schedules[0].Repo = testRepoPath
+		conf.Schedules[0].Repo = &cronicle.Repo{}
+		conf.Schedules[0].Repo.URL = testRepoPath
 
 		conf.PropigateTaskProperties(taskPath)
 		task := conf.Schedules[0].Tasks[0]
-		g, err := cronicle.Clone(task.Path, task.Repo)
+		repo := cronicle.Repo{URL: task.Repo.URL, DeployKey: ""}
+		auth, err := repo.Auth()
+		Expect(err).To(BeNil())
+		g, err := cronicle.Clone(task.Path, task.Repo.URL, auth)
 		Expect(err).To(BeNil())
 		task.Git = g
-		err = task.Git.Checkout(task.Branch, task.Commit)
+		err = task.Git.Checkout(task.Repo.Branch, task.Repo.Commit)
 		Expect(err).To(BeNil())
 		task.CleanGit()
 		cleanGit := cronicle.Git{}

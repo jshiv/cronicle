@@ -10,15 +10,9 @@ import (
 	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
 
-	"io/ioutil"
-	"os"
-	"path"
-	"strings"
-
-	"golang.org/x/crypto/ssh"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"
-	gitssh "gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
+	"gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 )
 
 // Git is the struct which associates common data structures from the go-git library.
@@ -29,7 +23,23 @@ type Git struct {
 	Hash          *plumbing.Hash
 	Commit        *object.Commit
 	ReferenceName plumbing.ReferenceName
-	authMethod    transport.AuthMethod
+	authMethod    *transport.AuthMethod
+}
+
+func (repo *Repo) Auth() (transport.AuthMethod, error) {
+
+	if repo.URL == "" {
+		return nil, nil
+	}
+
+	if repo.DeployKey != "" {
+		auth, err := ssh.NewPublicKeysFromFile("cronicle", repo.DeployKey, "")
+		return auth, err
+	}
+
+	// auth := http.BasicAuth{Username: repo.user, Password: repo.password}
+	return nil, nil
+
 }
 
 //Open populates a git struct for the given worktreePath
@@ -96,17 +106,20 @@ func Commit(worktreeDir string, msg string) {
 
 //Clone checks for the existance of worktreeDir/.git and clones if it does not exist
 //then executes Git = GetGit(worktreeDir)
-func Clone(worktreeDir string, repo string) (Git, error) {
+func Clone(worktreeDir string, repo string, auth transport.AuthMethod) (Git, error) {
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
 
 		// var cloneOptions git.CloneOptions
-		// if sshKey != "" {
-		// 	auth, err := sshKeyFromFile(sshKeyPath)
+		// if deployKey != "" {
+		// 	auth, err := ssh.NewPublicKeysFromFile("git", deployKey, "")
+		// 	if err != nil {
+		// 		log.Fatal(err)
+		// 	}
 		// 	cloneOptions = git.CloneOptions{URL: repo, Auth: auth}
 		// } else {
-		// 	cloneOptions = git.CloneOptions{URL: repo}
+		// 	cloneOptions = git.CloneOptions{URL: repo, Auth: nil}
 		// }
-		cloneOptions := git.CloneOptions{URL: repo}
+		cloneOptions := git.CloneOptions{URL: repo, Auth: auth}
 
 		_, err := git.PlainClone(worktreeDir, false, &cloneOptions)
 		if err != nil {
@@ -188,29 +201,5 @@ func usernamePassword(username, password string) (transport.AuthMethod, error) {
 	return &http.BasicAuth{
 		Username: username,
 		Password: password,
-	}, nil
-}
-
-func sshKeyFromFile(fp string) (transport.AuthMethod, error) {
-	if strings.HasPrefix(fp, "~/") {
-		home, _ := os.UserHomeDir()
-		fp = path.Join(home, fp[2:])
-	}
-	key, err := ioutil.ReadFile(fp)
-	if err != nil {
-		return nil, err
-	}
-	return sshKey(key)
-}
-
-func sshKey(key []byte) (transport.AuthMethod, error) {
-	signer, err := ssh.ParsePrivateKey(key)
-	if err != nil {
-		return nil, err
-	}
-
-	return &gitssh.PublicKeys{
-		User:   "git",
-		Signer: signer,
 	}, nil
 }

@@ -23,25 +23,32 @@ var _ = Describe("Init", func() {
 				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath))
 			})
 			It("should clone a sub repo from https://github.com/jshiv/cronicle-sample.git", func() {
-				conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
+				conf.Schedules[0].Repo = &cronicle.Repo{}
+				conf.Schedules[0].Repo.URL = "https://github.com/jshiv/cronicle-sample.git"
 				err := conf.Init(croniclePath)
 
 				Expect(err).To(BeNil())
 				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath + "/.repos/jshiv/cronicle-sample.git/foo/bar"))
-				Expect(conf.Schedules[0].Tasks[0].Repo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
+				Expect(conf.Schedules[0].Tasks[0].Repo.URL).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
 				Expect(config.DirExists(croniclePath + "/.repos/jshiv/cronicle-sample.git/foo/bar/.git")).To(Equal(true))
-				g, err := cronicle.Clone(conf.Schedules[0].Tasks[0].Path, conf.Schedules[0].Tasks[0].Repo)
+				repo := cronicle.Repo{URL: conf.Schedules[0].Tasks[0].Repo.URL, DeployKey: ""}
+				auth, err := repo.Auth()
+				Expect(err).To(BeNil())
+				g, err := cronicle.Clone(conf.Schedules[0].Tasks[0].Path, conf.Schedules[0].Tasks[0].Repo.URL, auth)
+				// g, err := cronicle.Clone(conf.Schedules[0].Tasks[0].Path, conf.Schedules[0].Tasks[0].Repo)
 				Expect(err).To(BeNil())
 				Expect(g.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))
 
 			})
 			It("should fail if a branch and commit are given from https://github.com/jshiv/cronicle-sample.git", func() {
-				conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
-				conf.Schedules[0].Tasks[0].Branch = "feature/test-branch"
-				conf.Schedules[0].Tasks[0].Commit = "8e9f30a6c3598203c73c0fd393081d2e84961da9"
+				conf.Schedules[0].Repo = &cronicle.Repo{}
+				conf.Schedules[0].Repo.URL = "https://github.com/jshiv/cronicle-sample.git"
+				conf.Schedules[0].Tasks[0].Repo = &cronicle.Repo{}
+				conf.Schedules[0].Tasks[0].Repo.Branch = "feature/test-branch"
+				conf.Schedules[0].Tasks[0].Repo.Commit = "8e9f30a6c3598203c73c0fd393081d2e84961da9"
 
 				err := conf.Init(croniclePath)
-				Expect(err).To(Equal(config.ErrBranchAndCommitGiven))
+				Expect(err).To(Equal(cronicle.ErrBranchAndCommitGiven))
 
 			})
 		})
@@ -65,7 +72,8 @@ var _ = Describe("Init", func() {
 		Context("config.GetRepos", func() {
 			It("should be https://github.com/jshiv/cronicle-sample.git", func() {
 				conf := config.Default()
-				conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
+				conf.Schedules[0].Repo = &cronicle.Repo{}
+				conf.Schedules[0].Repo.URL = "https://github.com/jshiv/cronicle-sample.git"
 				repos := config.GetRepos(&conf)
 				expected := map[string]bool{
 					"https://github.com/jshiv/cronicle-sample.git": true,
@@ -79,7 +87,8 @@ var _ = Describe("Init", func() {
 		Context("config.GetRepos", func() {
 			It("should be https://github.com/jshiv/cronicle-sample.git", func() {
 				conf := config.Default()
-				conf.Schedules[0].Tasks[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
+				conf.Schedules[0].Tasks[0].Repo = &cronicle.Repo{}
+				conf.Schedules[0].Tasks[0].Repo.URL = "https://github.com/jshiv/cronicle-sample.git"
 				repos := config.GetRepos(&conf)
 				expected := map[string]bool{
 					"https://github.com/jshiv/cronicle-sample.git": true,
@@ -94,8 +103,10 @@ var _ = Describe("Init", func() {
 			It("should be https://github.com/jshiv/cronicle-sample.git", func() {
 				conf := config.Default()
 				conf.Repos = []string{"https://github.com/jshiv/cronicle-sample.git"}
-				conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
-				conf.Schedules[0].Tasks[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
+				conf.Schedules[0].Repo = &cronicle.Repo{}
+				conf.Schedules[0].Repo.URL = "https://github.com/jshiv/cronicle-sample.git"
+				conf.Schedules[0].Tasks[0].Repo = &cronicle.Repo{}
+				conf.Schedules[0].Tasks[0].Repo.URL = "https://github.com/jshiv/cronicle-sample.git"
 				repos := config.GetRepos(&conf)
 				expected := map[string]bool{
 					"https://github.com/jshiv/cronicle-sample.git": true,
@@ -110,8 +121,10 @@ var _ = Describe("Init", func() {
 			It("should be https://github.com/jshiv/cronicle-sample.git", func() {
 				conf := config.Default()
 				conf.Repos = []string{"https://github.com/jshiv/cronicle-sample.git"}
-				conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample1.git"
-				conf.Schedules[0].Tasks[0].Repo = "https://github.com/jshiv/cronicle-sample2.git"
+				conf.Schedules[0].Repo = &cronicle.Repo{}
+				conf.Schedules[0].Repo.URL = "https://github.com/jshiv/cronicle-sample1.git"
+				conf.Schedules[0].Tasks[0].Repo = &cronicle.Repo{}
+				conf.Schedules[0].Tasks[0].Repo.URL = "https://github.com/jshiv/cronicle-sample2.git"
 				repos := config.GetRepos(&conf)
 				expected := map[string]bool{
 					"https://github.com/jshiv/cronicle-sample.git":  true,

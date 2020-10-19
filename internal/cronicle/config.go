@@ -5,8 +5,6 @@ import (
 	"log"
 	"path/filepath"
 	"time"
-
-	"gopkg.in/src-d/go-git.v4/plumbing"
 )
 
 // Config is the configuration structure for the cronicle checker.
@@ -21,7 +19,7 @@ type Config struct {
 	// https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 	Timezone string `hcl:"timezone,optional"`
 	// GitRemote *GitRemote `hcl:"git,block"`
-	Queue     Queue      `hcl:"queue,block"`
+	Queue     *Queue     `hcl:"queue,block"`
 	Schedules []Schedule `hcl:"schedule,block"`
 }
 
@@ -37,7 +35,7 @@ type Schedule struct {
 	Timezone  string `hcl:"timezone,optional"`
 	StartDate string `hcl:"start_date,optional"`
 	EndDate   string `hcl:"end_date,optional"`
-	Repo      string `hcl:"repo,optional"`
+	Repo      *Repo  `hcl:"repo,block"`
 	Tasks     []Task `hcl:"task,block"`
 	//Now is the execution time of the given schedule that will be used to
 	//fill variable task command ${datetime}. The cron scheduler generally provides
@@ -48,20 +46,28 @@ type Schedule struct {
 }
 
 // Task is the configuration structure that defines a task (i.e., a command)
-// TODO: Add retry
 type Task struct {
 	Name         string   `hcl:"name,label"`
 	Command      []string `hcl:"command,optional"`
 	Depends      []string `hcl:"depends,optional"`
-	Repo         string   `hcl:"repo,optional"`
-	Branch       string   `hcl:"branch,optional"`
-	Commit       string   `hcl:"commit,optional"`
-	Retry        Retry    `hcl:"retry,block"`
+	Repo         *Repo    `hcl:"repo,block"`
+	Retry        *Retry   `hcl:"retry,block"`
 	Path         string
 	CronicleRepo string
 	CroniclePath string
 	Git          Git
 	ScheduleName string
+}
+
+// Repo is the structure that defines a git repository
+type Repo struct {
+	// URL is the remote git repository, a local path to git repository
+	URL string `hcl:"url,optional"`
+	// DeployKey is the path to the rsa private key that enables pull access to a
+	// private remote repository.
+	DeployKey string `hcl:"key,optional"`
+	Commit    string `hcl:"branch,optional"`
+	Branch    string `hcl:"commit,optional"`
 }
 
 //Retry defines the retry count and delay in number and seconds.
@@ -99,15 +105,25 @@ var (
 	ErrScheduleNameEmpty = errors.New("schedule name can not be an empty string")
 	//ErrTaskNameEmpty is thrown because task.Name == "", hcl can not be given with task "" {}
 	ErrTaskNameEmpty = errors.New("task name can not be an empty string")
+	//ErrRepoGivenAndURLNotGiven is thrown because task.Name == "", hcl can not be given with task "" {}
+	ErrRepoGivenAndURLNotGiven = errors.New("if repo is populated, it must have an assoicated url")
 )
 
 // Validate validates the fields and sets the default values.
 func (task *Task) Validate() error {
-	if task.Branch != "" && task.Commit != "" {
-		return ErrBranchAndCommitGiven
+	if task.Repo != nil {
+		if task.Repo.Branch != "" && task.Repo.Commit != "" {
+			return ErrBranchAndCommitGiven
+		}
 	}
 
-	if task.Repo != "" {
+	if task.Repo != nil {
+		if task.Repo.URL == "" {
+			return ErrRepoGivenAndURLNotGiven
+		}
+	}
+
+	if task.Repo != nil {
 		if task.Path == "" {
 			return ErrIfRepoGivenAndPathNotGiven
 		}
@@ -163,40 +179,54 @@ func (conf *Config) PropigateTaskProperties(croniclePath string) {
 func (schedule *Schedule) PropigateTaskProperties(croniclePath string) {
 	// Assign the path for each task or schedule repo
 	for i, task := range schedule.Tasks {
-		if task.Branch != "" {
-			task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
-		} else {
-			task.Git.ReferenceName = plumbing.HEAD
-		}
+		// if task.Branch != "" {
+		// 	task.Git.ReferenceName = plumbing.NewBranchReferenceName(task.Branch)
+		// } else {
+		// 	task.Git.ReferenceName = plumbing.HEAD
+		// }
 
 		var path string
 		var taskPath string
-		var repo string
+		var repo *Repo
 
 		// If the task is associated to a repo
-		if task.Repo != "" {
+		if task.Repo != nil {
 			repo = task.Repo
+			// Internally propigate REPO properties from schedule.Repo if they are defined in schedle but not in task
+			if schedule.Repo != nil {
+				if task.Repo.URL == "" && schedule.Repo.URL != "" {
+					repo.URL = schedule.Repo.URL
+				}
+				if task.Repo.DeployKey == "" && schedule.Repo.DeployKey != "" {
+					repo.DeployKey = schedule.Repo.DeployKey
+				}
+				if task.Repo.Branch == "" && schedule.Repo.Branch != "" {
+					repo.Branch = schedule.Repo.Branch
+				}
+				if task.Repo.Commit == "" && schedule.Repo.Commit != "" {
+					repo.Commit = schedule.Repo.Commit
+				}
+			}
 			// If a Schedule is associated to a repo, all sub tasks are by default associated
-		} else if schedule.Repo != "" {
+		} else if schedule.Repo != nil {
 			repo = schedule.Repo
 			// Else the repo is the cronicle repo
 		} else {
-			//TODO: make remote cronicle repo rathar than ""
-			repo = ""
+			repo = nil
 		}
 		// If the task is associated to a repo, put it in the repos directory
-		if task.Repo != "" {
-			path, _ = LocalRepoDir(croniclePath, task.Repo)
+		if task.Repo != nil {
+			path, _ = LocalRepoDir(croniclePath, task.Repo.URL)
 			// If a Schedule is associated to a repo, all sub tasks are by default associated
-		} else if schedule.Repo != "" {
-			path, _ = LocalRepoDir(croniclePath, schedule.Repo)
+		} else if schedule.Repo != nil {
+			path, _ = LocalRepoDir(croniclePath, schedule.Repo.URL)
 			// Else the path is the root croniclePath
 		} else {
 			path = croniclePath
 		}
 
 		// If the given task is associatated to a repo, clone the task to an independent path
-		if repo != "" {
+		if repo != nil {
 			taskPath = filepath.Join(path, schedule.Name, task.Name)
 			// Else the task is associated to the root croniclePath
 		} else {

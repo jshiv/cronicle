@@ -30,7 +30,7 @@ var _ = Describe("Config", func() {
 							Name:    "task2",
 							Command: []string{"/bin/bash", "job.sh"},
 							Depends: []string{"task1"},
-							Repo:    "github.com/myname/schedulerepo1",
+							Repo:    &cronicle.Repo{URL: "github.com/myname/schedulerepo1"},
 						},
 					},
 				},
@@ -44,13 +44,18 @@ var _ = Describe("Config", func() {
 
 	It("conf.PropigateTaskProperties(./path/) should propigate task properties ScheduleName, Repo, Branch, and Path", func() {
 		conf := cronicle.Default()
-		conf.Schedules[0].Repo = "https://github.com/jshiv/cronicle-sample.git"
-		conf.Schedules[0].Tasks[0].Branch = "feature/test-branch"
+		conf.Schedules[0].Repo = &cronicle.Repo{}
+		conf.Schedules[0].Repo.URL = "https://github.com/jshiv/cronicle-sample.git"
+		conf.Schedules[0].Repo.DeployKey = "~/.ssh/id_rsa"
+
+		conf.Schedules[0].Tasks[0].Repo = &cronicle.Repo{}
+		conf.Schedules[0].Tasks[0].Repo.Branch = "feature/test-branch"
 
 		conf.PropigateTaskProperties("./path/")
 		Expect(conf.Schedules[0].Tasks[0].ScheduleName).To(Equal("foo"))
-		Expect(conf.Schedules[0].Tasks[0].Repo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
-		Expect(conf.Schedules[0].Tasks[0].Branch).To(Equal("feature/test-branch"))
+		Expect(conf.Schedules[0].Tasks[0].Repo.URL).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
+		Expect(conf.Schedules[0].Tasks[0].Repo.DeployKey).To(Equal("~/.ssh/id_rsa"))
+		Expect(conf.Schedules[0].Tasks[0].Repo.Branch).To(Equal("feature/test-branch"))
 		Expect(conf.Schedules[0].Tasks[0].Path).To(Equal("path/.repos/jshiv/cronicle-sample.git/foo/bar"))
 
 	})
@@ -150,8 +155,10 @@ var _ = Describe("Config", func() {
 		conf := cronicle.Default()
 		conf.PropigateTaskProperties("./path")
 		task := conf.Schedules[0].Tasks[0]
-		task.Branch = "feature/test-branch"
-		task.Commit = "8e9f30a6c3598203c73c0fd393081d2e84961da9"
+		repo := cronicle.Repo{}
+		task.Repo = &repo
+		task.Repo.Branch = "feature/test-branch"
+		task.Repo.Commit = "8e9f30a6c3598203c73c0fd393081d2e84961da9"
 		err := task.Validate()
 		Expect(err).To(Equal(cronicle.ErrBranchAndCommitGiven))
 	})
@@ -160,7 +167,8 @@ var _ = Describe("Config", func() {
 		conf := cronicle.Default()
 		// conf.PropigateTaskProperties("./path")
 		task := conf.Schedules[0].Tasks[0]
-		task.Repo = "https://github.com/jshiv/cronicle-sample.git"
+		repo := cronicle.Repo{URL: "https://github.com/jshiv/cronicle-sample.git"}
+		task.Repo = &repo
 		err := task.Validate()
 		Expect(err).To(Equal(cronicle.ErrIfRepoGivenAndPathNotGiven))
 	})
@@ -169,7 +177,8 @@ var _ = Describe("Config", func() {
 		conf := cronicle.Default()
 		conf.PropigateTaskProperties("./path")
 		task := conf.Schedules[0].Tasks[0]
-		task.Repo = "https://github.com/jshiv/cronicle-sample.git"
+		repo := cronicle.Repo{URL: "https://github.com/jshiv/cronicle-sample.git"}
+		task.Repo = &repo
 		err := task.Validate()
 		Expect(err).To(BeNil())
 	})

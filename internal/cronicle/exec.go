@@ -44,19 +44,23 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 	taskPathIsCroniclePathWithGit := (task.Path == task.CroniclePath) && task.CronicleRepo != ""
 
 	//If a repo is given, clone the repo and task.Git.Open(task.Path)
-	if task.Repo != "" {
-		g, err := Clone(task.Path, task.Repo)
+	if task.Repo != nil {
+		auth, err := task.Repo.Auth()
+		if err != nil {
+			return exec.Result{}, err
+		}
+		g, err := Clone(task.Path, task.Repo.URL, auth)
 		if err != nil {
 			return exec.Result{}, err
 		}
 		task.Git = g
-		err = task.Git.Checkout(task.Branch, task.Commit)
+		err = task.Git.Checkout(task.Repo.Branch, task.Repo.Commit)
 		if err != nil {
 			return exec.Result{}, err
 		}
 	} else if taskPathIsCroniclePathWithGit {
 		var err error
-		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo)
+		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo, nil)
 		if err != nil {
 			log.Error(err)
 			return exec.Result{}, err
@@ -76,13 +80,22 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		result = task.Exec(t)
 		err = result.Error
 		task.Log(result)
-		if err != nil {
+		if err != nil && task.Retry != nil {
 			duration := time.Duration(task.Retry.Seconds) * time.Second
 			duration += time.Duration(task.Retry.Minutes) * time.Minute
 			duration += time.Duration(task.Retry.Hours) * time.Hour
 			time.Sleep(duration)
 		}
-		return attempt < task.Retry.Count, err
+
+		var retryCount int
+		switch task.Retry {
+		case nil:
+			retryCount = 0
+		default:
+			retryCount = task.Retry.Count
+		}
+
+		return attempt < retryCount, err
 	})
 	if err != nil {
 		return result, err
