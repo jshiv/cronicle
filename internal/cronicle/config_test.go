@@ -15,7 +15,7 @@ var _ = Describe("Config", func() {
 	It("Should be configurable from hcl", func() {
 		// not testing anything, just an informative dummy
 		testConfig := cronicle.Config{
-			Remote: "github.com/myname/schedule1",
+			Repo: &cronicle.Repo{URL: "github.com/myname/schedule1"},
 			Schedules: []cronicle.Schedule{
 				{
 					Name:      "My-Schedule",
@@ -62,10 +62,11 @@ var _ = Describe("Config", func() {
 
 	It("conf.PropigateTaskProperties(./path/) should propigate config properties croniclePath and cronicleRepo", func() {
 		conf := cronicle.Default()
-		conf.Remote = "https://github.com/jshiv/cronicle-sample.git"
+		conf.Repo = &cronicle.Repo{}
+		conf.Repo.URL = "https://github.com/jshiv/cronicle-sample.git"
 
 		conf.PropigateTaskProperties("./path/")
-		Expect(conf.Schedules[0].Tasks[0].CronicleRepo).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
+		Expect(conf.Schedules[0].Tasks[0].CronicleRepo.URL).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
 		Expect(conf.Schedules[0].Tasks[0].Path).To(Equal("./path/"))
 
 	})

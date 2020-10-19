@@ -11,8 +11,8 @@ import (
 // https://raw.githubusercontent.com/mitchellh/golicense/master/config/config.go
 // TODO: Add Version string `hcl:"version,optional"`
 type Config struct {
-	// Remote repository containing version controlled cronicle.hcl
-	Remote string `hcl:"remote,optional"`
+	// Repo repository containing version controlled cronicle.hcl
+	Repo *Repo `hcl:"repo,block"`
 	// Repos points at external dependent repos that maintain their own schedules remotly.
 	Repos []string `hcl:"repos,optional"`
 	// Timezone Location to run cron in. i.e. "America/New_York" [IANA Time Zone database]
@@ -42,7 +42,7 @@ type Schedule struct {
 	//the value.
 	Now time.Time
 	//repo given at the config level, will be overridden by repo given at schedule or task level.
-	CronicleRepo string
+	CronicleRepo *Repo
 }
 
 // Task is the configuration structure that defines a task (i.e., a command)
@@ -53,7 +53,7 @@ type Task struct {
 	Repo         *Repo    `hcl:"repo,block"`
 	Retry        *Retry   `hcl:"retry,block"`
 	Path         string
-	CronicleRepo string
+	CronicleRepo *Repo
 	CroniclePath string
 	Git          Git
 	ScheduleName string
@@ -169,7 +169,7 @@ func (conf *Config) PropigateTaskProperties(croniclePath string) {
 		if conf.Schedules[i].Timezone == "" {
 			conf.Schedules[i].Timezone = conf.Timezone
 		}
-		conf.Schedules[i].CronicleRepo = conf.Remote
+		conf.Schedules[i].CronicleRepo = conf.Repo
 		conf.Schedules[i].PropigateTaskProperties(croniclePath)
 	}
 }

@@ -41,7 +41,7 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 	}
 
 	//Test if the given task should execute in the root croniclePath and the croncilePath is a git repo
-	taskPathIsCroniclePathWithGit := (task.Path == task.CroniclePath) && task.CronicleRepo != ""
+	taskPathIsCroniclePathWithGit := (task.Path == task.CroniclePath) && task.CronicleRepo != nil
 
 	//If a repo is given, clone the repo and task.Git.Open(task.Path)
 	if task.Repo != nil {
@@ -59,8 +59,11 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 			return exec.Result{}, err
 		}
 	} else if taskPathIsCroniclePathWithGit {
-		var err error
-		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo, nil)
+		auth, err := task.CronicleRepo.Auth()
+		if err != nil {
+			return exec.Result{}, err
+		}
+		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo.URL, auth)
 		if err != nil {
 			log.Error(err)
 			return exec.Result{}, err

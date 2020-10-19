@@ -114,8 +114,12 @@ func (conf *Config) Init(croniclePath string) error {
 	}
 
 	//If conf.Remote is a given repo, clone and fetch
-	if conf.Remote != "" {
-		g, err := Clone(croniclePath, conf.Remote, nil)
+	if conf.Repo != nil {
+		auth, err := conf.Repo.Auth()
+		if err != nil {
+			return err
+		}
+		g, err := Clone(croniclePath, conf.Repo.URL, auth)
 		if err != nil {
 			return err
 		}

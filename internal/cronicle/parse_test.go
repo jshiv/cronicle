@@ -68,7 +68,7 @@ var _ = Describe("Parse", func() {
 		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
 		// schedule.Now = time.Now().In(time.Local)
-		s := `{"Name":"foo","Cron":"@every 5s","Timezone":"","StartDate":"","EndDate":"","Repo":null,"Tasks":[{"Name":"bar","Command":["/bin/echo","Hello World --date=${date}"],"Depends":null,"Repo":null,"Retry":null,"Path":"","CronicleRepo":"","CroniclePath":"","Git":{"Worktree":null,"Repository":null,"Head":null,"Hash":null,"Commit":null,"ReferenceName":""},"ScheduleName":""}],"Now":"0001-01-01T00:00:00Z","CronicleRepo":""}`
+		s := `{"Name":"foo","Cron":"@every 5s","Timezone":"","StartDate":"","EndDate":"","Repo":null,"Tasks":[{"Name":"bar","Command":["/bin/echo","Hello World --date=${date}"],"Depends":null,"Repo":null,"Retry":null,"Path":"","CronicleRepo":null,"CroniclePath":"","Git":{"Worktree":null,"Repository":null,"Head":null,"Hash":null,"Commit":null,"ReferenceName":""},"ScheduleName":""}],"Now":"0001-01-01T00:00:00Z","CronicleRepo":null}`
 
 		Expect(schedule.JSON()).To(Equal([]byte(s)))
 	})

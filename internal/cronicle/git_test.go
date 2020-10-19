@@ -64,7 +64,8 @@ var _ = Describe("git", func() {
 	It("Git.Open should populate the Git from task.CroniclePath from conf.Remote", func() {
 		conf := cronicle.Default()
 		// conf.Schedules[0].Repo = testRepoPath
-		conf.Remote = "https://github.com/jshiv/cronicle-sample.git"
+		conf.Repo = &cronicle.Repo{}
+		conf.Repo.URL = "https://github.com/jshiv/cronicle-sample.git"
 
 		conf.Init("./cronicle-sample")
 		// conf.PropigateTaskProperties("./cronicle-sample/")
