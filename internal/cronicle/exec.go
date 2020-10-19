@@ -49,8 +49,11 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		if err != nil {
 			return exec.Result{}, err
 		}
-		g, err := Clone(task.Path, task.Repo.URL, auth)
+		g, err := Clone(task.Path, task.Repo.URL, &auth)
+		// g, err := Clone(task.Path, task.Repo.URL, task.Repo.DeployKey)
 		if err != nil {
+			log.Fatal(err)
+
 			return exec.Result{}, err
 		}
 		task.Git = g
@@ -63,7 +66,9 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		if err != nil {
 			return exec.Result{}, err
 		}
-		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo.URL, auth)
+		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo.URL, &auth)
+		// var err error
+		// task.Git, err = Clone(task.CroniclePath, task.CronicleRepo.URL, task.CronicleRepo.DeployKey)
 		if err != nil {
 			log.Error(err)
 			return exec.Result{}, err

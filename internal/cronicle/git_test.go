@@ -24,7 +24,7 @@ var _ = Describe("git", func() {
 		task.Repo = &repo
 		auth, err := repo.Auth()
 		Expect(err).To(BeNil())
-		g, err := cronicle.Clone(task.Path, task.Repo.URL, auth)
+		g, err := cronicle.Clone(task.Path, task.Repo.URL, &auth)
 		Expect(err).To(BeNil())
 		task.Git = g
 
@@ -47,7 +47,7 @@ var _ = Describe("git", func() {
 		repo := cronicle.Repo{URL: task.Repo.URL, DeployKey: ""}
 		auth, err := repo.Auth()
 		Expect(err).To(BeNil())
-		g, err := cronicle.Clone(task.Path, task.Repo.URL, auth)
+		g, err := cronicle.Clone(task.Path, task.Repo.URL, &auth)
 		Expect(err).To(BeNil())
 		task.Git = g
 		err = task.Git.Checkout(task.Repo.Branch, task.Repo.Commit)

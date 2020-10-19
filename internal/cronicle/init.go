@@ -2,10 +2,11 @@ package cronicle
 
 import (
 	"fmt"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+
+	url "github.com/whilp/git-urls"
 
 	"github.com/fatih/color"
 	log "github.com/sirupsen/logrus"
@@ -119,7 +120,8 @@ func (conf *Config) Init(croniclePath string) error {
 		if err != nil {
 			return err
 		}
-		g, err := Clone(croniclePath, conf.Repo.URL, auth)
+		g, err := Clone(croniclePath, conf.Repo.URL, &auth)
+		// g, err := Clone(croniclePath, conf.Repo.URL, conf.Repo.DeployKey)
 		if err != nil {
 			return err
 		}
@@ -138,7 +140,8 @@ func (conf *Config) Init(croniclePath string) error {
 				if err != nil {
 					return err
 				}
-				if _, err := Clone(task.Path, task.Repo.URL, auth); err != nil {
+				if _, err := Clone(task.Path, task.Repo.URL, &auth); err != nil {
+					// if _, err := Clone(task.Path, task.Repo.URL, task.Repo.DeployKey); err != nil {
 					return err
 				}
 			}

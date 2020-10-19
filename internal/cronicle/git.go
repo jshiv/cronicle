@@ -5,13 +5,14 @@ import (
 	"path/filepath"
 	"time"
 
+	homedir "github.com/mitchellh/go-homedir"
+
 	"gopkg.in/src-d/go-git.v4"
 	c "gopkg.in/src-d/go-git.v4/config"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
 
 	"gopkg.in/src-d/go-git.v4/plumbing/transport"
-	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 )
 
@@ -34,7 +35,11 @@ func (repo *Repo) Auth() (transport.AuthMethod, error) {
 	}
 
 	if repo.DeployKey != "" {
-		auth, err := ssh.NewPublicKeysFromFile("cronicle", repo.DeployKey, "")
+		keyPath, err := homedir.Expand(repo.DeployKey)
+		if err != nil {
+			return nil, err
+		}
+		auth, err := ssh.NewPublicKeysFromFile("git", keyPath, "")
 		return auth, err
 	}
 
@@ -107,20 +112,11 @@ func Commit(worktreeDir string, msg string) {
 
 //Clone checks for the existance of worktreeDir/.git and clones if it does not exist
 //then executes Git = GetGit(worktreeDir)
-func Clone(worktreeDir string, repo string, auth transport.AuthMethod) (Git, error) {
+func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, error) {
+
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
 
-		// var cloneOptions git.CloneOptions
-		// if deployKey != "" {
-		// 	auth, err := ssh.NewPublicKeysFromFile("git", deployKey, "")
-		// 	if err != nil {
-		// 		log.Fatal(err)
-		// 	}
-		// 	cloneOptions = git.CloneOptions{URL: repo, Auth: auth}
-		// } else {
-		// 	cloneOptions = git.CloneOptions{URL: repo, Auth: nil}
-		// }
-		cloneOptions := git.CloneOptions{URL: repo, Auth: auth}
+		cloneOptions := git.CloneOptions{URL: url, Auth: *auth}
 
 		_, err := git.PlainClone(worktreeDir, false, &cloneOptions)
 		if err != nil {
@@ -129,6 +125,7 @@ func Clone(worktreeDir string, repo string, auth transport.AuthMethod) (Git, err
 	}
 
 	var g Git
+	g.authMethod = auth
 	if err := g.Open(worktreeDir); err != nil {
 		return g, err
 	}
@@ -141,7 +138,6 @@ func Clone(worktreeDir string, repo string, auth transport.AuthMethod) (Git, err
 //Note: Only one can be given, branch or commit.
 //Checkout requires task.Repo to be given
 func (g *Git) Checkout(branch string, commit string) error {
-
 	if branch != "" && commit != "" {
 		return ErrBranchAndCommitGiven
 	}
@@ -151,9 +147,19 @@ func (g *Git) Checkout(branch string, commit string) error {
 		branch = "master"
 	}
 
-	err := g.Repository.Fetch(&git.FetchOptions{
-		RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
-	})
+	var fetchOptions git.FetchOptions
+	if g.authMethod == nil {
+		fetchOptions = git.FetchOptions{
+			RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
+		}
+	} else {
+		fetchOptions = git.FetchOptions{
+			RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
+			Auth:     *g.authMethod,
+		}
+	}
+
+	err := g.Repository.Fetch(&fetchOptions)
 	if err != nil {
 		switch err {
 		case git.NoErrAlreadyUpToDate:
@@ -196,11 +202,4 @@ func (g *Git) Checkout(branch string, commit string) error {
 //task.Git = Git{}
 func (task *Task) CleanGit() {
 	task.Git = Git{}
-}
-
-func usernamePassword(username, password string) (transport.AuthMethod, error) {
-	return &http.BasicAuth{
-		Username: username,
-		Password: password,
-	}, nil
 }
