@@ -26,6 +26,7 @@ type Git struct {
 	authMethod    *transport.AuthMethod
 }
 
+// Auth authroizes a repository if from a local rsa key
 func (repo *Repo) Auth() (transport.AuthMethod, error) {
 
 	if repo.URL == "" {
