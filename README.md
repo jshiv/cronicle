@@ -11,14 +11,14 @@ The tool will use a cronicle.hcl file to maintain a `schedule as code`.
 ```hcl
 //cronicle.hcl
 schedule "example" {
-	cron       = "@every 5s"
+  cron       = "@every 5s"
 
-	task "hello" {
-		command = ["python", "run.py"]
-		repo {
-		  url = "https://github.com/jshiv/cronicle-sample.git"
-		}
-	}
+  task "hello" {
+    command = ["python", "run.py"]
+    repo {
+      url = "https://github.com/jshiv/cronicle-sample.git"
+    }
+  }
 }
 ```
 
