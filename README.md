@@ -69,9 +69,13 @@ schedule "foo" {
   task "bar" {
     command = ["/bin/echo", "Hello World --date=${date}"]
     depends = null
-    repo    = ""
-    branch  = ""
-    commit  = ""
+    
+	  repo {
+		  url = ""
+      key = ""
+      branch = ""
+      commit = ""
+	  }
 
     retry {
       count   = 0

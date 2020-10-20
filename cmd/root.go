@@ -46,14 +46,14 @@ and execute the command "python run.py" from the new path every 5 seconds.
 //cronicle.hcl
 schedule "example" {
 	cron       = "@every 5s"
-  
+
 	task "hello" {
-	  command = ["python", "run.py"]
-	  repo {
-		url = "https://github.com/jshiv/cronicle-sample.git"
-	  }
+		command = ["python", "run.py"]
+		repo {
+			url = "https://github.com/jshiv/cronicle-sample.git"
+		}
 	}
-  }
+}
 `,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
