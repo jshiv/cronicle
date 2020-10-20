@@ -5,7 +5,7 @@ git integrated distributed workflow scheduler that provides a pull model for CI/
 ---
 
 
-The tool will use a cronicle.hcl file to maintain a `schedule as code`.
+The `cronicle.hcl` file maintains the `schedule as code` for task execution.
 
 `cronicle init --path cron` will produce a default file:
 ```hcl
@@ -30,6 +30,15 @@ INFO[2020-10-06T21:44:21-07:00] Queuing...                                    sc
 INFO[2020-10-06T21:44:21-07:00]                                               attempt=1 schedule=example task=hello
 INFO[2020-10-06T21:44:21-07:00] X: 0.360346904169                             commit=f99ad6af7de email=jason.shiverick@gmail.com exit=0 schedule=example success=true task=hello
 ```
+
+---
+
+
+## Example Deployments
+
+* [Centralize cronicle logs on a local loki/graphana log aggregator](deploy/local/README.md)
+* [Distribute cronicle tasks with nsq message broker](deploy/nsq/README.md)
+
 
 ---
 
