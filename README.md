@@ -62,19 +62,19 @@ repo {
 Contains the executable command, dependency relationship between tasks, 
 a repo to exeucte the command against, 
 ```hcl
-  task "bar" {
-    //executable command
-    command = ["/bin/echo", "Hello World --date=${date}"]
+task "bar" {
+  //executable command
+  command = ["/bin/echo", "Hello World --date=${date}"]
 
-    //dependency relationship between tasks
-    depends = ["baz"]
-    
-    //git repo containing source code to clone/fetch on execution
-	  repo ...
+  //dependency relationship between tasks
+  depends = ["baz"]
+  
+  //git repo containing source code to clone/fetch on execution
+  repo ...
 
-    // retry count and wait
-    retry ...
-  }
+  // retry count and wait
+  retry ...
+}
 ```
 
 ### `schedule`
@@ -118,18 +118,18 @@ schedule "foo" {
 
 ### `retry` (optional)
 Number of retries and time to wait between.
-```
-    retry {
-      count   = 1
-      seconds = 30
-      minutes = 0
-      hours   = 0
-    }
+```hcl
+retry {
+  count   = 1
+  seconds = 30
+  minutes = 0
+  hours   = 0
+}
 ```
 
 
 ### `repos` (optional)
-```
+```hcl
 // repos is a list of remote repositories containing schedules
 // that will be added to the main cron.
 repos = [
@@ -138,7 +138,7 @@ repos = [
 ```
 
 ### `timezone` (optional)
-```
+```hcl
 // timezone sets the timezone location to run cron and execute tasks by.
 // default local
 timezone = "America/Los_Angeles"
