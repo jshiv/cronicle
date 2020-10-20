@@ -75,6 +75,8 @@ func MarshallHcl(conf Config, path string) string {
 //ParseFile parses a given hcl file into a Config
 func ParseFile(cronicleFile string) (*Config, error) {
 
+	conf := &Config{}
+
 	content, err := ioutil.ReadFile(cronicleFile)
 	if err != nil {
 		return nil, err
@@ -84,14 +86,12 @@ func ParseFile(cronicleFile string) (*Config, error) {
 
 	file, diags := hclsyntax.ParseConfig(content, cronicleFile, hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
-		return nil, fmt.Errorf("config parse: %w", diags)
+		return nil, fmt.Errorf("hcl parse: %w", diags)
 	}
-
-	conf := &Config{}
 
 	diags = gohcl.DecodeBody(file.Body, &CommandEvalContext, conf)
 	if diags.HasErrors() {
-		return nil, fmt.Errorf("config parse: %w", diags)
+		return nil, fmt.Errorf("hcl parse: %w", diags)
 	}
 
 	return conf, nil
