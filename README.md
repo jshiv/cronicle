@@ -37,8 +37,8 @@ INFO[2020-10-06T21:44:21-07:00] X: 0.360346904169                             co
 
 
 ### `repo` (optional)
-A `repo` block is avaliable at the `config`, `schedule` and `task` level but the behaviour is different depending on which level it is assigned.
-At the `config` level, a `repo` block enables the `cronicle.hcl` file to be tracked by a remote git repo, a heartbeat process will fetch and refresh the cronicle.hcl from the remote `repo`. At the `schedule` level, the `repo` block will be used as a default `repo` for any `tasks` that do not have an explictly assigned `repo` block. At the `task` level a `repo` block will override the default `repo` with any details given.
+A `repo` block is available at the `config`, `schedule` and `task` level but the behavior is different depending on which level it is assigned.
+At the `config` level, a `repo` block enables the `cronicle.hcl` file to be tracked by a remote git repo, a heartbeat process will fetch and refresh the cronicle.hcl from the remote `repo`. At the `schedule` level, the `repo` block will be used as a default `repo` for any `tasks` that do not have an explicitly assigned `repo` block. At the `task` level a `repo` block will override the default `repo` with any details given.
 _Note: setting remote requires that any changes to the cronicle repo to be made through 
 the remote git repo, any local changes will be removed by `git checkout`._
 ```hcl
@@ -60,7 +60,7 @@ repo {
 
 ### `task`
 Contains the executable command, dependency relationship between tasks, 
-a repo to exeucte the command against, 
+a repo to execute the command against, 
 ```hcl
 task "bar" {
   //executable command
@@ -88,7 +88,7 @@ schedule "foo" {
   timezone   = ""
 
   // Define the window in which the schedule is valid.
-  // Outside of this window, tasks will not execute and a warrning will be logged.
+  // Outside of this window, tasks will not execute and a warring will be logged.
   start_date = ""
   end_date   = ""
 
@@ -147,17 +147,17 @@ tree
 └── .repos
 ```
 
-the run command starts the scheduler.
+The `run` command starts the scheduler.
 ```bash
 cronicle run
 ```
 
-the exec command will execute a named task/schedule for a given time or daterange.
+The `exec` command will execute a named task/schedule for a given time or date range.
 ```bash
 cronicle exec --task bar
 ```
 
-the worker will start a schedule consumer when `cronicle run --queue ` is in distributed mode.
+The `worker` will start a schedule consumer when `cronicle run --queue ` is in distributed mode.
 ```bash
 cronicle worker --queue redis
 ```
