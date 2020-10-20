@@ -21,7 +21,7 @@ var _ = Describe("Exec", func() {
 		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
 		r, err := task.Execute(t)
 		Expect(err).To(BeNil())
-		Expect(task.Repo).To(Equal(""))
+		Expect(task.Repo).To(BeNil())
 		Expect(task.Git.Repository).To(BeNil())
 		Expect(r).To(Equal(exec.Result{}))
 	})
@@ -36,7 +36,7 @@ var _ = Describe("Exec", func() {
 		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
 		r, err := task.Execute(t)
 		Expect(err).To(BeNil())
-		Expect(task.Repo).To(Equal(""))
+		Expect(task.Repo).To(BeNil())
 		Expect(task.Git.Repository).To(BeNil())
 		Expect(r).To(Equal(exec.Result{}))
 	})
@@ -44,10 +44,11 @@ var _ = Describe("Exec", func() {
 	It("Should fetch and checkout branch feature/test-branch and Should return an empty exec.Result", func() {
 		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
-		schedule.Repo = "https://github.com/jshiv/cronicle-sample.git"
+		repo := cronicle.Repo{URL: "https://github.com/jshiv/cronicle-sample.git"}
+		schedule.Repo = &repo
 		schedule.PropigateTaskProperties(taskPath)
 		task := schedule.Tasks[0]
-		task.Branch = "feature/test-branch"
+		task.Repo.Branch = "feature/test-branch"
 
 		task.Command = []string{}
 		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
@@ -61,10 +62,11 @@ var _ = Describe("Exec", func() {
 	It("Should fetch and checkout local commit 699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1", func() {
 		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
-		schedule.Repo = testRepoPath
+		repo := cronicle.Repo{URL: testRepoPath}
+		schedule.Repo = &repo
 		schedule.PropigateTaskProperties(taskPath)
 		task := schedule.Tasks[0]
-		task.Commit = "699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1"
+		task.Repo.Commit = "699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1"
 
 		task.Command = []string{"python", "test.py"}
 		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
@@ -83,10 +85,12 @@ var _ = Describe("Exec", func() {
 	It("Should fetch and checkout local branch test/checkout_specific_branch", func() {
 		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
-		schedule.Repo = testRepoPath
+		repo := cronicle.Repo{}
+		schedule.Repo = &repo
+		schedule.Repo.URL = testRepoPath
 		schedule.PropigateTaskProperties(taskPath)
 		task := schedule.Tasks[0]
-		task.Branch = "test/checkout_specific_branch"
+		task.Repo.Branch = "test/checkout_specific_branch"
 
 		task.Command = []string{"python", "test.py"}
 		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
@@ -106,7 +110,9 @@ var _ = Describe("Exec", func() {
 
 		conf := cronicle.Default()
 		schedule := conf.Schedules[0]
-		schedule.Repo = testRepoPath
+		repo := cronicle.Repo{}
+		schedule.Repo = &repo
+		schedule.Repo.URL = testRepoPath
 		schedule.PropigateTaskProperties(taskPath)
 		task := schedule.Tasks[0]
 
