@@ -114,18 +114,17 @@ func (conf *Config) Init(croniclePath string) error {
 		return err
 	}
 
-	//If conf.Remote is a given repo, clone and fetch
+	//If conf.Repo is a given repo, clone and fetch
 	if conf.Repo != nil {
 		auth, err := conf.Repo.Auth()
 		if err != nil {
 			return err
 		}
 		g, err := Clone(croniclePath, conf.Repo.URL, &auth)
-		// g, err := Clone(croniclePath, conf.Repo.URL, conf.Repo.DeployKey)
 		if err != nil {
 			return err
 		}
-		if err := g.Checkout("", ""); err != nil {
+		if err := g.Checkout(conf.Repo.Branch, conf.Repo.Commit); err != nil {
 			return err
 		}
 	}

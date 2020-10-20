@@ -1,6 +1,9 @@
 package cronicle_test
 
 import (
+	"os"
+	"path/filepath"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"gopkg.in/src-d/go-git.v4/plumbing"
@@ -50,6 +53,28 @@ var _ = Describe("Init", func() {
 				err := conf.Init(croniclePath)
 				Expect(err).To(Equal(cronicle.ErrBranchAndCommitGiven))
 
+			})
+
+			It("conf.Init should authenticate, clone and checkout from git@github.com:jshiv/cronicle-sample.git", func() {
+				conf := cronicle.Default()
+				conf.Repo = &cronicle.Repo{URL: "git@github.com:jshiv/cronicle-sample.git", DeployKey: "./test/test_deploy_key", Branch: "feature/test-branch"}
+				path, _ := filepath.Abs("./test_conf_init_ssh_auth")
+
+				err := conf.Init(path)
+				Expect(err).To(BeNil())
+
+				g := cronicle.Git{}
+				err = g.Open(path)
+				Expect(err).To(BeNil())
+
+				task := conf.Schedules[0].Tasks[0]
+
+				Expect(task.Path).To(Equal(path))
+				// Expect(task.CroniclePath).To(Equal(path))
+				Expect(task.Repo).To(BeNil())
+				Expect(g.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("feature/test-branch")))
+				Expect(cronicle.DirExists(path + "/.git")).To(Equal(true))
+				os.RemoveAll(path)
 			})
 		})
 	})
