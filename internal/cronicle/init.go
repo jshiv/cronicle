@@ -18,7 +18,7 @@ import (
 
 //Init initializes a default croniclePath with a .git repository,
 //Basic schedule as code in a cronicle.hcl file and a repos folder.
-func Init(croniclePath string, cloneRepo string, sshKey string) {
+func Init(croniclePath string, cloneRepo string, deployKey string) {
 
 	absCroniclePath, err := filepath.Abs(croniclePath)
 	if err != nil {
@@ -28,8 +28,8 @@ func Init(croniclePath string, cloneRepo string, sshKey string) {
 	//if remote is given, clone it to the cronicle path
 	if cloneRepo != "" {
 		var cloneOptions git.CloneOptions
-		if sshKey != "" {
-			auth, err := ssh.NewPublicKeysFromFile("git", sshKey, "")
+		if deployKey != "" {
+			auth, err := ssh.NewPublicKeysFromFile("git", deployKey, "")
 			if err != nil {
 				log.Fatal(err)
 			}
