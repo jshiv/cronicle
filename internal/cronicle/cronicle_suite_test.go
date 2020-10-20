@@ -25,7 +25,7 @@ var testRepoPath string
 var _ = BeforeSuite(func() {
 	croniclePath, _ = filepath.Abs("./testconfig/")
 	taskPath, _ = filepath.Abs("./test_task/")
-	cronicle.Init(croniclePath, "")
+	cronicle.Init(croniclePath, "", "")
 
 	p, _ := filepath.Abs("./test_repo/")
 	testRepoPath = filepath.Join(p, ".git")

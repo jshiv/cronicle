@@ -6,18 +6,19 @@ import (
 	"path"
 	"path/filepath"
 
+	url "github.com/whilp/git-urls"
+
 	"github.com/fatih/color"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/src-d/go-git.v4"
-
-	"net/url"
+	"gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 
 	"github.com/hashicorp/hcl/v2/hclsimple"
 )
 
 //Init initializes a default croniclePath with a .git repository,
 //Basic schedule as code in a cronicle.hcl file and a repos folder.
-func Init(croniclePath string, cloneRepo string) {
+func Init(croniclePath string, cloneRepo string, deployKey string) {
 
 	absCroniclePath, err := filepath.Abs(croniclePath)
 	if err != nil {
@@ -26,9 +27,20 @@ func Init(croniclePath string, cloneRepo string) {
 
 	//if remote is given, clone it to the cronicle path
 	if cloneRepo != "" {
-		_, err = git.PlainClone(absCroniclePath, false, &git.CloneOptions{URL: cloneRepo})
+		var cloneOptions git.CloneOptions
+		if deployKey != "" {
+			auth, err := ssh.NewPublicKeysFromFile("git", deployKey, "")
+			if err != nil {
+				log.Fatal(err)
+			}
+			cloneOptions = git.CloneOptions{URL: cloneRepo, Auth: auth}
+		} else {
+			cloneOptions = git.CloneOptions{URL: cloneRepo}
+		}
+
+		_, err = git.PlainClone(absCroniclePath, false, &cloneOptions)
 		if err != nil {
-			log.Error(err)
+			log.Fatal(err)
 		}
 	}
 
@@ -59,12 +71,12 @@ func GetRepos(conf *Config) map[string]bool {
 		repos[repo] = true
 	}
 	for _, sched := range conf.Schedules {
-		if sched.Repo != "" {
-			repos[sched.Repo] = true
+		if sched.Repo != nil {
+			repos[sched.Repo.URL] = true
 		}
 		for _, task := range sched.Tasks {
-			if task.Repo != "" {
-				repos[task.Repo] = true
+			if task.Repo != nil {
+				repos[task.Repo.URL] = true
 			}
 		}
 	}
@@ -74,9 +86,9 @@ func GetRepos(conf *Config) map[string]bool {
 
 //LocalRepoDir takes a cronicle.hcl path and a github repo URL and converts
 //it to the local clone of that repo
-func LocalRepoDir(croniclePath string, repo string) (string, error) {
+func LocalRepoDir(croniclePath string, repoURL string) (string, error) {
 	reposDir := path.Join(croniclePath, ".repos")
-	u, err := url.Parse(repo)
+	u, err := url.Parse(repoURL)
 	if err != nil {
 		return "", err
 	}
@@ -102,13 +114,17 @@ func (conf *Config) Init(croniclePath string) error {
 		return err
 	}
 
-	//If conf.Remote is a given repo, clone and fetch
-	if conf.Remote != "" {
-		g, err := Clone(croniclePath, conf.Remote)
+	//If conf.Repo is a given repo, clone and fetch
+	if conf.Repo != nil {
+		auth, err := conf.Repo.Auth()
 		if err != nil {
 			return err
 		}
-		if err := g.Checkout("", ""); err != nil {
+		g, err := Clone(croniclePath, conf.Repo.URL, &auth)
+		if err != nil {
+			return err
+		}
+		if err := g.Checkout(conf.Repo.Branch, conf.Repo.Commit); err != nil {
 			return err
 		}
 	}
@@ -118,8 +134,13 @@ func (conf *Config) Init(croniclePath string) error {
 			if err := task.Validate(); err != nil {
 				return err
 			}
-			if task.Repo != "" {
-				if _, err := Clone(task.Path, task.Repo); err != nil {
+			if task.Repo != nil {
+				auth, err := task.Repo.Auth()
+				if err != nil {
+					return err
+				}
+				if _, err := Clone(task.Path, task.Repo.URL, &auth); err != nil {
+					// if _, err := Clone(task.Path, task.Repo.URL, task.Repo.DeployKey); err != nil {
 					return err
 				}
 			}
