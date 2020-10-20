@@ -136,4 +136,26 @@ var _ = Describe("Init", func() {
 		})
 	})
 
+	Describe("LocalRepoDir should get path from https, git and local path urls", func() {
+		Context("cronicle.LocalRepoDir", func() {
+			It("should be https://github.com/jshiv/cronicle-sample.git", func() {
+				path, err := cronicle.LocalRepoDir("./cronicle/", "https://github.com/jshiv/cronicle-sample.git")
+				Expect(err).To(BeNil())
+				Expect(path).To(Equal("cronicle/.repos/jshiv/cronicle-sample.git"))
+			})
+
+			It("should be git@github.com:jshiv/cronicle-sample.git", func() {
+				path, err := cronicle.LocalRepoDir("./cronicle/", "git@github.com:jshiv/cronicle-sample.git")
+				Expect(err).To(BeNil())
+				Expect(path).To(Equal("cronicle/.repos/jshiv/cronicle-sample.git"))
+			})
+
+			It("should be ./jshiv/cronicle-sample.git", func() {
+				path, err := cronicle.LocalRepoDir("./cronicle/", "./jshiv/cronicle-sample.git")
+				Expect(err).To(BeNil())
+				Expect(path).To(Equal("cronicle/.repos/jshiv/cronicle-sample.git"))
+			})
+		})
+	})
+
 })
