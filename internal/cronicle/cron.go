@@ -36,9 +36,7 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
 	if runOptions.QueueType == "" {
-		if conf.Queue != nil {
-			runOptions.QueueType = conf.Queue.Type
-		}
+		runOptions.QueueType = conf.Queue.Type
 	}
 
 	if runOptions.QueueType == "" {
