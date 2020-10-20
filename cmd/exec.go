@@ -36,7 +36,7 @@ The schedule/task list will be filtered down and executed.
 Any ${date} or ${timestamp} command templates will be filled with 
 the timestamp given by --time which defaults to the current timestamp. 
 
-In order to provide a backfill mechaninism, the flag --end is provided,
+In order to provide a backfill mechanism, the flag --end is provided,
 and if given cronicle will loop over a date range from --time to --end 
 filling any ${date} values and executing the given tasks for each date in 
 the range.

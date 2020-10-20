@@ -26,9 +26,9 @@ import (
 var workerCmd = &cobra.Command{
 	Use:   "worker",
 	Short: "Start a schedule consumer thread on a given distributed message queue.",
-	Long: `Cronicle runs a centralized cron job that submits shedules to a message queue 
-	for consumtion by the worker nodes which will execute all tasks in a given schedule. 
-	To start a local distbuted cronicle flow with redis as the message broker:
+	Long: `Cronicle runs a centralized cron job that submits schedules to a message queue 
+	for consumption by the worker nodes which will execute all tasks in a given schedule. 
+	To start a local distributed cronicle flow with redis as the message broker:
 
 	# Start a redis broker
 	sudo docker run --name redis-cronicle -p 6379:6379 -d redis
@@ -36,7 +36,7 @@ var workerCmd = &cobra.Command{
 	# Setup a cronicle repo
 	cronicle init --path=./demo
 
-	# In a seperate shell, start a worker to consume the schedules queue.
+	# In a separate shell, start a worker to consume the schedules queue.
 	cronicle worker --path ./demo/cronicle.hcl --queue redis
 
 	# Start cron, in distributed mode "cronicle run" will start a consumer thread by default
