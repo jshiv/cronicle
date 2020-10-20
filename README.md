@@ -127,16 +127,6 @@ retry {
 }
 ```
 
-
-### `repos` (optional)
-```hcl
-// repos is a list of remote repositories containing schedules
-// that will be added to the main cron.
-repos = [
-    "https://github.com/jshiv/cronicle-sample.git",
-]
-```
-
 ### `timezone` (optional)
 ```hcl
 // timezone sets the timezone location to run cron and execute tasks by.
