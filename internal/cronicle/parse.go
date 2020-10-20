@@ -2,6 +2,8 @@ package cronicle
 
 import (
 	"encoding/json"
+	"fmt"
+	"io/ioutil"
 	"os"
 
 	"regexp"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
@@ -67,6 +70,31 @@ func MarshallHcl(conf Config, path string) string {
 	}
 	destination.Close()
 	return path
+}
+
+//ParseFile parses a given hcl file into a Config
+func ParseFile(cronicleFile string) (*Config, error) {
+
+	content, err := ioutil.ReadFile(cronicleFile)
+	if err != nil {
+		return nil, err
+	}
+
+	var diags hcl.Diagnostics
+
+	file, diags := hclsyntax.ParseConfig(content, cronicleFile, hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("config parse: %w", diags)
+	}
+
+	conf := &Config{}
+
+	diags = gohcl.DecodeBody(file.Body, &CommandEvalContext, conf)
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("config parse: %w", diags)
+	}
+
+	return conf, nil
 }
 
 // JSON method returns a json []byte array of the struct
