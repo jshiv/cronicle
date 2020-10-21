@@ -2,7 +2,6 @@ package cronicle
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 
 	"regexp"
@@ -72,32 +71,22 @@ func MarshallHcl(conf Config, path string) string {
 }
 
 //ParseFile parses a given hcl file into a Config
-//ParseFile parses a given hcl file into a Config
-func ParseFile(cronicleFile string) (*Config, error) {
+func ParseFile(cronicleFile string, parser *hclparse.Parser) (*Config, hcl.Diagnostics) {
 
 	var diags hcl.Diagnostics
-	parser := hclparse.NewParser()
-	wr := hcl.NewDiagnosticTextWriter(
-		os.Stdout,      // writer to send messages to
-		parser.Files(), // the parser's file cache, for source snippets
-		78,             // wrapping width
-		true,           // generate colored/highlighted output
-	)
 
 	file, parseDiags := parser.ParseHCLFile(cronicleFile)
 
 	diags = append(diags, parseDiags...)
 	if diags.HasErrors() {
-		wr.WriteDiagnostics(diags)
-		return nil, fmt.Errorf("cronicle.hcl parse: %w", diags)
+		return nil, diags
 	}
 
 	var conf Config
-	decodDiags := gohcl.DecodeBody(file.Body, &CommandEvalContext, &conf)
-	diags = append(diags, decodDiags...)
+	decodeDiags := gohcl.DecodeBody(file.Body, &CommandEvalContext, &conf)
+	diags = append(diags, decodeDiags...)
 	if diags.HasErrors() {
-		wr.WriteDiagnostics(diags)
-		return nil, fmt.Errorf("cronicle.hcl decode: %w", diags)
+		return &conf, diags
 	}
 
 	return &conf, nil

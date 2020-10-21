@@ -6,6 +6,8 @@ import (
 	"path"
 	"path/filepath"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclparse"
 	url "github.com/whilp/git-urls"
 
 	"github.com/fatih/color"
@@ -160,12 +162,18 @@ func GetConfig(cronicleFile string) (*Config, error) {
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
-	// var conf Config
-	// err = hclsimple.DecodeFile(cronicleFileAbs, &CommandEvalContext, &conf)
-	conf, err := ParseFile(cronicleFileAbs)
-	// conf, err := ParseFile(cronicleFileAbs)
-	if err != nil {
-		return nil, err
+	parser := hclparse.NewParser()
+	wr := hcl.NewDiagnosticTextWriter(
+		os.Stdout,      // writer to send messages to
+		parser.Files(), // the parser's file cache, for source snippets
+		78,             // wrapping width
+		true,           // generate colored/highlighted output
+	)
+	conf, diags := ParseFile(cronicleFileAbs, parser)
+
+	if diags.HasErrors() {
+		wr.WriteDiagnostics(diags)
+		return conf, fmt.Errorf("cronicle.hcl parse: %w", diags)
 	}
 
 	err = conf.Init(croniclePath)
@@ -186,7 +194,10 @@ func GetConfig(cronicleFile string) (*Config, error) {
 		repoPath, _ := LocalRepoDir(croniclePath, repo)
 		repoCronicleFile := filepath.Join(repoPath, "cronicle.hcl")
 		if fileExists(repoCronicleFile) {
-			repoConf, _ := GetConfig(repoCronicleFile)
+			repoConf, err := GetConfig(repoCronicleFile)
+			if err != nil {
+				return conf, err
+			}
 			for _, repoSched := range repoConf.Schedules {
 				conf.Schedules = append(conf.Schedules, repoSched)
 			}
