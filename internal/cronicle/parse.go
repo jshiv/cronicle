@@ -3,7 +3,6 @@ package cronicle
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 
 	"regexp"
@@ -11,7 +10,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
@@ -73,28 +72,35 @@ func MarshallHcl(conf Config, path string) string {
 }
 
 //ParseFile parses a given hcl file into a Config
+//ParseFile parses a given hcl file into a Config
 func ParseFile(cronicleFile string) (*Config, error) {
 
-	conf := &Config{}
-
-	content, err := ioutil.ReadFile(cronicleFile)
-	if err != nil {
-		return nil, err
-	}
-
 	var diags hcl.Diagnostics
+	parser := hclparse.NewParser()
+	wr := hcl.NewDiagnosticTextWriter(
+		os.Stdout,      // writer to send messages to
+		parser.Files(), // the parser's file cache, for source snippets
+		78,             // wrapping width
+		true,           // generate colored/highlighted output
+	)
 
-	file, diags := hclsyntax.ParseConfig(content, cronicleFile, hcl.Pos{Line: 1, Column: 1})
+	file, parseDiags := parser.ParseHCLFile(cronicleFile)
+
+	diags = append(diags, parseDiags...)
 	if diags.HasErrors() {
-		return nil, fmt.Errorf("hcl parse: %w", diags)
+		wr.WriteDiagnostics(diags)
+		return nil, fmt.Errorf("cronicle.hcl parse: %w", diags)
 	}
 
-	diags = gohcl.DecodeBody(file.Body, &CommandEvalContext, conf)
+	var conf Config
+	decodDiags := gohcl.DecodeBody(file.Body, &CommandEvalContext, &conf)
+	diags = append(diags, decodDiags...)
 	if diags.HasErrors() {
-		return nil, fmt.Errorf("hcl parse: %w", diags)
+		wr.WriteDiagnostics(diags)
+		return nil, fmt.Errorf("cronicle.hcl decode: %w", diags)
 	}
 
-	return conf, nil
+	return &conf, nil
 }
 
 // JSON method returns a json []byte array of the struct
