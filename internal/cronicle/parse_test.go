@@ -10,6 +10,7 @@ import (
 	"github.com/jshiv/cronicle/internal/cronicle"
 
 	hcl "github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsimple"
 
 	"strings"
@@ -62,6 +63,15 @@ var _ = Describe("Parse", func() {
 		Expect(err).To(BeNil())
 		Expect(conf).To(Equal(c))
 		os.RemoveAll(p)
+	})
+
+	It("cronicle.ParseFile raise diags if a file is malformatted", func() {
+
+		parser := hclparse.NewParser()
+		conf, diags := cronicle.ParseFile("./test/bad.hcl", parser)
+		Expect(diags[0].Detail).To(Equal("A block definition must have block content delimited by \"{\" and \"}\", starting on the same line as the block header."))
+		Expect(conf).To(BeNil())
+
 	})
 
 	It("schedule.JSON should return []byte", func() {
