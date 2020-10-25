@@ -18,7 +18,6 @@ package cmd
 import (
 	"github.com/jshiv/cronicle/internal/cronicle"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -42,7 +41,6 @@ repos folder.
 		croniclePath, _ := cmd.Flags().GetString("path")
 		clone, _ := cmd.Flags().GetString("clone")
 		deployKey, _ := cmd.Flags().GetString("key")
-		log.Info("Initialize Cronicle: " + croniclePath)
 		cronicle.Init(croniclePath, clone, deployKey)
 	},
 }

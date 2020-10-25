@@ -2,8 +2,6 @@ package cronicle
 
 import (
 	"encoding/json"
-	"fmt"
-	"io/ioutil"
 	"os"
 
 	"regexp"
@@ -11,7 +9,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
@@ -73,28 +71,25 @@ func MarshallHcl(conf Config, path string) string {
 }
 
 //ParseFile parses a given hcl file into a Config
-func ParseFile(cronicleFile string) (*Config, error) {
-
-	conf := &Config{}
-
-	content, err := ioutil.ReadFile(cronicleFile)
-	if err != nil {
-		return nil, err
-	}
+func ParseFile(cronicleFile string, parser *hclparse.Parser) (*Config, hcl.Diagnostics) {
 
 	var diags hcl.Diagnostics
 
-	file, diags := hclsyntax.ParseConfig(content, cronicleFile, hcl.Pos{Line: 1, Column: 1})
+	file, parseDiags := parser.ParseHCLFile(cronicleFile)
+
+	diags = append(diags, parseDiags...)
 	if diags.HasErrors() {
-		return nil, fmt.Errorf("hcl parse: %w", diags)
+		return nil, diags
 	}
 
-	diags = gohcl.DecodeBody(file.Body, &CommandEvalContext, conf)
+	var conf Config
+	decodeDiags := gohcl.DecodeBody(file.Body, &CommandEvalContext, &conf)
+	diags = append(diags, decodeDiags...)
 	if diags.HasErrors() {
-		return nil, fmt.Errorf("hcl parse: %w", diags)
+		return &conf, diags
 	}
 
-	return conf, nil
+	return &conf, nil
 }
 
 // JSON method returns a json []byte array of the struct

@@ -6,14 +6,14 @@ import (
 	"path"
 	"path/filepath"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclparse"
 	url "github.com/whilp/git-urls"
 
 	"github.com/fatih/color"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
-
-	"github.com/hashicorp/hcl/v2/hclsimple"
 )
 
 //Init initializes a default croniclePath with a .git repository,
@@ -46,13 +46,17 @@ func Init(croniclePath string, cloneRepo string, deployKey string) {
 
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	// errors.New("could not extract repos from " + slantedRed("Config"))
-	fmt.Println("Init Cronicle: " + slantyedCyan(absCroniclePath))
 	//TODO: add .gitignore blocking .repos
 	//TODO: if init executes in .git path, add .git/remote to cronicle.hcl
 	os.MkdirAll(path.Join(absCroniclePath, ".repos"), 0777)
 	cronicleFile := path.Join(absCroniclePath, "cronicle.hcl")
+	fmt.Println("Init Cronicle: " + slantyedCyan(cronicleFile))
+
 	if fileExists(cronicleFile) {
-		conf, _ := GetConfig(cronicleFile)
+		conf, err := GetConfig(cronicleFile)
+		if err != nil {
+			os.Exit(1)
+		}
 		hcl := conf.Hcl()
 		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 		// CloneRepos(absCroniclePath, conf)
@@ -158,14 +162,24 @@ func GetConfig(cronicleFile string) (*Config, error) {
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
-	var conf Config
-	err = hclsimple.DecodeFile(cronicleFileAbs, &CommandEvalContext, &conf)
-	// conf, err := ParseFile(cronicleFileAbs)
-	if err != nil {
-		return nil, err
+	parser := hclparse.NewParser()
+	wr := hcl.NewDiagnosticTextWriter(
+		os.Stdout,      // writer to send messages to
+		parser.Files(), // the parser's file cache, for source snippets
+		78,             // wrapping width
+		true,           // generate colored/highlighted output
+	)
+	conf, diags := ParseFile(cronicleFileAbs, parser)
+
+	if diags.HasErrors() {
+		wr.WriteDiagnostics(diags)
+		return conf, fmt.Errorf("cronicle.hcl parse: %w", diags)
 	}
 
-	conf.Init(croniclePath)
+	err = conf.Init(croniclePath)
+	if err != nil {
+		return conf, err
+	}
 	// conf.PropigateTaskProperties(croniclePath)
 
 	// if err := SetConfig(&conf, croniclePath); err != nil {
@@ -175,12 +189,15 @@ func GetConfig(cronicleFile string) (*Config, error) {
 	// Collect any sub level Cronicle files if they exist
 	// then append all schedules to conf.Schedules
 	// Explicitly ignore any information that is not in a schedule.
-	repos := GetRepos(&conf)
+	repos := GetRepos(conf)
 	for repo := range repos {
 		repoPath, _ := LocalRepoDir(croniclePath, repo)
 		repoCronicleFile := filepath.Join(repoPath, "cronicle.hcl")
 		if fileExists(repoCronicleFile) {
-			repoConf, _ := GetConfig(repoCronicleFile)
+			repoConf, err := GetConfig(repoCronicleFile)
+			if err != nil {
+				return conf, err
+			}
 			for _, repoSched := range repoConf.Schedules {
 				conf.Schedules = append(conf.Schedules, repoSched)
 			}
@@ -188,7 +205,7 @@ func GetConfig(cronicleFile string) (*Config, error) {
 
 	}
 
-	return &conf, nil
+	return conf, nil
 }
 
 // fileExists checks if a file exists and is not a directory before we
