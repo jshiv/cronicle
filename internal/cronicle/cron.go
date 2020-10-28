@@ -27,6 +27,10 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	if !fileExists(cronicleFileAbs) {
+		log.Fatal("file does not exist: ", cronicleFileAbs)
+	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
 	conf, _ := GetConfig(cronicleFileAbs)
@@ -254,6 +258,9 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 		log.Fatal(err)
 	}
 	log.Info("Loading " + cronicleFileAbs)
+	if !fileExists(cronicleFileAbs) {
+		log.Fatal("file does not exist: ", cronicleFileAbs)
+	}
 
 	conf, _ := GetConfig(cronicleFileAbs)
 
