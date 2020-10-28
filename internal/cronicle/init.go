@@ -62,6 +62,15 @@ func Init(croniclePath string, cloneRepo string, deployKey string) {
 		// CloneRepos(absCroniclePath, conf)
 	} else {
 		MarshallHcl(Default(), cronicleFile)
+		f, err := os.OpenFile(path.Join(absCroniclePath, ".gitignore"),
+			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Println(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(".cronicle\n"); err != nil {
+			log.Println(err)
+		}
 		// TODO pull cronicle repo, if config.repo != "", do not creat .git
 		// Commit(absCroniclePath, "Cronicle Initial Commit")
 	}
