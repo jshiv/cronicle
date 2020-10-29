@@ -52,8 +52,6 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		g, err := Clone(task.Path, task.Repo.URL, &auth)
 		// g, err := Clone(task.Path, task.Repo.URL, task.Repo.DeployKey)
 		if err != nil {
-			log.Fatal(err)
-
 			return exec.Result{}, err
 		}
 		task.Git = g
