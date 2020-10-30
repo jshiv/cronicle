@@ -79,7 +79,7 @@ func StartWorker(path string, runOptions RunOptions) {
 	}
 
 	if runOptions.QueueType == "" {
-		log.Error("--queue must be specified in distributed mode. Options: redis, nsq]")
+		log.Error("--queue must be specified in distributed mode. [Options: redis, nsq]")
 	}
 	transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
 	schedules := transport.Receive(runOptions.QueueName)
@@ -132,7 +132,6 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 //schedules to the message queue for execution.
 //TODO Add meta job to fetch and refresh cron schedule with updated cronicle.hcl
 func StartCron(cronicleFile string, queue chan<- []byte) {
-	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
 	conf, err := GetConfig(cronicleFile)
 	if err != nil {
@@ -148,6 +147,11 @@ func StartCron(cronicleFile string, queue chan<- []byte) {
 		loc = time.Local
 	}
 
+	log.SetFormatter(TZFormatter{Formatter: &log.TextFormatter{
+		FullTimestamp: true,
+	}, loc: loc})
+	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
+
 	c := cron.New(cron.WithLocation(loc))
 	c.Start()
 	c.AddFunc("@every 30s", func() { LoadCron(cronicleFile, c, queue, false) })
@@ -162,6 +166,7 @@ var confPriorGlobal *Config
 //stops the cron, removes all of the confPrior cron entries and adds the new conf
 //schedules to the cron.
 func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool) {
+
 	log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("Loading config...")
 	conf, err := GetConfig(cronicleFile)
 	if err != nil {

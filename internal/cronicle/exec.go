@@ -81,6 +81,8 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 			"schedule": task.ScheduleName,
 			"task":     task.Name,
 			"attempt":  attempt,
+			"clock":    t.Format(time.Kitchen),
+			"date":     t.Format(time.RFC850),
 		}).Info()
 		var err error
 		result = task.Exec(t)

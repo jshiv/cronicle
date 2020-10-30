@@ -44,7 +44,8 @@ func (schedule Schedule) ExecuteTasks() {
 	graphString := taskGraph.StringWithNodeTypes()
 	log.WithFields(log.Fields{
 		"schedule": schedule.Name,
-		"time":     now,
+		"clock":    now.Format(time.Kitchen),
+		"date":     now.Format(time.RFC850),
 	}).Info(graphString)
 	err := taskGraph.Walk(func(v dag.Vertex) tfdiags.Diagnostics {
 		var diags tfdiags.Diagnostics
