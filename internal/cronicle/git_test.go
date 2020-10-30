@@ -29,10 +29,10 @@ var _ = Describe("git", func() {
 		err = task.Git.Checkout(task.Repo.Branch, task.Repo.Commit)
 		Expect(err).To(BeNil())
 
-		Expect(task.Path).To(Equal(path + "/.repos/jshiv/cronicle-sample.git/foo/bar"))
+		Expect(task.Path).To(Equal(path + "/.cronicle/repos/jshiv/cronicle-sample.git/foo/bar"))
 		Expect(task.Repo.URL).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
 		Expect(task.Git.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))
-		Expect(cronicle.DirExists(path + "/.repos/jshiv/cronicle-sample.git/foo/bar/.git")).To(Equal(true))
+		Expect(cronicle.DirExists(path + "/.cronicle/repos/jshiv/cronicle-sample.git/foo/bar/.git")).To(Equal(true))
 		os.RemoveAll(path)
 	})
 
@@ -52,10 +52,10 @@ var _ = Describe("git", func() {
 		err = g.Checkout(task.Repo.Branch, task.Repo.Commit)
 		Expect(err).To(BeNil())
 
-		Expect(task.Path).To(Equal(path + "/.repos/jshiv/cronicle-sample.git/foo/bar"))
+		Expect(task.Path).To(Equal(path + "/.cronicle/repos/jshiv/cronicle-sample.git/foo/bar"))
 		Expect(task.Repo.URL).To(Equal("git@github.com:jshiv/cronicle-sample.git"))
 		Expect(task.Git.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))
-		Expect(cronicle.DirExists(path + "/.repos/jshiv/cronicle-sample.git/foo/bar/.git")).To(Equal(true))
+		Expect(cronicle.DirExists(path + "/.cronicle/repos/jshiv/cronicle-sample.git/foo/bar/.git")).To(Equal(true))
 		os.RemoveAll(path)
 	})
 

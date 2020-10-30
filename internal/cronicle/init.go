@@ -18,7 +18,7 @@ import (
 
 //Init initializes a default croniclePath with a .git repository,
 //Basic schedule as code in a cronicle.hcl file and a repos folder.
-func Init(croniclePath string, cloneRepo string, deployKey string) {
+func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf Config) {
 
 	absCroniclePath, err := filepath.Abs(croniclePath)
 	if err != nil {
@@ -48,7 +48,7 @@ func Init(croniclePath string, cloneRepo string, deployKey string) {
 	// errors.New("could not extract repos from " + slantedRed("Config"))
 	//TODO: add .gitignore blocking .repos
 	//TODO: if init executes in .git path, add .git/remote to cronicle.hcl
-	os.MkdirAll(path.Join(absCroniclePath, ".repos"), 0777)
+	os.MkdirAll(path.Join(absCroniclePath, path.Join(".cronicle", "repos")), 0777)
 	cronicleFile := path.Join(absCroniclePath, "cronicle.hcl")
 	fmt.Println("Init Cronicle: " + slantyedCyan(cronicleFile))
 
@@ -61,7 +61,16 @@ func Init(croniclePath string, cloneRepo string, deployKey string) {
 		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 		// CloneRepos(absCroniclePath, conf)
 	} else {
-		MarshallHcl(Default(), cronicleFile)
+		MarshallHcl(defaultConf, cronicleFile)
+		f, err := os.OpenFile(path.Join(absCroniclePath, ".gitignore"),
+			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Println(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(".cronicle\n"); err != nil {
+			log.Println(err)
+		}
 		// TODO pull cronicle repo, if config.repo != "", do not creat .git
 		// Commit(absCroniclePath, "Cronicle Initial Commit")
 	}
@@ -91,7 +100,8 @@ func GetRepos(conf *Config) map[string]bool {
 //LocalRepoDir takes a cronicle.hcl path and a github repo URL and converts
 //it to the local clone of that repo
 func LocalRepoDir(croniclePath string, repoURL string) (string, error) {
-	reposDir := path.Join(croniclePath, ".repos")
+	dotCronicleRepos := path.Join(".cronicle", "repos")
+	reposDir := path.Join(croniclePath, dotCronicleRepos)
 	u, err := url.Parse(repoURL)
 	if err != nil {
 		return "", err

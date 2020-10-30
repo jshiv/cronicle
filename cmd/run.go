@@ -16,8 +16,10 @@ limitations under the License.
 package cmd
 
 import (
+	"path/filepath"
+	"strings"
+
 	"github.com/jshiv/cronicle/internal/cronicle"
-	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -40,11 +42,21 @@ The run command will log schedule information to stdout including git commit inf
 		queueType, _ := cmd.Flags().GetString("queue")
 		queueName, _ := cmd.Flags().GetString("queue-name")
 		addr, _ := cmd.Flags().GetString("addr")
+		cron, _ := cmd.Flags().GetString("cron")
+		command, _ := cmd.Flags().GetString("command")
 
 		runOptions := cronicle.RunOptions{RunWorker: runWorker, QueueType: queueType, QueueName: queueName, Addr: addr}
 
-		log.Info("Reading from: " + path)
+		if cron != "" && command != "" {
+			conf := cronicle.Default()
+			conf.Schedules[0].Name = "schedule1"
+			conf.Schedules[0].Cron = cron
+			conf.Schedules[0].Tasks[0].Name = "task1"
+			conf.Schedules[0].Tasks[0].Command = strings.Split(command, " ")
+			cronicle.Init(filepath.Dir(path), "", "", conf)
+		}
 		cronicle.Run(path, runOptions)
+
 	},
 }
 
@@ -70,6 +82,8 @@ func init() {
 	Configurable via the queue.addr field in cronicle.hcl
 	`
 	runCmd.Flags().String("addr", "", addrDesc)
+	runCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
+	runCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")
 
 	// Here you will define your flags and configuration settings.
 
