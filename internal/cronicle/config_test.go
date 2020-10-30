@@ -56,7 +56,7 @@ var _ = Describe("Config", func() {
 		Expect(conf.Schedules[0].Tasks[0].Repo.URL).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
 		Expect(conf.Schedules[0].Tasks[0].Repo.DeployKey).To(Equal("~/.ssh/id_rsa"))
 		Expect(conf.Schedules[0].Tasks[0].Repo.Branch).To(Equal("feature/test-branch"))
-		Expect(conf.Schedules[0].Tasks[0].Path).To(Equal("path/.repos/jshiv/cronicle-sample.git/foo/bar"))
+		Expect(conf.Schedules[0].Tasks[0].Path).To(Equal("path/.cronicle/repos/jshiv/cronicle-sample.git/foo/bar"))
 
 	})
 

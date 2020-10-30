@@ -31,9 +31,9 @@ var _ = Describe("Init", func() {
 				err := conf.Init(croniclePath)
 
 				Expect(err).To(BeNil())
-				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath + "/.repos/jshiv/cronicle-sample.git/foo/bar"))
+				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath + "/.cronicle/repos/jshiv/cronicle-sample.git/foo/bar"))
 				Expect(conf.Schedules[0].Tasks[0].Repo.URL).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
-				Expect(config.DirExists(croniclePath + "/.repos/jshiv/cronicle-sample.git/foo/bar/.git")).To(Equal(true))
+				Expect(config.DirExists(croniclePath + "/.cronicle/repos/jshiv/cronicle-sample.git/foo/bar/.git")).To(Equal(true))
 				repo := cronicle.Repo{URL: conf.Schedules[0].Tasks[0].Repo.URL, DeployKey: ""}
 				auth, err := repo.Auth()
 				Expect(err).To(BeNil())
@@ -166,19 +166,19 @@ var _ = Describe("Init", func() {
 			It("should be https://github.com/jshiv/cronicle-sample.git", func() {
 				path, err := cronicle.LocalRepoDir("./cronicle/", "https://github.com/jshiv/cronicle-sample.git")
 				Expect(err).To(BeNil())
-				Expect(path).To(Equal("cronicle/.repos/jshiv/cronicle-sample.git"))
+				Expect(path).To(Equal("cronicle/.cronicle/repos/jshiv/cronicle-sample.git"))
 			})
 
 			It("should be git@github.com:jshiv/cronicle-sample.git", func() {
 				path, err := cronicle.LocalRepoDir("./cronicle/", "git@github.com:jshiv/cronicle-sample.git")
 				Expect(err).To(BeNil())
-				Expect(path).To(Equal("cronicle/.repos/jshiv/cronicle-sample.git"))
+				Expect(path).To(Equal("cronicle/.cronicle/repos/jshiv/cronicle-sample.git"))
 			})
 
 			It("should be ./jshiv/cronicle-sample.git", func() {
 				path, err := cronicle.LocalRepoDir("./cronicle/", "./jshiv/cronicle-sample.git")
 				Expect(err).To(BeNil())
-				Expect(path).To(Equal("cronicle/.repos/jshiv/cronicle-sample.git"))
+				Expect(path).To(Equal("cronicle/.cronicle/repos/jshiv/cronicle-sample.git"))
 			})
 		})
 	})
