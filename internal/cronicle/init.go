@@ -18,7 +18,7 @@ import (
 
 //Init initializes a default croniclePath with a .git repository,
 //Basic schedule as code in a cronicle.hcl file and a repos folder.
-func Init(croniclePath string, cloneRepo string, deployKey string) {
+func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf Config) {
 
 	absCroniclePath, err := filepath.Abs(croniclePath)
 	if err != nil {
@@ -61,7 +61,7 @@ func Init(croniclePath string, cloneRepo string, deployKey string) {
 		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 		// CloneRepos(absCroniclePath, conf)
 	} else {
-		MarshallHcl(Default(), cronicleFile)
+		MarshallHcl(defaultConf, cronicleFile)
 		f, err := os.OpenFile(path.Join(absCroniclePath, ".gitignore"),
 			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {

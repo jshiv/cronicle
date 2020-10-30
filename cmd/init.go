@@ -41,7 +41,7 @@ repos folder.
 		croniclePath, _ := cmd.Flags().GetString("path")
 		clone, _ := cmd.Flags().GetString("clone")
 		deployKey, _ := cmd.Flags().GetString("key")
-		cronicle.Init(croniclePath, clone, deployKey)
+		cronicle.Init(croniclePath, clone, deployKey, cronicle.Default())
 	},
 }
 
