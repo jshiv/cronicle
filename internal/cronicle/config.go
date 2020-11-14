@@ -13,6 +13,8 @@ import (
 type Config struct {
 	// Repo repository containing version controlled cronicle.hcl
 	Repo *Repo `hcl:"repo,block"`
+	// Cron expression that specifies the cronicle heartbeat and cronicle.hcl refresh
+	Heartbeat string `hcl:"heartbeat,optional"`
 	// Repos points at external dependent repos that maintain their own schedules remotly.
 	Repos []string `hcl:"repos,optional"`
 	// Timezone Location to run cron in. i.e. "America/New_York" [IANA Time Zone database]
@@ -256,6 +258,7 @@ func Default() Config {
 	schedule.Tasks = []Task{task}
 
 	var conf Config
+	conf.Heartbeat = "@every 30s"
 	conf.Schedules = []Schedule{schedule}
 
 	return conf

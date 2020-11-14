@@ -154,7 +154,10 @@ func StartCron(cronicleFile string, queue chan<- []byte) {
 
 	c := cron.New(cron.WithLocation(loc))
 	c.Start()
-	c.AddFunc("@every 30s", func() { LoadCron(cronicleFile, c, queue, false) })
+	if conf.Heartbeat == "" {
+		conf.Heartbeat = "@every 30s"
+	}
+	c.AddFunc(conf.Heartbeat, func() { LoadCron(cronicleFile, c, queue, false) })
 	LoadCron(cronicleFile, c, queue, true)
 }
 
@@ -256,6 +259,8 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 
 // ExecTasks parses the cronicle.hcl config, filters for a specified task
 // and executes the task
+// TODO: set proper timezone for ExecTasks
+// TODO: Add single execution cron string i.e. only run once
 func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
