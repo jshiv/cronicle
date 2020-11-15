@@ -266,7 +266,6 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 // ExecTasks parses the cronicle.hcl config, filters for a specified task
 // and executes the task
 // TODO: set proper timezone for ExecTasks
-// TODO: Add single execution cron string i.e. only run once
 func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
