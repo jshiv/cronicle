@@ -54,6 +54,7 @@ type Task struct {
 	Depends      []string `hcl:"depends,optional"`
 	Repo         *Repo    `hcl:"repo,block"`
 	Retry        *Retry   `hcl:"retry,block"`
+	Env          []string `hcl:"env,optional"`
 	Path         string
 	CronicleRepo *Repo
 	CroniclePath string
