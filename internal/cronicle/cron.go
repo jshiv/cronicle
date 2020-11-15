@@ -188,11 +188,17 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 		}
 
 		for _, schedule := range conf.Schedules {
-			_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
-			if err != nil {
-				fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
-				log.Fatal(err)
+			switch {
+			case schedule.Cron == "@once":
+				ProduceSchedule(schedule, queue)()
+			default:
+				_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
+				if err != nil {
+					fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
+					log.Fatal(err)
+				}
 			}
+
 		}
 		c.Start()
 	}
