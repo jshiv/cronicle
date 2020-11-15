@@ -57,6 +57,4 @@ Cronicle `will be` a tool for managing and scheduling workflows that leans on th
 
 
 ## TODO
-* Add [dag](https://github.com/hashicorp/terraform/tree/master/dag) internal library
-* Integrate with distributed message que for resilience
-* Develop remote logging and visiulization tools
+* Resiliant master scheduler

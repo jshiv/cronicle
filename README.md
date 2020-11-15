@@ -90,7 +90,7 @@ task "bar" {
 `schedule` is the block that sets the crontap. `task` blocks are contained within the `schedule` block.
 ```hcl
 schedule "foo" {
-  // crontab for scheduling execution
+  // crontab for scheduling execution, accpets Cron experessions, @every, and @once
   cron       = "@every 5s"
 
   // IANA Time Zone
@@ -141,6 +141,12 @@ retry {
 // timezone sets the timezone location to run cron and execute tasks by.
 // default local
 timezone = "America/Los_Angeles"
+```
+
+### `heartbeat` (optional)
+```hcl
+// Cron expression to schedule the cronicle.hcl refresh task
+heartbeat = "@every 60s"
 ```
 
 ---
