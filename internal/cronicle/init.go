@@ -69,7 +69,6 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 		if _, err := f.WriteString(".cronicle\n"); err != nil {
 			log.Println(err)
 		}
-
 	}
 
 }
