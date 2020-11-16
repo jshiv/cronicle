@@ -46,8 +46,6 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	// errors.New("could not extract repos from " + slantedRed("Config"))
-	//TODO: add .gitignore blocking .repos
-	//TODO: if init executes in .git path, add .git/remote to cronicle.hcl
 	os.MkdirAll(path.Join(absCroniclePath, path.Join(".cronicle", "repos")), 0777)
 	cronicleFile := path.Join(absCroniclePath, "cronicle.hcl")
 	fmt.Println("Init Cronicle: " + slantyedCyan(cronicleFile))
@@ -71,8 +69,6 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 		if _, err := f.WriteString(".cronicle\n"); err != nil {
 			log.Println(err)
 		}
-		// TODO pull cronicle repo, if config.repo != "", do not creat .git
-		// Commit(absCroniclePath, "Cronicle Initial Commit")
 	}
 
 }

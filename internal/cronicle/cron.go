@@ -33,7 +33,10 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
-	conf, _ := GetConfig(cronicleFileAbs)
+	conf, err := GetConfig(cronicleFileAbs)
+	if err != nil {
+		log.Fatal(err)
+	}
 	confPriorGlobal = conf
 	hcl := conf.Hcl()
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
@@ -130,7 +133,6 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 //StartCron pushes all schedules in the given config to the cron scheduler
 //starts the cron scheduler which publishes the serialzied
 //schedules to the message queue for execution.
-//TODO Add meta job to fetch and refresh cron schedule with updated cronicle.hcl
 func StartCron(cronicleFile string, queue chan<- []byte) {
 
 	conf, err := GetConfig(cronicleFile)
@@ -154,7 +156,10 @@ func StartCron(cronicleFile string, queue chan<- []byte) {
 
 	c := cron.New(cron.WithLocation(loc))
 	c.Start()
-	c.AddFunc("@every 30s", func() { LoadCron(cronicleFile, c, queue, false) })
+	if conf.Heartbeat == "" {
+		conf.Heartbeat = "@every 30s"
+	}
+	c.AddFunc(conf.Heartbeat, func() { LoadCron(cronicleFile, c, queue, false) })
 	LoadCron(cronicleFile, c, queue, true)
 }
 
@@ -185,11 +190,17 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 		}
 
 		for _, schedule := range conf.Schedules {
-			_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
-			if err != nil {
-				fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
-				log.Fatal(err)
+			switch {
+			case schedule.Cron == "@once":
+				ProduceSchedule(schedule, queue)()
+			default:
+				_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
+				if err != nil {
+					fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
+					log.Fatal(err)
+				}
 			}
+
 		}
 		c.Start()
 	}
@@ -256,6 +267,7 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 
 // ExecTasks parses the cronicle.hcl config, filters for a specified task
 // and executes the task
+// TODO: Execute tasks in order as sepcified by dag
 func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
@@ -267,11 +279,30 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 		log.Fatal("file does not exist: ", cronicleFileAbs)
 	}
 
-	conf, _ := GetConfig(cronicleFileAbs)
+	conf, err := GetConfig(cronicleFileAbs)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var loc *time.Location
+	if conf.Timezone != "" {
+		loc, err = time.LoadLocation(conf.Timezone)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		loc = time.Local
+	}
+
+	log.SetFormatter(TZFormatter{Formatter: &log.TextFormatter{
+		FullTimestamp: true,
+	}, loc: loc})
+	log.WithFields(log.Fields{"cronicle": "exec"}).Info("executing tasks...")
 
 	tasks := conf.TaskArray().FilterTasks(taskName, scheduleName)
 
+	nowInLoc := now.In(loc)
 	for _, task := range tasks {
-		task.Execute(now)
+		task.Execute(nowInLoc)
 	}
 }

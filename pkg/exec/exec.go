@@ -3,6 +3,7 @@ package exec
 import (
 	"bytes"
 	"errors"
+	"os"
 	goexec "os/exec"
 	"syscall"
 )
@@ -21,7 +22,7 @@ type Result struct {
 //Execute executes a given command []string at dir path and returns the results as a Result struct.
 //TODO: Add method for running command that does not collect stdout, just writes to stdout
 // in order to handle complex/verbose logging
-func Execute(command []string, dir string) Result {
+func Execute(command []string, dir string, env []string) Result {
 	var result Result
 	result.Command = command
 	var cmd *goexec.Cmd
@@ -32,6 +33,10 @@ func Execute(command []string, dir string) Result {
 		cmd = goexec.Command(command[0], command[1:]...)
 	}
 	cmd.Dir = dir
+	cmd.Env = os.Environ()
+	for _, e := range env {
+		cmd.Env = append(cmd.Env, e)
+	}
 	// cmd := goexec.Command("/bin/bash", "-c", command)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

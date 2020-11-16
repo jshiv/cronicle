@@ -27,7 +27,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			cmd[i] = s
 		}
 
-		result = exec.Execute(cmd, task.Path)
+		result = exec.Execute(cmd, task.Path, task.Env)
 	}
 	return result
 }
