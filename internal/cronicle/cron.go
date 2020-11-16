@@ -33,7 +33,10 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
-	conf, _ := GetConfig(cronicleFileAbs)
+	conf, err := GetConfig(cronicleFileAbs)
+	if err != nil {
+		log.Fatal(err)
+	}
 	confPriorGlobal = conf
 	hcl := conf.Hcl()
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
@@ -264,7 +267,7 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 
 // ExecTasks parses the cronicle.hcl config, filters for a specified task
 // and executes the task
-// TODO: set proper timezone for ExecTasks
+// TODO: Execute tasks in order as sepcified by dag
 func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
@@ -276,11 +279,30 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 		log.Fatal("file does not exist: ", cronicleFileAbs)
 	}
 
-	conf, _ := GetConfig(cronicleFileAbs)
+	conf, err := GetConfig(cronicleFileAbs)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var loc *time.Location
+	if conf.Timezone != "" {
+		loc, err = time.LoadLocation(conf.Timezone)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		loc = time.Local
+	}
+
+	log.SetFormatter(TZFormatter{Formatter: &log.TextFormatter{
+		FullTimestamp: true,
+	}, loc: loc})
+	log.WithFields(log.Fields{"cronicle": "exec"}).Info("executing tasks...")
 
 	tasks := conf.TaskArray().FilterTasks(taskName, scheduleName)
 
+	nowInLoc := now.In(loc)
 	for _, task := range tasks {
-		task.Execute(now)
+		task.Execute(nowInLoc)
 	}
 }

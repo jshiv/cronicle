@@ -52,13 +52,13 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 		var now time.Time
 		var end time.Time
 		if timeFlag == "" {
-			now = time.Now().In(time.Local)
+			now = time.Now()
 		} else {
 			//TODO: Add flags for timeFlag format and timezone
 			if n, err := time.Parse(time.RFC3339, timeFlag); err != nil {
 				log.Error(err)
 			} else {
-				now = n.Local()
+				now = n
 			}
 
 		}
@@ -71,13 +71,12 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 			if n, err := time.Parse(time.RFC3339, endFlag); err != nil {
 				log.Error(err)
 			} else {
-				end = n.Local()
+				end = n
 			}
 		}
 		for t := now; t.After(end) == false; t = t.AddDate(0, 0, 1) {
 			cronicle.ExecTasks(path, task, schedule, t)
 		}
-		log.Info("Reading from: " + path)
 	},
 }
 
