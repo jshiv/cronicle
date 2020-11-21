@@ -89,6 +89,15 @@ var _ = Describe("Config", func() {
 
 	})
 
+	It("conf.Validate() should error if two schedules have the same name", func() {
+		conf := cronicle.Default()
+		conf.Schedules = append(conf.Schedules, cronicle.Default().Schedules[0])
+
+		err := conf.Validate()
+		Expect(err).To(Equal(errors.New("schedule \"foo\" {} is listed 2 times, please change the name")))
+
+	})
+
 	It("conf.PropigateTaskProperties(./path/) should propigate config Location and not overwrite given schedule.Timezone", func() {
 		conf := cronicle.Default()
 		conf.Timezone = "America/New_York"
