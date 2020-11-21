@@ -296,6 +296,19 @@ func (conf *Config) TaskArray() TaskArray {
 	return tasks
 }
 
+//ScheduleMap is an map of key=schedul.Name: value=Schedule struct,
+type ScheduleMap map[string]Schedule
+
+//ScheduleMap exports a ScheduleMap all schedules in a given config
+func (conf *Config) ScheduleMap() ScheduleMap {
+
+	scheduleMap := ScheduleMap{}
+	for _, schedule := range conf.Schedules {
+		scheduleMap[schedule.Name] = schedule
+	}
+	return scheduleMap
+}
+
 //TaskMap is an map of key=task.Name: value=Task struct,
 type TaskMap map[string]Task
 
