@@ -2,6 +2,7 @@ package cronicle
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"path/filepath"
 	"time"
@@ -145,6 +146,7 @@ func (conf *Config) Validate() error {
 		}
 	}
 
+	scheduleNameCount := make(map[string]int)
 	for _, schedule := range conf.Schedules {
 		if schedule.Timezone != "" {
 			if _, err := time.LoadLocation(schedule.Timezone); err != nil {
@@ -160,6 +162,13 @@ func (conf *Config) Validate() error {
 			if task.Name == "" {
 				return ErrTaskNameEmpty
 			}
+		}
+		scheduleNameCount[schedule.Name]++
+	}
+
+	for k, v := range scheduleNameCount {
+		if v > 1 {
+			return fmt.Errorf(`schedule "%s" {} is listed %v times, please change the name`, k, v)
 		}
 	}
 	return nil
@@ -287,11 +296,23 @@ func (conf *Config) TaskArray() TaskArray {
 	return tasks
 }
 
+//ScheduleMap is an map of key=schedul.Name: value=Schedule struct,
+type ScheduleMap map[string]Schedule
+
+//ScheduleMap exports a ScheduleMap all schedules in a given config
+func (conf *Config) ScheduleMap() ScheduleMap {
+
+	scheduleMap := ScheduleMap{}
+	for _, schedule := range conf.Schedules {
+		scheduleMap[schedule.Name] = schedule
+	}
+	return scheduleMap
+}
+
 //TaskMap is an map of key=task.Name: value=Task struct,
 type TaskMap map[string]Task
 
 //TaskMap exports a TaskMap all tasks in a given config,
-//additionally, it ensures that task.ScheduleName is propigated
 func (schedule *Schedule) TaskMap() TaskMap {
 
 	taskMap := TaskMap{}

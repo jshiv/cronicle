@@ -89,6 +89,15 @@ var _ = Describe("Config", func() {
 
 	})
 
+	It("conf.Validate() should error if two schedules have the same name", func() {
+		conf := cronicle.Default()
+		conf.Schedules = append(conf.Schedules, cronicle.Default().Schedules[0])
+
+		err := conf.Validate()
+		Expect(err).To(Equal(errors.New("schedule \"foo\" {} is listed 2 times, please change the name")))
+
+	})
+
 	It("conf.PropigateTaskProperties(./path/) should propigate config Location and not overwrite given schedule.Timezone", func() {
 		conf := cronicle.Default()
 		conf.Timezone = "America/New_York"
@@ -190,5 +199,25 @@ var _ = Describe("Config", func() {
 		task.Path = "./path/"
 		err := task.Validate()
 		Expect(err).To(BeNil())
+	})
+
+	It("schedule.TaskMap() should return a map of taskName,Task", func() {
+		conf := cronicle.Default()
+		schedule := conf.Schedules[0]
+		taskMap := schedule.TaskMap()
+		err := conf.Validate()
+		Expect(err).To(BeNil())
+		task := taskMap["bar"]
+		Expect(task.Name).To(Equal("bar"))
+	})
+
+	It("config.ScheduleMap() should return a map of scheduleName,Schedule", func() {
+		conf := cronicle.Default()
+		scheduleMap := conf.ScheduleMap()
+		schedule := scheduleMap["foo"]
+		taskMap := schedule.TaskMap()
+		task := taskMap["bar"]
+		Expect(schedule.Name).To(Equal("foo"))
+		Expect(task.Name).To(Equal("bar"))
 	})
 })
