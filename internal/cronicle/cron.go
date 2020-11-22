@@ -313,10 +313,23 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 	}, loc: loc})
 	log.WithFields(log.Fields{"cronicle": "exec"}).Info("executing tasks...")
 
-	tasks := conf.TaskArray().FilterTasks(taskName, scheduleName)
-
 	nowInLoc := now.In(loc)
-	for _, task := range tasks {
-		task.Execute(nowInLoc)
+	var schedules []Schedule
+	if scheduleName != "" {
+		schedules = []Schedule{conf.ScheduleMap()[scheduleName]}
+	} else {
+		schedules = conf.Schedules
+	}
+
+	for _, schedule := range schedules {
+		taskMap := schedule.TaskMap()
+		if taskName != "" {
+			if task, ok := taskMap[taskName]; ok {
+				task.Execute(nowInLoc)
+			}
+		} else {
+			schedule.Now = nowInLoc
+			schedule.ExecuteTasks()
+		}
 	}
 }
