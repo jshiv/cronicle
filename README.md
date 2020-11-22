@@ -90,7 +90,9 @@ task "bar" {
 `schedule` is the block that sets the crontap. `task` blocks are contained within the `schedule` block.
 ```hcl
 schedule "foo" {
-  // crontab for scheduling execution, accpets Cron experessions, @every, and @once
+  // crontab for scheduling execution, accpets Cron experessions, @every, @once, ""
+  //cron = "@once" will execute the schedule on the first invocation of `cronicle run`
+  //cron = "" will only execute the schedule/task with `cronicle exec`. Useful when useing cronicle to codify non-scheduled commands.
   cron       = "@every 5s"
 
   // IANA Time Zone

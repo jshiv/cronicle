@@ -154,6 +154,18 @@ func StartCron(cronicleFile string, queue chan<- []byte) {
 	}, loc: loc})
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
+	for _, schedule := range conf.Schedules {
+		switch {
+		case schedule.Cron == "@once":
+			log.WithFields(log.Fields{"schedule": schedule.Name, "cron": schedule.Cron}).Info("Executing @Once")
+			ProduceSchedule(schedule, queue)()
+		case schedule.Cron == "":
+			log.WithFields(log.Fields{"schedule": schedule.Name, "cron": schedule.Cron}).Info("Skip execution. Use 'cronicle exec' to run.")
+		default:
+			log.WithFields(log.Fields{"schedule": schedule.Name, "cron": schedule.Cron}).Info("Starting cron...")
+		}
+	}
+
 	c := cron.New(cron.WithLocation(loc))
 	c.Start()
 	if conf.Heartbeat == "" {
@@ -192,7 +204,9 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 		for _, schedule := range conf.Schedules {
 			switch {
 			case schedule.Cron == "@once":
-				ProduceSchedule(schedule, queue)()
+				log.WithFields(log.Fields{"schedule": schedule.Name, "cron": schedule.Cron}).Info("@once execution complete at 'cronicle run'")
+			case schedule.Cron == "":
+				log.WithFields(log.Fields{"schedule": schedule.Name, "cron": schedule.Cron}).Warn("Skip execution. Use 'cronicle exec' to run.")
 			default:
 				_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
 				if err != nil {
