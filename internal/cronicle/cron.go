@@ -281,7 +281,6 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 
 // ExecTasks parses the cronicle.hcl config, filters for a specified task
 // and executes the task
-// TODO: Execute tasks in order as sepcified by dag
 func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
