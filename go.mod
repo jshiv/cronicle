@@ -6,6 +6,7 @@ require (
 	github.com/cheekybits/is v0.0.0-20150225183255-68e9c0620927 // indirect
 	github.com/fatih/color v1.9.0
 	github.com/gernest/kemi v0.0.0-20160708162426-04d6c23628c2
+	github.com/go-git/go-git/v5 v5.2.0
 	github.com/go-redis/redis v6.15.9+incompatible
 	github.com/hashicorp/hcl/v2 v2.6.0
 	github.com/hashicorp/terraform v0.13.3
@@ -24,5 +25,4 @@ require (
 	github.com/whilp/git-urls v1.0.0
 	github.com/zclconf/go-cty v1.5.1
 	gopkg.in/matryer/try.v1 v1.0.0-20150601225556-312d2599e12e
-	gopkg.in/src-d/go-git.v4 v4.13.1
 )
