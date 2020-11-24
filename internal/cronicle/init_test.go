@@ -6,7 +6,7 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"gopkg.in/src-d/go-git.v4/plumbing"
+	"github.com/go-git/go-git/v5/plumbing"
 
 	"github.com/jshiv/cronicle/internal/cronicle"
 	config "github.com/jshiv/cronicle/internal/cronicle"
