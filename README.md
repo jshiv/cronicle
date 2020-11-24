@@ -4,6 +4,7 @@ git integrated distributed workflow scheduler that provides a pull model for CI/
 
 ---
 
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/jshiv/cronicle)](https://pkg.go.dev/github.com/jshiv/cronicle)
 
 The `cronicle.hcl` file maintains the `schedule as code` for task execution.
 
