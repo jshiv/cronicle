@@ -24,5 +24,6 @@ require (
 	github.com/spf13/viper v1.7.0
 	github.com/whilp/git-urls v1.0.0
 	github.com/zclconf/go-cty v1.5.1
+	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9
 	gopkg.in/matryer/try.v1 v1.0.0-20150601225556-312d2599e12e
 )

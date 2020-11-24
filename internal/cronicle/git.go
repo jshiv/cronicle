@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	gossh "golang.org/x/crypto/ssh"
 )
 
 // Git is the struct which associates common data structures from the go-git library.
@@ -40,6 +41,7 @@ func (repo *Repo) Auth() (transport.AuthMethod, error) {
 			return nil, err
 		}
 		auth, err := ssh.NewPublicKeysFromFile("git", keyPath, "")
+		auth.HostKeyCallback = gossh.InsecureIgnoreHostKey()
 		return auth, err
 	}
 
