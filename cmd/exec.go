@@ -16,6 +16,9 @@ limitations under the License.
 package cmd
 
 import (
+	"path/filepath"
+	"strings"
+
 	"github.com/jshiv/cronicle/internal/cronicle"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -47,8 +50,19 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 		path, _ := cmd.Flags().GetString("path")
 		task, _ := cmd.Flags().GetString("task")
 		schedule, _ := cmd.Flags().GetString("schedule")
-
 		timeFlag, _ := cmd.Flags().GetString("time")
+		cron, _ := cmd.Flags().GetString("cron")
+		command, _ := cmd.Flags().GetString("command")
+
+		if cron != "" && command != "" {
+			conf := cronicle.Default()
+			conf.Schedules[0].Name = "schedule1"
+			conf.Schedules[0].Cron = cron
+			conf.Schedules[0].Tasks[0].Name = "task1"
+			conf.Schedules[0].Tasks[0].Command = strings.Split(command, " ")
+			cronicle.Init(filepath.Dir(path), "", "", conf)
+		}
+
 		var now time.Time
 		var end time.Time
 		if timeFlag == "" {
@@ -87,6 +101,8 @@ func init() {
 	execCmd.Flags().String("schedule", "", "Name of the schedule that contains the task to execute")
 	execCmd.Flags().String("time", "", "Timestamp to execute task [2006-01-02T15:04:05-08:00]")
 	execCmd.Flags().String("end", "", "date range end Timestamp [2006-01-02T15:04:05-08:00]")
+	execCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
+	execCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")
 
 	// Here you will define your flags and configuration settings.
 
