@@ -83,7 +83,7 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 			"attempt":  attempt,
 			"clock":    t.Format(time.Kitchen),
 			"date":     t.Format(time.RFC850),
-		}).Info()
+		}).Info("Executing...")
 		var err error
 		result = task.Exec(t)
 		err = result.Error
@@ -129,20 +129,24 @@ func (task *Task) Log(res exec.Result) {
 		log.WithFields(log.Fields{
 			"schedule": task.ScheduleName,
 			"task":     task.Name,
+			"path":     task.Path,
 			"exit":     res.ExitStatus,
 			"error":    res.Error,
 			"commit":   commit,
 			"email":    email,
 			"success":  false,
+			"command":  strings.Join(res.Command, " "),
 		}).Error(res.Stderr)
 	} else {
 		log.WithFields(log.Fields{
 			"schedule": task.ScheduleName,
 			"task":     task.Name,
+			"path":     task.Path,
 			"exit":     res.ExitStatus,
 			"commit":   commit,
 			"email":    email,
 			"success":  true,
+			"command":  strings.Join(res.Command, " "),
 		}).Info(res.Stdout)
 	}
 
