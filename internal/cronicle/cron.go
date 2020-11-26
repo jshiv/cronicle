@@ -3,6 +3,7 @@ package cronicle
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"runtime"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	nsqvice "github.com/matryer/vice/queues/nsq"
 	redisvice "github.com/matryer/vice/queues/redis"
 	"github.com/nsqio/go-nsq"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/fatih/color"
 
@@ -42,6 +44,18 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
+	if runOptions.LogToFile {
+		logPath := path.Join(croniclePath, path.Join(".cronicle", "log"))
+		logFile := path.Join(logPath, "cronicle.log")
+		log.SetOutput(&lumberjack.Logger{
+			Filename:   logFile,
+			MaxSize:    500, // megabytes
+			MaxBackups: 3,
+			MaxAge:     28,   //days
+			Compress:   true, // disabled by default
+		})
+	}
+
 	if runOptions.QueueType == "" {
 		if conf.Queue != nil {
 			runOptions.QueueType = conf.Queue.Type
@@ -70,6 +84,7 @@ type RunOptions struct {
 	QueueType string
 	QueueName string
 	Addr      string
+	LogToFile bool
 }
 
 // StartWorker listens to a vice transport queue for schedules

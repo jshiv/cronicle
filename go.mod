@@ -25,4 +25,5 @@ require (
 	github.com/zclconf/go-cty v1.7.0
 	golang.org/x/crypto v0.0.0-20201117144127-c1f2f97bffc9
 	gopkg.in/matryer/try.v1 v1.0.0-20150601225556-312d2599e12e
+	gopkg.in/natefinch/lumberjack.v2 v2.0.0
 )

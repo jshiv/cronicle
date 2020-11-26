@@ -44,8 +44,9 @@ The run command will log schedule information to stdout including git commit inf
 		addr, _ := cmd.Flags().GetString("addr")
 		cron, _ := cmd.Flags().GetString("cron")
 		command, _ := cmd.Flags().GetString("command")
+		logToFile, _ := cmd.Flags().GetBool("log-to-file")
 
-		runOptions := cronicle.RunOptions{RunWorker: runWorker, QueueType: queueType, QueueName: queueName, Addr: addr}
+		runOptions := cronicle.RunOptions{RunWorker: runWorker, QueueType: queueType, QueueName: queueName, Addr: addr, LogToFile: logToFile}
 
 		if cron != "" && command != "" {
 			conf := cronicle.Default()
@@ -55,6 +56,7 @@ The run command will log schedule information to stdout including git commit inf
 			conf.Schedules[0].Tasks[0].Command = strings.Split(command, " ")
 			cronicle.Init(filepath.Dir(path), "", "", conf)
 		}
+
 		cronicle.Run(path, runOptions)
 
 	},
@@ -84,6 +86,7 @@ func init() {
 	runCmd.Flags().String("addr", "", addrDesc)
 	runCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
 	runCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")
+	runCmd.Flags().Bool("log-to-file", false, "log to path/.cronicle/log/cronicle.log")
 
 	// Here you will define your flags and configuration settings.
 
