@@ -11,9 +11,10 @@ import (
 	url "github.com/whilp/git-urls"
 
 	"github.com/fatih/color"
-	log "github.com/sirupsen/logrus"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	log "github.com/sirupsen/logrus"
+	gossh "golang.org/x/crypto/ssh"
 )
 
 //Init initializes a default croniclePath with a .git repository,
@@ -30,6 +31,7 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 		var cloneOptions git.CloneOptions
 		if deployKey != "" {
 			auth, err := ssh.NewPublicKeysFromFile("git", deployKey, "")
+			auth.HostKeyCallback = gossh.InsecureIgnoreHostKey()
 			if err != nil {
 				log.Fatal(err)
 			}
