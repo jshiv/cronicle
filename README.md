@@ -6,6 +6,21 @@ git integrated distributed workflow scheduler that provides a pull model for CI/
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/jshiv/cronicle)](https://pkg.go.dev/github.com/jshiv/cronicle)
 
+## Install
+
+Linux
+```bash
+wget -c https://github.com/jshiv/cronicle/releases/download/v0.3.3/cronicle_0.3.3_Linux_x86_64.tar.gz -O - | tar -xz
+sudo mv cronicle /usr/local/bin/cronicle
+```
+
+Mac/Windows download from the [releases page.](https://github.com/jshiv/cronicle/releases/latest)
+
+## Quick start
+```bash
+cronicle run --command "/bin/echo cronicle" --cron "@every 5s"
+```
+
 The `cronicle.hcl` file maintains the `schedule as code` for task execution.
 
 `cronicle init --path cron` will produce a default file:
