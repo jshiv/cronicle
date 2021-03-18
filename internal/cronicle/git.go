@@ -153,10 +153,12 @@ func (g *Git) Checkout(branch string, commit string) error {
 	if g.authMethod == nil {
 		fetchOptions = git.FetchOptions{
 			RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
+			Force:    true,
 		}
 	} else {
 		fetchOptions = git.FetchOptions{
 			RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
+			Force:    true,
 			Auth:     *g.authMethod,
 		}
 	}
@@ -174,12 +176,12 @@ func (g *Git) Checkout(branch string, commit string) error {
 	if commit != "" {
 		h := plumbing.NewHash(commit)
 		checkoutOptions = git.CheckoutOptions{
-			Create: false, Force: false, Hash: h,
+			Create: false, Force: true, Hash: h,
 		}
 	} else {
 		b := plumbing.NewBranchReferenceName(branch)
 		checkoutOptions = git.CheckoutOptions{
-			Create: false, Force: false, Branch: b,
+			Create: false, Force: true, Branch: b,
 		}
 	}
 
