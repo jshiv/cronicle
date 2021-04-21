@@ -152,12 +152,12 @@ func (g *Git) Checkout(branch string, commit string) error {
 	var fetchOptions git.FetchOptions
 	if g.authMethod == nil {
 		fetchOptions = git.FetchOptions{
-			RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
+			RefSpecs: []c.RefSpec{"+refs/heads/*:refs/remotes/origin/*", "refs/*:refs/*"},
 			Force:    true,
 		}
 	} else {
 		fetchOptions = git.FetchOptions{
-			RefSpecs: []c.RefSpec{"refs/*:refs/*", "HEAD:refs/heads/HEAD"},
+			RefSpecs: []c.RefSpec{"+refs/heads/*:refs/remotes/origin/*", "refs/*:refs/*"},
 			Force:    true,
 			Auth:     *g.authMethod,
 		}
