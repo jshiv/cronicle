@@ -195,6 +195,17 @@ The `worker` will start a schedule consumer when `cronicle run --queue ` is in d
 cronicle worker --queue redis
 ```
 
+---
+
+## Command Templates
+The cronicle command string accepts the following template argumets
+```
+	 ${date}: 		  "2006-01-02"
+	 ${datetime}: 	"2006-01-02T15:04:05Z07:00"
+	 ${timestamp}: 	"2006-01-02 15:04:05Z07:00"
+	 ${path}:       task.Path
+```
+
 
 
 

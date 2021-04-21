@@ -19,6 +19,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 		"${date}", t.Format(TimeArgumentFormatMap["${date}"]),
 		"${datetime}", t.Format(TimeArgumentFormatMap["${datetime}"]),
 		"${timestamp}", t.Format(TimeArgumentFormatMap["${timestamp}"]),
+		"${path}", task.Path,
 	)
 	if len(task.Command) > 0 {
 		cmd := make([]string, len(task.Command))
