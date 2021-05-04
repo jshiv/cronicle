@@ -3,6 +3,8 @@ package cronicle_test
 import (
 	"time"
 
+	"fmt"
+
 	"github.com/jshiv/cronicle/internal/cronicle"
 	"github.com/jshiv/cronicle/pkg/exec"
 	. "github.com/onsi/ginkgo"
@@ -150,6 +152,26 @@ var _ = Describe("Exec", func() {
 			Stderr:     "",
 			ExitStatus: 0,
 		}))
+	})
+
+	It("task.Exec(t) Should replace ${path} with task.Path", func() {
+		conf := cronicle.Default()
+		schedule := conf.Schedules[0]
+		repo := cronicle.Repo{}
+		schedule.Repo = &repo
+		schedule.Repo.URL = testRepoPath
+		schedule.PropigateTaskProperties(taskPath)
+		task := schedule.Tasks[0]
+
+		task.Command = []string{"/bin/echo", "${path}"}
+		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		r := task.Exec(t)
+
+		fmt.Println(r.Stdout)
+		Expect(r.Stderr).To(Equal(""))
+		Expect(r.ExitStatus).To(Equal(0))
+		Expect(r.Stdout).To(ContainSubstring("cronicle/test_task/.cronicle/"))
+		Expect(r.Command[1]).To(ContainSubstring("cronicle/internal/cronicle/test_repo/.git/foo/bar"))
 	})
 
 	It("Should replace duplicate values of ${date} bash arguments with 2020-11-01", func() {
