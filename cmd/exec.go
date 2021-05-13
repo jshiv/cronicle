@@ -77,6 +77,7 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 
 		}
 
+		queueArgs := cronicle.QueueArgs{}
 		endFlag, _ := cmd.Flags().GetString("end")
 		if endFlag == "" {
 			end = now
@@ -88,8 +89,8 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 				end = n
 			}
 		}
-		for t := now; t.After(end) == false; t = t.AddDate(0, 0, 1) {
-			cronicle.ExecTasks(path, task, schedule, t)
+		for t := now; !t.After(end); t = t.AddDate(0, 0, 1) {
+			cronicle.ExecTasks(path, task, schedule, t, queueArgs)
 		}
 	},
 }
