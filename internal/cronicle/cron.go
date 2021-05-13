@@ -126,15 +126,42 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 		schedules = conf.Schedules
 	}
 
+	if queueArgs.QueueType == "" {
+		if conf.Queue != nil {
+			queueArgs.QueueType = conf.Queue.Type
+		}
+	}
+
 	for _, schedule := range schedules {
 		taskMap := schedule.TaskMap()
 		if taskName != "" {
 			if task, ok := taskMap[taskName]; ok {
-				task.Execute(nowInLoc)
+				if queueArgs.QueueType == "" {
+					task.Execute(nowInLoc)
+				} else {
+					transport := MakeViceTransport(queueArgs.QueueType, queueArgs.Addr)
+					// Create a new schedule containing only the requested task for publishing to the queue
+					singleTaskSchedule := Schedule{
+						Name:         schedule.Name,
+						Cron:         schedule.Cron,
+						Timezone:     schedule.Timezone,
+						Repo:         schedule.Repo,
+						CronicleRepo: schedule.CronicleRepo,
+						Now:          nowInLoc,
+						Tasks:        []Task{task},
+					}
+					ProduceSchedule(singleTaskSchedule, transport.Send(queueArgs.QueueName))()
+				}
+
 			}
 		} else {
 			schedule.Now = nowInLoc
-			schedule.ExecuteTasks()
+			if queueArgs.QueueType == "" {
+				schedule.ExecuteTasks()
+			} else {
+				transport := MakeViceTransport(queueArgs.QueueType, queueArgs.Addr)
+				ProduceSchedule(schedule, transport.Send(queueArgs.QueueName))()
+			}
 		}
 	}
 }

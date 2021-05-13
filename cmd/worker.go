@@ -16,6 +16,8 @@ limitations under the License.
 package cmd
 
 import (
+	"path/filepath"
+
 	"github.com/jshiv/cronicle/internal/cronicle"
 	"github.com/spf13/cobra"
 
@@ -53,7 +55,11 @@ Multipule workers can be started, they will take turns consuming from the queue.
 		queueName, _ := cmd.Flags().GetString("queue-name")
 		addr, _ := cmd.Flags().GetString("addr")
 
-		log.Info("Starting Worker from: " + path)
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			absPath = path
+		}
+		log.Info("Starting Worker from: " + absPath)
 		queueArgs := cronicle.QueueArgs{RunWorker: true, QueueType: queueType, QueueName: queueName, Addr: addr}
 		cronicle.StartWorker(path, queueArgs)
 	},

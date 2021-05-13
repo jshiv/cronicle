@@ -53,6 +53,9 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 		timeFlag, _ := cmd.Flags().GetString("time")
 		cron, _ := cmd.Flags().GetString("cron")
 		command, _ := cmd.Flags().GetString("command")
+		queueType, _ := cmd.Flags().GetString("queue")
+		queueName, _ := cmd.Flags().GetString("queue-name")
+		addr, _ := cmd.Flags().GetString("addr")
 
 		if cron != "" && command != "" {
 			conf := cronicle.Default()
@@ -77,7 +80,7 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 
 		}
 
-		queueArgs := cronicle.QueueArgs{}
+		queueArgs := cronicle.QueueArgs{QueueType: queueType, QueueName: queueName, Addr: addr}
 		endFlag, _ := cmd.Flags().GetString("end")
 		if endFlag == "" {
 			end = now
@@ -104,6 +107,24 @@ func init() {
 	execCmd.Flags().String("end", "", "date range end Timestamp [2006-01-02T15:04:05-08:00]")
 	execCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
 	execCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")
+	queueDesc := `
+	message broker technology for distributed schedule execution, 
+	Options: 
+		redis [distributed on localhost:6379]
+		nsq [run on cluster with nsqd:4150]
+	Configurable via the queue.type field in cronicle.hcl
+	`
+	execCmd.Flags().String("queue", "", queueDesc)
+	execCmd.Flags().String("queue-name", "cronicle", "Name of the queue to message schedules over.")
+
+	addrDesc := `
+	host:port of the queue service leader, 
+	Options: 
+		redis server[default: 127.0.0.1:6379]
+		nsq   NSQLookupd service [default: localhost:4150 nsqd dameon]
+	Configurable via the queue.addr field in cronicle.hcl
+	`
+	execCmd.Flags().String("addr", "", addrDesc)
 
 	// Here you will define your flags and configuration settings.
 
