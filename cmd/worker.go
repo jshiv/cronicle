@@ -54,8 +54,8 @@ Multipule workers can be started, they will take turns consuming from the queue.
 		addr, _ := cmd.Flags().GetString("addr")
 
 		log.Info("Starting Worker from: " + path)
-		runOptions := cronicle.RunOptions{RunWorker: true, QueueType: queueType, QueueName: queueName, Addr: addr}
-		cronicle.StartWorker(path, runOptions)
+		queueArgs := cronicle.QueueArgs{RunWorker: true, QueueType: queueType, QueueName: queueName, Addr: addr}
+		cronicle.StartWorker(path, queueArgs)
 	},
 }
 

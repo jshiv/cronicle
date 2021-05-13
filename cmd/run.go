@@ -46,7 +46,7 @@ The run command will log schedule information to stdout including git commit inf
 		command, _ := cmd.Flags().GetString("command")
 		logToFile, _ := cmd.Flags().GetBool("log-to-file")
 
-		runOptions := cronicle.RunOptions{RunWorker: runWorker, QueueType: queueType, QueueName: queueName, Addr: addr, LogToFile: logToFile}
+		queueArgs := cronicle.QueueArgs{RunWorker: runWorker, QueueType: queueType, QueueName: queueName, Addr: addr}
 
 		if cron != "" && command != "" {
 			conf := cronicle.Default()
@@ -57,7 +57,7 @@ The run command will log schedule information to stdout including git commit inf
 			cronicle.Init(filepath.Dir(path), "", "", conf)
 		}
 
-		cronicle.Run(path, runOptions)
+		cronicle.Run(path, logToFile, queueArgs)
 
 	},
 }

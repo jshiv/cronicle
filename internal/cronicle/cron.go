@@ -23,7 +23,7 @@ import (
 )
 
 // Run is the main function of the cron package
-func Run(cronicleFile string, runOptions RunOptions) {
+func Run(cronicleFile string, logToFile bool, queueArgs QueueArgs) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
@@ -44,7 +44,7 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
-	if runOptions.LogToFile {
+	if logToFile {
 		logPath := path.Join(croniclePath, path.Join(".cronicle", "log"))
 		logFile := path.Join(logPath, "cronicle.log")
 		log.SetOutput(&lumberjack.Logger{
@@ -56,21 +56,21 @@ func Run(cronicleFile string, runOptions RunOptions) {
 		})
 	}
 
-	if runOptions.QueueType == "" {
+	if queueArgs.QueueType == "" {
 		if conf.Queue != nil {
-			runOptions.QueueType = conf.Queue.Type
+			queueArgs.QueueType = conf.Queue.Type
 		}
 	}
 
-	if runOptions.QueueType == "" {
+	if queueArgs.QueueType == "" {
 		queue := make(chan []byte)
 		go StartCron(cronicleFileAbs, queue)
 		go ConsumeSchedule(queue, croniclePath)
 	} else {
-		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
-		go StartCron(cronicleFileAbs, transport.Send(runOptions.QueueName))
-		if runOptions.RunWorker {
-			go ConsumeSchedule(transport.Receive(runOptions.QueueName), croniclePath)
+		transport := MakeViceTransport(queueArgs.QueueType, queueArgs.Addr)
+		go StartCron(cronicleFileAbs, transport.Send(queueArgs.QueueName))
+		if queueArgs.RunWorker {
+			go ConsumeSchedule(transport.Receive(queueArgs.QueueName), croniclePath)
 		}
 	}
 
@@ -78,29 +78,28 @@ func Run(cronicleFile string, runOptions RunOptions) {
 
 }
 
-// RunOptions enables the runtime configuration of the distributed message queue
-type RunOptions struct {
+// QueueArgs enables the runtime configuration of the distributed message queue
+type QueueArgs struct {
 	RunWorker bool
 	QueueType string
 	QueueName string
 	Addr      string
-	LogToFile bool
 }
 
 // StartWorker listens to a vice transport queue for schedules
 // produced by cronicle run
-func StartWorker(path string, runOptions RunOptions) {
+func StartWorker(path string, queueArgs QueueArgs) {
 
 	pathAbs, err := filepath.Abs(path)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if runOptions.QueueType == "" {
+	if queueArgs.QueueType == "" {
 		log.Error("--queue must be specified in distributed mode. [Options: redis, nsq]")
 	}
-	transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
-	schedules := transport.Receive(runOptions.QueueName)
+	transport := MakeViceTransport(queueArgs.QueueType, queueArgs.Addr)
+	schedules := transport.Receive(queueArgs.QueueName)
 	go ConsumeSchedule(schedules, pathAbs)
 
 	runtime.Goexit()
@@ -296,7 +295,7 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 
 // ExecTasks parses the cronicle.hcl config, filters for a specified task
 // and executes the task
-func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time) {
+func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time, queueArgs QueueArgs) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
