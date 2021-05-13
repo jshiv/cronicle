@@ -22,6 +22,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// QueueArgs enables the runtime configuration of the distributed message queue
+type QueueArgs struct {
+	RunWorker bool
+	QueueType string
+	QueueName string
+	Addr      string
+}
+
 // Run is the main function of the cron package
 func Run(cronicleFile string, logToFile bool, queueArgs QueueArgs) {
 
@@ -75,15 +83,60 @@ func Run(cronicleFile string, logToFile bool, queueArgs QueueArgs) {
 	}
 
 	runtime.Goexit()
-
 }
 
-// QueueArgs enables the runtime configuration of the distributed message queue
-type QueueArgs struct {
-	RunWorker bool
-	QueueType string
-	QueueName string
-	Addr      string
+// ExecTasks parses the cronicle.hcl config, filters for a specified task
+// and executes the task
+func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time, queueArgs QueueArgs) {
+
+	cronicleFileAbs, err := filepath.Abs(cronicleFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Info("Loading " + cronicleFileAbs)
+	if !fileExists(cronicleFileAbs) {
+		log.Fatal("file does not exist: ", cronicleFileAbs)
+	}
+
+	conf, err := GetConfig(cronicleFileAbs)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var loc *time.Location
+	if conf.Timezone != "" {
+		loc, err = time.LoadLocation(conf.Timezone)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		loc = time.Local
+	}
+
+	log.SetFormatter(TZFormatter{Formatter: &log.TextFormatter{
+		FullTimestamp: true,
+	}, loc: loc})
+	log.WithFields(log.Fields{"cronicle": "exec"}).Info("executing tasks...")
+
+	nowInLoc := now.In(loc)
+	var schedules []Schedule
+	if scheduleName != "" {
+		schedules = []Schedule{conf.ScheduleMap()[scheduleName]}
+	} else {
+		schedules = conf.Schedules
+	}
+
+	for _, schedule := range schedules {
+		taskMap := schedule.TaskMap()
+		if taskName != "" {
+			if task, ok := taskMap[taskName]; ok {
+				task.Execute(nowInLoc)
+			}
+		} else {
+			schedule.Now = nowInLoc
+			schedule.ExecuteTasks()
+		}
+	}
 }
 
 // StartWorker listens to a vice transport queue for schedules
@@ -103,44 +156,6 @@ func StartWorker(path string, queueArgs QueueArgs) {
 	go ConsumeSchedule(schedules, pathAbs)
 
 	runtime.Goexit()
-
-}
-
-//MakeViceTransport creates a vice.Transport interface from the given
-//queue field in the config
-func MakeViceTransport(queueType string, addr string) vice.Transport {
-	// var transport *nsqvice.Transport
-
-	switch queueType {
-	case "redis":
-		if addr == "" {
-			addr = "127.0.0.1:6379"
-		}
-		opts := &redis.Options{
-			Network:    "tcp",
-			Addr:       addr,
-			Password:   "",
-			DB:         0,
-			MaxRetries: 0,
-		}
-		client := redis.NewClient(opts)
-		opt := redisvice.WithClient(client)
-		transport := redisvice.New(opt)
-		return transport
-	case "nsq":
-		transport := nsqvice.New()
-		transport.ConnectConsumer = func(consumer *nsq.Consumer) error {
-			if addr == "" {
-				return consumer.ConnectToNSQD(nsqvice.DefaultTCPAddr)
-			}
-			return consumer.ConnectToNSQLookupd(addr)
-
-		}
-		return transport
-	}
-
-	// return transpor
-	return nsqvice.New()
 
 }
 
@@ -293,56 +308,40 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 	}
 }
 
-// ExecTasks parses the cronicle.hcl config, filters for a specified task
-// and executes the task
-func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time, queueArgs QueueArgs) {
+//MakeViceTransport creates a vice.Transport interface from the given
+//queue field in the config
+func MakeViceTransport(queueType string, addr string) vice.Transport {
+	// var transport *nsqvice.Transport
 
-	cronicleFileAbs, err := filepath.Abs(cronicleFile)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Info("Loading " + cronicleFileAbs)
-	if !fileExists(cronicleFileAbs) {
-		log.Fatal("file does not exist: ", cronicleFileAbs)
-	}
-
-	conf, err := GetConfig(cronicleFileAbs)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var loc *time.Location
-	if conf.Timezone != "" {
-		loc, err = time.LoadLocation(conf.Timezone)
-		if err != nil {
-			log.Fatal(err)
+	switch queueType {
+	case "redis":
+		if addr == "" {
+			addr = "127.0.0.1:6379"
 		}
-	} else {
-		loc = time.Local
-	}
-
-	log.SetFormatter(TZFormatter{Formatter: &log.TextFormatter{
-		FullTimestamp: true,
-	}, loc: loc})
-	log.WithFields(log.Fields{"cronicle": "exec"}).Info("executing tasks...")
-
-	nowInLoc := now.In(loc)
-	var schedules []Schedule
-	if scheduleName != "" {
-		schedules = []Schedule{conf.ScheduleMap()[scheduleName]}
-	} else {
-		schedules = conf.Schedules
-	}
-
-	for _, schedule := range schedules {
-		taskMap := schedule.TaskMap()
-		if taskName != "" {
-			if task, ok := taskMap[taskName]; ok {
-				task.Execute(nowInLoc)
+		opts := &redis.Options{
+			Network:    "tcp",
+			Addr:       addr,
+			Password:   "",
+			DB:         0,
+			MaxRetries: 0,
+		}
+		client := redis.NewClient(opts)
+		opt := redisvice.WithClient(client)
+		transport := redisvice.New(opt)
+		return transport
+	case "nsq":
+		transport := nsqvice.New()
+		transport.ConnectConsumer = func(consumer *nsq.Consumer) error {
+			if addr == "" {
+				return consumer.ConnectToNSQD(nsqvice.DefaultTCPAddr)
 			}
-		} else {
-			schedule.Now = nowInLoc
-			schedule.ExecuteTasks()
+			return consumer.ConnectToNSQLookupd(addr)
+
 		}
+		return transport
 	}
+
+	// return transpor
+	return nsqvice.New()
+
 }
