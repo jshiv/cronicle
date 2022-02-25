@@ -11,6 +11,7 @@ import (
 //TaskGraph produces AcyclicGraph of schedule.Tasks where edges are
 //connected by task.Name and task.Depends
 func (schedule *Schedule) taskGraph() dag.AcyclicGraph {
+	//TODO: Add error case where depName does not exist in schedule.Tasks[i.e. miss spelled]
 	var g dag.AcyclicGraph
 	var edges []dag.Edge
 	for _, task := range schedule.Tasks {
