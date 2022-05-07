@@ -15,7 +15,6 @@
   types.time = "timestamp" # example
   types.msg = "string"
   types.level = "string"
-  types.schedule = "string"
   types.cronicle = "string"
 
 [sinks.console]
