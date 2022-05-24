@@ -10,7 +10,7 @@ git integrated distributed workflow scheduler that provides a pull model for CI/
 
 Linux
 ```bash
-wget -c https://github.com/jshiv/cronicle/releases/download/v0.3.6/cronicle_0.3.6_Linux_x86_64.tar.gz -O - | tar -xz
+wget -c https://github.com/jshiv/cronicle/releases/download/v0.3.8/cronicle_0.3.8_Linux_x86_64.tar.gz -O - | tar -xz
 sudo mv cronicle /usr/local/bin/cronicle
 ```
 
