@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
-	"runtime"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -61,20 +61,22 @@ func Run(cronicleFile string, runOptions RunOptions) {
 			runOptions.QueueType = conf.Queue.Type
 		}
 	}
-
+	//TODO: WaitGroup is currently only used for testing, could be used in Producer
+	var wg sync.WaitGroup
+	wg.Add(1) //Ensure WaitGroup counter > 0
 	if runOptions.QueueType == "" {
 		queue := make(chan []byte)
 		go StartCron(cronicleFileAbs, queue)
-		go ConsumeSchedule(queue, croniclePath)
+		go ConsumeSchedule(queue, croniclePath, &wg)
 	} else {
 		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
 		go StartCron(cronicleFileAbs, transport.Send(runOptions.QueueName))
 		if runOptions.RunWorker {
-			go ConsumeSchedule(transport.Receive(runOptions.QueueName), croniclePath)
+			go ConsumeSchedule(transport.Receive(runOptions.QueueName), croniclePath, &wg)
 		}
 	}
 
-	runtime.Goexit()
+	wg.Wait() //Wait forever
 
 }
 
@@ -101,9 +103,11 @@ func StartWorker(path string, runOptions RunOptions) {
 	}
 	transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
 	schedules := transport.Receive(runOptions.QueueName)
-	go ConsumeSchedule(schedules, pathAbs)
+	var wg sync.WaitGroup
+	wg.Add(1) //Ensure WaitGroup counter > 0
+	go ConsumeSchedule(schedules, pathAbs, &wg)
 
-	runtime.Goexit()
+	wg.Wait()
 
 }
 
@@ -239,7 +243,7 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 
 //ConsumeSchedule consumes the byte array of a
 //schedule from the message queue for execution
-func ConsumeSchedule(queue <-chan []byte, path string) {
+func ConsumeSchedule(queue <-chan []byte, path string, wg *sync.WaitGroup) {
 	var p string
 	if path == "" {
 		p, _ = filepath.Abs("./")
@@ -247,15 +251,17 @@ func ConsumeSchedule(queue <-chan []byte, path string) {
 		p = path
 	}
 	for scheduleBytes := range queue {
-
-		var schedule Schedule
-		err := json.Unmarshal(scheduleBytes, &schedule)
-		if err != nil {
-			log.Error(err)
-		}
-		schedule.PropigateTaskProperties(p)
-		schedule.ExecuteTasks()
-
+		wg.Add(1)
+		go func(scheduleBytes []byte) {
+			defer wg.Done()
+			var schedule Schedule
+			err := json.Unmarshal(scheduleBytes, &schedule)
+			if err != nil {
+				log.Error(err)
+			}
+			schedule.PropigateTaskProperties(p)
+			schedule.ExecuteTasks()
+		}(scheduleBytes)
 	}
 }
 
