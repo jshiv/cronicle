@@ -3,6 +3,7 @@ module github.com/jshiv/cronicle
 go 1.17
 
 require (
+	github.com/faabiosr/cachego v0.16.3
 	github.com/fatih/color v1.10.0
 	github.com/gernest/kemi v0.0.0-20160708162426-04d6c23628c2
 	github.com/go-git/go-git/v5 v5.2.0
@@ -20,9 +21,11 @@ require (
 	github.com/spf13/viper v1.7.1
 	github.com/whilp/git-urls v1.0.0
 	github.com/zclconf/go-cty v1.8.3
+	go.etcd.io/bbolt v1.3.4
 	golang.org/x/crypto v0.0.0-20210322153248-0c34fe9e7dc2
 	gopkg.in/matryer/try.v1 v1.0.0-20150601225556-312d2599e12e
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
+	gopkg.in/redis.v4 v4.2.4
 )
 
 require (
@@ -62,6 +65,7 @@ require (
 	golang.org/x/sys v0.0.0-20220224120231-95c6836cb0e7 // indirect
 	golang.org/x/text v0.3.5 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
+	gopkg.in/bsm/ratelimit.v1 v1.0.0-20160220154919-db14e161995a // indirect
 	gopkg.in/ini.v1 v1.51.0 // indirect
 	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect

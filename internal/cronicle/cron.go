@@ -13,6 +13,7 @@ import (
 	redisvice "github.com/matryer/vice/queues/redis"
 	"github.com/nsqio/go-nsq"
 	"gopkg.in/natefinch/lumberjack.v2"
+	rd "gopkg.in/redis.v4"
 
 	"github.com/fatih/color"
 
@@ -20,6 +21,10 @@ import (
 
 	cron "github.com/robfig/cron/v3"
 	log "github.com/sirupsen/logrus"
+
+	"github.com/faabiosr/cachego"
+	cachegoRedis "github.com/faabiosr/cachego/redis"
+	cachegoSync "github.com/faabiosr/cachego/sync"
 )
 
 // Run is the main function of the cron package
@@ -64,13 +69,16 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	//TODO: WaitGroup is currently only used for testing, could be used in Producer
 	var wg sync.WaitGroup
 	wg.Add(1) //Ensure WaitGroup counter > 0
+
 	if runOptions.QueueType == "" {
 		queue := make(chan []byte)
-		go StartCron(cronicleFileAbs, queue)
+		cache := cachegoSync.New()
+		go StartCron(cronicleFileAbs, queue, cache)
 		go ConsumeSchedule(queue, croniclePath, &wg)
 	} else {
 		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
-		go StartCron(cronicleFileAbs, transport.Send(runOptions.QueueName))
+		cache := MakeCache(runOptions.QueueType, runOptions.Addr)
+		go StartCron(cronicleFileAbs, transport.Send(runOptions.QueueName), cache)
 		if runOptions.RunWorker {
 			go ConsumeSchedule(transport.Receive(runOptions.QueueName), croniclePath, &wg)
 		}
@@ -149,10 +157,28 @@ func MakeViceTransport(queueType string, addr string) vice.Transport {
 
 }
 
+func MakeCache(queueType string, addr string) cachego.Cache {
+	var cache cachego.Cache
+	switch queueType {
+	case "redis":
+		if addr == "" {
+			addr = "127.0.0.1:6379"
+		}
+		cache = cachegoRedis.New(
+			rd.NewClient(&rd.Options{
+				Addr: addr,
+			}),
+		)
+	default:
+		cache = cachegoSync.New()
+	}
+	return cache
+}
+
 //StartCron pushes all schedules in the given config to the cron scheduler
 //starts the cron scheduler which publishes the serialzied
 //schedules to the message queue for execution.
-func StartCron(cronicleFile string, queue chan<- []byte) {
+func StartCron(cronicleFile string, queue chan<- []byte, cache cachego.Cache) {
 
 	conf, err := GetConfig(cronicleFile)
 	if err != nil {
