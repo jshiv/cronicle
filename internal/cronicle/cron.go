@@ -229,7 +229,7 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 			default:
 				_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
 				if err != nil {
-					fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
+					fmt.Printf("\x1b[31;1mschedule cron format error: %s\x1b[0m\n", schedule.Name)
 					log.Fatal(err)
 				}
 			}

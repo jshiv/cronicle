@@ -29,7 +29,6 @@ var _ = Describe("exec", func() {
 		command := []string{""}
 		res := Execute(command, "./", []string{})
 		err := res.Error
-		err.Error()
 		// expected := Result{Command: command, Stdout: "", Stderr: "", ExitStatus: 0, Error: nil}
 		Expect(err.Error()).To(Equal("fork/exec : no such file or directory"))
 	})
@@ -38,7 +37,6 @@ var _ = Describe("exec", func() {
 		command := []string{"/bin/bash", "not_a_script"}
 		res := Execute(command, "./", []string{})
 		err := res.Error
-		err.Error()
 
 		exitError := errors.New("exit status 127")
 		expected := Result{Command: command, Stdout: "", Stderr: "/bin/bash: not_a_script: No such file or directory\n", ExitStatus: 127, Error: exitError}
