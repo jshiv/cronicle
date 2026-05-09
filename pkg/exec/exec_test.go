@@ -31,7 +31,7 @@ var _ = Describe("exec", func() {
 		err := res.Error
 		err.Error()
 		// expected := Result{Command: command, Stdout: "", Stderr: "", ExitStatus: 0, Error: nil}
-		Expect(err.Error()).To(Equal("fork/exec : no such file or directory"))
+		Expect(err.Error()).To(Equal("exec: no command"))
 	})
 
 	It("Execute /bin/bash not_a_script should fail in execution ", func() {

@@ -1,36 +1,15 @@
 package cronicle
 
 import (
+	"fmt"
+	"strings"
+	"sync"
 	"time"
 
-	"github.com/hashicorp/terraform/dag"
-	"github.com/hashicorp/terraform/tfdiags"
 	log "github.com/sirupsen/logrus"
 )
 
-//TaskGraph produces AcyclicGraph of schedule.Tasks where edges are
-//connected by task.Name and task.Depends
-func (schedule *Schedule) taskGraph() dag.AcyclicGraph {
-	var g dag.AcyclicGraph
-	var edges []dag.Edge
-	for _, task := range schedule.Tasks {
-		g.Add(task.Name)
-		for _, depName := range task.Depends {
-			edges = append(edges, dag.BasicEdge(task.Name, depName))
-		}
-	}
-
-	for _, edge := range edges {
-		g.Connect(edge)
-	}
-
-	return g
-}
-
-// ExecuteTasks handels the execution of all tasks in a given schedule.
-// The execution walks over a DAG[Directed Acyclic Graph] to determine
-// execution order, which will default to parallel unless task.depends is
-// specified.
+// ExecuteTasks executes all tasks in dependency order, running independent tasks concurrently.
 func (schedule Schedule) ExecuteTasks() {
 	var now time.Time
 	if (schedule.Now == time.Time{}) {
@@ -40,29 +19,92 @@ func (schedule Schedule) ExecuteTasks() {
 	}
 
 	taskMap := schedule.TaskMap()
-	taskGraph := schedule.taskGraph()
-	graphString := taskGraph.StringWithNodeTypes()
+
+	deps := make(map[string][]string)
+	for _, task := range schedule.Tasks {
+		deps[task.Name] = task.Depends
+	}
+
 	log.WithFields(log.Fields{
 		"schedule": schedule.Name,
 		"clock":    now.Format(time.Kitchen),
 		"date":     now.Format(time.RFC850),
-	}).Info(graphString)
-	err := taskGraph.Walk(func(v dag.Vertex) tfdiags.Diagnostics {
-		var diags tfdiags.Diagnostics
-		taskName := dag.VertexName(v)
-		task := taskMap[taskName]
+	}).Info(dagString(deps))
+
+	if err := walkDAG(deps, func(name string) error {
+		task := taskMap[name]
 		_, err := task.Execute(now)
+		return err
+	}); err != nil {
+		log.Error(err)
+	}
+}
 
-		if err != nil {
-			diags = diags.Append(err)
-			return diags
+// walkDAG executes fn for each node in topological order, running independent nodes concurrently.
+func walkDAG(deps map[string][]string, fn func(string) error) error {
+	inDegree := make(map[string]int)
+	dependents := make(map[string][]string)
+
+	for node := range deps {
+		if _, ok := inDegree[node]; !ok {
+			inDegree[node] = 0
 		}
-
-		return diags
-	})
-
-	if err != nil {
-		log.Error(err.Err())
+		for _, dep := range deps[node] {
+			inDegree[node]++
+			dependents[dep] = append(dependents[dep], node)
+		}
 	}
 
+	var mu sync.Mutex
+	var firstErr error
+	done := make(chan string, len(deps))
+
+	launch := func(node string) {
+		go func() {
+			if err := fn(node); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+			done <- node
+		}()
+	}
+
+	running := 0
+	for node, degree := range inDegree {
+		if degree == 0 {
+			running++
+			launch(node)
+		}
+	}
+
+	for running > 0 {
+		completed := <-done
+		running--
+		for _, dependent := range dependents[completed] {
+			inDegree[dependent]--
+			if inDegree[dependent] == 0 {
+				running++
+				launch(dependent)
+			}
+		}
+	}
+
+	return firstErr
+}
+
+// dagString produces a human-readable representation of the DAG for logging.
+func dagString(deps map[string][]string) string {
+	var sb strings.Builder
+	sb.WriteString("DAG:\n")
+	for node, nodeDeps := range deps {
+		if len(nodeDeps) == 0 {
+			fmt.Fprintf(&sb, "  %s\n", node)
+		} else {
+			fmt.Fprintf(&sb, "  %s -> [%s]\n", node, strings.Join(nodeDeps, ", "))
+		}
+	}
+	return sb.String()
 }
