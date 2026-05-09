@@ -2,11 +2,10 @@ package cronicle
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
-
-	log "github.com/sirupsen/logrus"
 )
 
 // ExecuteTasks executes all tasks in dependency order, running independent tasks concurrently.
@@ -25,18 +24,18 @@ func (schedule Schedule) ExecuteTasks() {
 		deps[task.Name] = task.Depends
 	}
 
-	log.WithFields(log.Fields{
-		"schedule": schedule.Name,
-		"clock":    now.Format(time.Kitchen),
-		"date":     now.Format(time.RFC850),
-	}).Info(dagString(deps))
+	slog.Info(dagString(deps),
+		"schedule", schedule.Name,
+		"clock", now.Format(time.Kitchen),
+		"date", now.Format(time.RFC850),
+	)
 
 	if err := walkDAG(deps, func(name string) error {
 		task := taskMap[name]
 		_, err := task.Execute(now)
 		return err
 	}); err != nil {
-		log.Error(err)
+		slog.Error("dag walk failed", "error", err.Error())
 	}
 }
 

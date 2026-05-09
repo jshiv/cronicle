@@ -13,7 +13,7 @@ import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
-	log "github.com/sirupsen/logrus"
+	"log/slog"
 )
 
 // HclWriteFile contains the encoded hclwrite.File and the byte array of the file with
@@ -64,7 +64,7 @@ func MarshallHcl(conf Config, path string) string {
 	_, writeErr := destination.Write(b)
 	// _, writeErr := f.WriteTo(destination)
 	if writeErr != nil {
-		log.Error("write error")
+		slog.Error("write error")
 	}
 	destination.Close()
 	return path
@@ -96,7 +96,7 @@ func ParseFile(cronicleFile string, parser *hclparse.Parser) (*Config, hcl.Diagn
 func (conf Config) JSON() []byte {
 	b, err := json.Marshal(&conf)
 	if err != nil {
-		log.Error(err)
+		slog.Error("json marshal failed", "error", err.Error())
 	}
 	return b
 }
@@ -105,7 +105,7 @@ func (conf Config) JSON() []byte {
 func (schedule Schedule) JSON() []byte {
 	b, err := json.Marshal(&schedule)
 	if err != nil {
-		log.Error(err)
+		slog.Error("json marshal failed", "error", err.Error())
 	}
 	return b
 }
@@ -114,7 +114,7 @@ func (schedule Schedule) JSON() []byte {
 func (task Task) JSON() []byte {
 	b, err := json.Marshal(&task)
 	if err != nil {
-		log.Error(err)
+		slog.Error("json marshal failed", "error", err.Error())
 	}
 	return b
 }
