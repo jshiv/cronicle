@@ -13,8 +13,6 @@ import (
 	redisvice "github.com/matryer/vice/queues/redis"
 	"github.com/nsqio/go-nsq"
 
-	"github.com/fatih/color"
-
 	"path/filepath"
 
 	cron "github.com/robfig/cron/v3"
@@ -38,9 +36,16 @@ func Run(cronicleFile string, runOptions RunOptions) {
 		Fatal(err)
 	}
 	confPriorGlobal = conf
-	hcl := conf.Hcl()
-	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
-	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
+
+	taskCount := 0
+	for _, s := range conf.Schedules {
+		taskCount += len(s.Tasks)
+	}
+	slog.Info("config loaded",
+		"path", cronicleFileAbs,
+		"schedules", len(conf.Schedules),
+		"tasks", taskCount,
+	)
 
 	if runOptions.LogToFile {
 		if err := EnableFileLog(croniclePath); err != nil {

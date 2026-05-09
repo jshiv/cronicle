@@ -267,8 +267,10 @@ func formatValue(v slog.Value) string {
 
 // ---- prettyHandler ---------------------------------------------------------
 
-// prettyHandler renders records with entry_type=agent_run as a multi-line
-// block; everything else falls through to the wrapped fallback handler.
+// prettyHandler renders structural records (entry_type=…) as multi-line blocks
+// or compact section headers, and everything else as a dim single line. The
+// fallback handler exists for nested compositions but isn't used for direct
+// rendering — pretty mode always renders something itself.
 type prettyHandler struct {
 	fallback slog.Handler
 	out      io.Writer
@@ -278,11 +280,24 @@ func (p *prettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
 	return p.fallback.Enabled(ctx, l)
 }
 
-func (p *prettyHandler) Handle(ctx context.Context, r slog.Record) error {
-	if !isAgentRun(r) {
-		return p.fallback.Handle(ctx, r)
+func (p *prettyHandler) Handle(_ context.Context, r slog.Record) error {
+	switch entryType(r) {
+	case "agent_run":
+		return p.renderAgentRun(r)
+	case "shell_run":
+		return p.renderShellRun(r)
+	case "schedule_start":
+		return p.renderScheduleStart(r)
+	case "schedule_complete":
+		return p.renderScheduleComplete(r)
+	case "task_start":
+		// Block headers (agent_run / shell_run) subsume the start signal,
+		// so suppress task_start in pretty mode. The file mirror still
+		// gets the event.
+		return nil
+	default:
+		return p.renderDimLine(r)
 	}
-	return p.renderAgentRun(r)
 }
 
 func (p *prettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -293,16 +308,72 @@ func (p *prettyHandler) WithGroup(name string) slog.Handler {
 	return &prettyHandler{fallback: p.fallback.WithGroup(name), out: p.out}
 }
 
-func isAgentRun(r slog.Record) bool {
-	found := false
+// entryType extracts the entry_type attr from a record, returning "" if absent.
+func entryType(r slog.Record) string {
+	var et string
 	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == "entry_type" && a.Value.String() == "agent_run" {
-			found = true
+		if a.Key == "entry_type" {
+			et = a.Value.String()
 			return false
 		}
 		return true
 	})
-	return found
+	return et
+}
+
+// attrString fetches a string-valued attribute by key, returning "" if missing.
+func attrString(r slog.Record, key string) string {
+	var s string
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			s = a.Value.String()
+			return false
+		}
+		return true
+	})
+	return s
+}
+
+// attrInt64 fetches an int64-valued attribute by key, returning 0 if missing.
+func attrInt64(r slog.Record, key string) int64 {
+	var n int64
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			n = a.Value.Int64()
+			return false
+		}
+		return true
+	})
+	return n
+}
+
+// attrBool fetches a bool-valued attribute by key, returning false if missing.
+func attrBool(r slog.Record, key string) bool {
+	var v bool
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			v = a.Value.Bool()
+			return false
+		}
+		return true
+	})
+	return v
+}
+
+// attrStrings fetches a []string-valued attribute by key. Used for the
+// schedule_start "tasks" attr, which slog.Any-wraps a string slice.
+func attrStrings(r slog.Record, key string) []string {
+	var out []string
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key != key {
+			return true
+		}
+		if v, ok := a.Value.Any().([]string); ok {
+			out = v
+		}
+		return false
+	})
+	return out
 }
 
 func (p *prettyHandler) renderAgentRun(r slog.Record) error {
@@ -389,4 +460,193 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 
 	_, err := p.out.Write(b.Bytes())
 	return err
+}
+
+// renderShellRun renders a shell task as a block with the same shape as
+// agent_run: header rule, header line, body (stdout or stderr), footer.
+func (p *prettyHandler) renderShellRun(r slog.Record) error {
+	header := color.New(color.FgCyan, color.Bold).SprintFunc()
+	rule := color.New(color.FgCyan).SprintFunc()
+	footer := color.New(color.Faint).SprintFunc()
+	errc := color.New(color.FgRed, color.Bold).SprintFunc()
+
+	schedule := attrString(r, "schedule")
+	task := attrString(r, "task")
+	command := attrString(r, "command")
+	stdout := attrString(r, "stdout")
+	stderr := attrString(r, "stderr")
+	transcript := attrString(r, "transcript")
+	durationMs := attrInt64(r, "duration_ms")
+	exit := attrInt64(r, "exit")
+	success := attrBool(r, "success")
+
+	headerLine := fmt.Sprintf("shell run · schedule=%s · task=%s · %s",
+		schedule, task, truncate(escapeControl(command), 60))
+	bar := strings.Repeat("━", len(headerLine)+8)
+
+	var b bytes.Buffer
+	b.WriteString(rule(bar))
+	b.WriteByte('\n')
+	b.WriteString(header(headerLine))
+	b.WriteByte('\n')
+	b.WriteString(rule(bar))
+	b.WriteString("\n\n")
+
+	if success {
+		body := strings.TrimRight(stdout, "\n")
+		if body == "" {
+			b.WriteString(footer("(no stdout)\n"))
+		} else {
+			b.WriteString(body)
+			b.WriteByte('\n')
+		}
+	} else {
+		b.WriteString(errc("ERROR (exit "))
+		fmt.Fprintf(&b, "%d", exit)
+		b.WriteString(errc("):\n"))
+		body := strings.TrimRight(stderr, "\n")
+		if body == "" {
+			body = strings.TrimRight(stdout, "\n")
+		}
+		b.WriteString(body)
+		b.WriteByte('\n')
+	}
+
+	b.WriteByte('\n')
+	footerParts := []string{
+		fmt.Sprintf("exit=%d", exit),
+		fmt.Sprintf("%dms", durationMs),
+	}
+	if transcript != "" {
+		footerParts = append(footerParts, fmt.Sprintf("transcript=%s", filepath.Base(transcript)))
+	}
+	b.WriteString(footer("[" + strings.Join(footerParts, " · ") + "]"))
+	b.WriteString("\n\n")
+
+	_, err := p.out.Write(b.Bytes())
+	return err
+}
+
+// renderScheduleStart renders the section header above a schedule's task
+// blocks: a horizontal rule, the schedule name, and the DAG list.
+func (p *prettyHandler) renderScheduleStart(r slog.Record) error {
+	rule := color.New(color.FgMagenta).SprintFunc()
+	header := color.New(color.FgMagenta, color.Bold).SprintFunc()
+	dim := color.New(color.Faint).SprintFunc()
+
+	schedule := attrString(r, "schedule")
+	tasks := attrStrings(r, "tasks")
+
+	timeStr := r.Time.Format("15:04:05")
+	headerLine := fmt.Sprintf("%s · schedule \"%s\"", timeStr, schedule)
+	const totalWidth = 70
+	const leftRule = 4 // "────"
+	trailingCount := totalWidth - leftRule - 1 - len(headerLine) - 1
+	if trailingCount < 0 {
+		trailingCount = 0
+	}
+
+	var b bytes.Buffer
+	b.WriteString(rule(strings.Repeat("─", leftRule)))
+	b.WriteByte(' ')
+	b.WriteString(header(headerLine))
+	b.WriteByte(' ')
+	b.WriteString(rule(strings.Repeat("─", trailingCount)))
+	b.WriteByte('\n')
+
+	if len(tasks) > 0 {
+		b.WriteString(dim("DAG:\n"))
+		for i, t := range tasks {
+			prefix := "  ├─ "
+			if i == len(tasks)-1 {
+				prefix = "  └─ "
+			}
+			b.WriteString(dim(prefix + t + "\n"))
+		}
+	}
+	b.WriteByte('\n')
+
+	_, err := p.out.Write(b.Bytes())
+	return err
+}
+
+// renderScheduleComplete renders the summary line at the bottom of a schedule.
+func (p *prettyHandler) renderScheduleComplete(r slog.Record) error {
+	ok := color.New(color.FgGreen, color.Bold).SprintFunc()
+	bad := color.New(color.FgRed, color.Bold).SprintFunc()
+	dim := color.New(color.Faint).SprintFunc()
+
+	schedule := attrString(r, "schedule")
+	taskCount := attrInt64(r, "task_count")
+	durationMs := attrInt64(r, "duration_ms")
+	success := attrBool(r, "success")
+
+	var b bytes.Buffer
+	if success {
+		b.WriteString(ok("✓ "))
+		fmt.Fprintf(&b, "schedule \"%s\" complete ", schedule)
+	} else {
+		b.WriteString(bad("✗ "))
+		fmt.Fprintf(&b, "schedule \"%s\" failed ", schedule)
+		errMsg := attrString(r, "error")
+		if errMsg != "" {
+			b.WriteString(dim("(" + errMsg + ") "))
+		}
+	}
+	taskWord := "tasks"
+	if taskCount == 1 {
+		taskWord = "task"
+	}
+	b.WriteString(dim(fmt.Sprintf("· %d %s · %s", taskCount, taskWord, formatDuration(durationMs))))
+	b.WriteString("\n\n")
+
+	_, err := p.out.Write(b.Bytes())
+	return err
+}
+
+// renderDimLine renders a record as a faint single line. Used for lifecycle
+// events (Loading, executing tasks, heartbeat, refreshing config, etc.) that
+// don't carry a structural entry_type.
+func (p *prettyHandler) renderDimLine(r slog.Record) error {
+	dim := color.New(color.Faint).SprintFunc()
+
+	var b bytes.Buffer
+	b.WriteString(dim(r.Time.Format("15:04:05")))
+	b.WriteByte(' ')
+	b.WriteString(dim(r.Message))
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "entry_type" {
+			return true
+		}
+		fmt.Fprintf(&b, " %s", dim(a.Key+"="+formatValue(a.Value)))
+		return true
+	})
+	b.WriteByte('\n')
+
+	_, err := p.out.Write(b.Bytes())
+	return err
+}
+
+// escapeControl replaces newlines and tabs with their literal escape forms so
+// they don't break a single-line header layout when the source is shell input.
+func escapeControl(s string) string {
+	r := strings.NewReplacer("\n", "\\n", "\t", "\\t", "\r", "\\r")
+	return r.Replace(s)
+}
+
+// truncate trims s to at most n runes, appending "…" when shortened.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
+// formatDuration renders a millisecond value as "Nms" or "N.Ns" depending on
+// magnitude.
+func formatDuration(ms int64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return fmt.Sprintf("%.1fs", float64(ms)/1000)
 }
