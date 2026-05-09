@@ -2,6 +2,7 @@ package cronicle
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
@@ -13,7 +14,6 @@ import (
 	"github.com/fatih/color"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
-	log "github.com/sirupsen/logrus"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -23,7 +23,7 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 
 	absCroniclePath, err := filepath.Abs(croniclePath)
 	if err != nil {
-		log.Error(err)
+		slog.Error("filepath.Abs failed", "error", err.Error())
 	}
 
 	//if remote is given, clone it to the cronicle path
@@ -33,7 +33,7 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 			auth, err := ssh.NewPublicKeysFromFile("git", deployKey, "")
 			auth.HostKeyCallback = gossh.InsecureIgnoreHostKey()
 			if err != nil {
-				log.Fatal(err)
+				Fatal(err)
 			}
 			cloneOptions = git.CloneOptions{URL: cloneRepo, Auth: auth}
 		} else {
@@ -42,7 +42,7 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 
 		_, err = git.PlainClone(absCroniclePath, false, &cloneOptions)
 		if err != nil {
-			log.Fatal(err)
+			Fatal(err)
 		}
 	}
 
@@ -65,11 +65,11 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 		f, err := os.OpenFile(path.Join(absCroniclePath, ".gitignore"),
 			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			log.Println(err)
+			slog.Error("gitignore open failed", "error", err.Error())
 		}
 		defer f.Close()
 		if _, err := f.WriteString(".cronicle\n"); err != nil {
-			log.Println(err)
+			slog.Error("gitignore write failed", "error", err.Error())
 		}
 	}
 

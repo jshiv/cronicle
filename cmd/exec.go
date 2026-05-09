@@ -16,11 +16,11 @@ limitations under the License.
 package cmd
 
 import (
+	"log/slog"
 	"path/filepath"
 	"strings"
 
 	"github.com/jshiv/cronicle/internal/cronicle"
-	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"time"
@@ -58,7 +58,7 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 		if logToFile {
 			if abs, err := filepath.Abs(path); err == nil {
 				if err := cronicle.EnableFileLog(filepath.Dir(abs)); err != nil {
-					log.Fatal(err)
+					cronicle.Fatal(err)
 				}
 			}
 		}
@@ -79,7 +79,7 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 		} else {
 			//TODO: Add flags for timeFlag format and timezone
 			if n, err := time.Parse(time.RFC3339, timeFlag); err != nil {
-				log.Error(err)
+				slog.Error("time parse failed", "error", err.Error())
 			} else {
 				now = n
 			}
@@ -92,7 +92,7 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 		} else {
 			//TODO: Add flags for endFlag format and timezone
 			if n, err := time.Parse(time.RFC3339, endFlag); err != nil {
-				log.Error(err)
+				slog.Error("time parse failed", "error", err.Error())
 			} else {
 				end = n
 			}

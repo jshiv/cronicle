@@ -3,7 +3,6 @@ package cronicle
 import (
 	"errors"
 	"fmt"
-	"log"
 	"path/filepath"
 	"time"
 )
@@ -317,7 +316,7 @@ func (conf *Config) TaskArray() TaskArray {
 
 	err := conf.Validate() // ensure that schedule.Name and task.ScheduleName are not empty
 	if err != nil {
-		log.Fatal(err)
+		Fatal(err)
 	}
 	tasks := TaskArray{}
 

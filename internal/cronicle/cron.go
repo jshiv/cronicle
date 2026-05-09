@@ -3,6 +3,7 @@ package cronicle
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -17,7 +18,6 @@ import (
 	"path/filepath"
 
 	cron "github.com/robfig/cron/v3"
-	log "github.com/sirupsen/logrus"
 )
 
 // Run is the main function of the cron package
@@ -25,17 +25,17 @@ func Run(cronicleFile string, runOptions RunOptions) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
-		log.Fatal(err)
+		Fatal(err)
 	}
 
 	if !fileExists(cronicleFileAbs) {
-		log.Fatal("file does not exist: ", cronicleFileAbs)
+		Fatal("file does not exist", "path", cronicleFileAbs)
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
 	conf, err := GetConfig(cronicleFileAbs)
 	if err != nil {
-		log.Fatal(err)
+		Fatal(err)
 	}
 	confPriorGlobal = conf
 	hcl := conf.Hcl()
@@ -44,7 +44,7 @@ func Run(cronicleFile string, runOptions RunOptions) {
 
 	if runOptions.LogToFile {
 		if err := EnableFileLog(croniclePath); err != nil {
-			log.Fatal(err)
+			Fatal(err)
 		}
 	}
 
@@ -87,11 +87,11 @@ func StartWorker(path string, runOptions RunOptions) {
 
 	pathAbs, err := filepath.Abs(path)
 	if err != nil {
-		log.Fatal(err)
+		Fatal(err)
 	}
 
 	if runOptions.QueueType == "" {
-		log.Error("--queue must be specified in distributed mode. [Options: redis, nsq]")
+		slog.Error("--queue must be specified in distributed mode. [Options: redis, nsq]")
 	}
 	transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
 	schedules := transport.Receive(runOptions.QueueName)
@@ -148,30 +148,30 @@ func StartCron(cronicleFile string, queue chan<- []byte) {
 
 	conf, err := GetConfig(cronicleFile)
 	if err != nil {
-		log.Fatal(err)
+		Fatal(err)
 	}
 	var loc *time.Location
 	if conf.Timezone != "" {
 		loc, err = time.LoadLocation(conf.Timezone)
 		if err != nil {
-			log.Fatal(err)
+			Fatal(err)
 		}
 	} else {
 		loc = time.Local
 	}
 
 	ApplyTimezone(loc)
-	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
+	slog.Info("Starting Scheduler...", "cronicle", "start")
 
 	for _, schedule := range conf.Schedules {
 		switch {
 		case schedule.Cron == "@once":
-			log.WithFields(log.Fields{"schedule": schedule.Name, "cron": schedule.Cron}).Info("Executing @Once")
+			slog.Info("Executing @Once", "schedule", schedule.Name, "cron", schedule.Cron)
 			ProduceSchedule(schedule, queue)()
 		case schedule.Cron == "":
-			log.WithFields(log.Fields{"schedule": schedule.Name, "cron": schedule.Cron}).Info("Skip execution. Use 'cronicle exec' to run.")
+			slog.Info("Skip execution. Use 'cronicle exec' to run.", "schedule", schedule.Name, "cron", schedule.Cron)
 		default:
-			log.WithFields(log.Fields{"schedule": schedule.Name, "cron": schedule.Cron}).Info("Starting cron...")
+			slog.Info("Starting cron...", "schedule", schedule.Name, "cron", schedule.Cron)
 		}
 	}
 
@@ -193,14 +193,14 @@ var confPriorGlobal *Config
 //schedules to the cron.
 func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool) {
 
-	log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("Loading config...")
+	slog.Info("Loading config...", "cronicle", "heartbeat", "path", cronicleFile)
 	conf, err := GetConfig(cronicleFile)
 	if err != nil {
-		log.Error(err)
+		slog.Error("config load failed", "error", err.Error())
 	}
 
 	if string(confPriorGlobal.Hcl().Bytes) != string(conf.Hcl().Bytes) || force {
-		log.WithFields(log.Fields{"cronicle": "heartbeat", "path": cronicleFile}).Info("Refreshing config...")
+		slog.Info("Refreshing config...", "cronicle", "heartbeat", "path", cronicleFile)
 		c.Stop()
 		for _, entry := range c.Entries() {
 			// assumes that LoadCron has entry.ID == 1
@@ -213,14 +213,14 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 		for _, schedule := range conf.Schedules {
 			switch {
 			case schedule.Cron == "@once":
-				log.WithFields(log.Fields{"schedule": schedule.Name, "cron": schedule.Cron}).Info("@once execution complete at 'cronicle run'")
+				slog.Info("@once execution complete at 'cronicle run'", "schedule", schedule.Name, "cron", schedule.Cron)
 			case schedule.Cron == "":
-				log.WithFields(log.Fields{"schedule": schedule.Name, "cron": schedule.Cron}).Warn("Skip execution. Use 'cronicle exec' to run.")
+				slog.Warn("Skip execution. Use 'cronicle exec' to run.", "schedule", schedule.Name, "cron", schedule.Cron)
 			default:
 				_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
 				if err != nil {
 					fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
-					log.Fatal(err)
+					Fatal(err)
 				}
 			}
 
@@ -247,7 +247,7 @@ func ConsumeSchedule(queue <-chan []byte, path string, wg *sync.WaitGroup) {
 			var schedule Schedule
 			err := json.Unmarshal(scheduleBytes, &schedule)
 			if err != nil {
-				log.Error(err)
+				slog.Error("schedule unmarshal failed", "error", err.Error())
 			}
 			schedule.PropigateTaskProperties(p)
 			schedule.ExecuteTasks()
@@ -259,7 +259,7 @@ func ConsumeSchedule(queue <-chan []byte, path string, wg *sync.WaitGroup) {
 //schdule to the message queue for consumption
 func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 	return func() {
-		log.WithFields(log.Fields{"schedule": schedule.Name}).Info("Queuing...")
+		slog.Info("Queuing...", "schedule", schedule.Name)
 		var loc *time.Location
 		if schedule.Timezone != "" {
 			loc, _ = time.LoadLocation(schedule.Timezone)
@@ -279,9 +279,7 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 		startDate, _ := time.Parse("2006-01-02", schedule.StartDate)
 		if schedule.Now.After(endDate) || schedule.Now.Before(startDate) {
 			s := fmt.Sprintf("now=%s is not between start_date=%s and end_date=%s... Schedule will not execute.", schedule.Now, startDate, endDate)
-			log.WithFields(log.Fields{
-				"schedule": schedule.Name,
-			}).Warn(s)
+			slog.Warn(s, "schedule", schedule.Name)
 		} else {
 			schedule.CleanGit()
 			queue <- schedule.JSON()
@@ -296,30 +294,30 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
-		log.Fatal(err)
+		Fatal(err)
 	}
-	log.Info("Loading " + cronicleFileAbs)
+	slog.Info("Loading " + cronicleFileAbs)
 	if !fileExists(cronicleFileAbs) {
-		log.Fatal("file does not exist: ", cronicleFileAbs)
+		Fatal("file does not exist", "path", cronicleFileAbs)
 	}
 
 	conf, err := GetConfig(cronicleFileAbs)
 	if err != nil {
-		log.Fatal(err)
+		Fatal(err)
 	}
 
 	var loc *time.Location
 	if conf.Timezone != "" {
 		loc, err = time.LoadLocation(conf.Timezone)
 		if err != nil {
-			log.Fatal(err)
+			Fatal(err)
 		}
 	} else {
 		loc = time.Local
 	}
 
 	ApplyTimezone(loc)
-	log.WithFields(log.Fields{"cronicle": "exec"}).Info("executing tasks...")
+	slog.Info("executing tasks...", "cronicle", "exec")
 
 	nowInLoc := now.In(loc)
 	var schedules []Schedule

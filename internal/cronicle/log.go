@@ -2,8 +2,10 @@ package cronicle
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +13,6 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/mattn/go-isatty"
-	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -25,7 +26,7 @@ const (
 	LogFormatJSON   LogFormat = "json"
 )
 
-// SetupLogging configures logrus's stdout formatter according to format.
+// SetupLogging configures slog's default logger according to format.
 // "auto" picks pretty when stdout is a TTY, text otherwise.
 func SetupLogging(format LogFormat) {
 	resolved := format
@@ -37,138 +38,303 @@ func SetupLogging(format LogFormat) {
 		}
 	}
 
+	var handler slog.Handler
 	switch resolved {
 	case LogFormatPretty:
-		log.SetFormatter(&prettyFormatter{
-			fallback: &log.TextFormatter{
-				FullTimestamp: true,
-				ForceColors:   true,
-			},
-		})
+		handler = &prettyHandler{
+			fallback: newTintHandler(os.Stdout),
+			out:      os.Stdout,
+		}
 	case LogFormatJSON:
-		log.SetFormatter(&log.JSONFormatter{})
+		handler = slog.NewJSONHandler(os.Stdout, nil)
 	default:
-		log.SetFormatter(&log.TextFormatter{FullTimestamp: true})
+		handler = slog.NewTextHandler(os.Stdout, nil)
 	}
-
-	log.SetOutput(os.Stdout)
-	log.SetLevel(log.InfoLevel)
+	slog.SetDefault(slog.New(handler))
 }
 
-// EnableFileLog adds a logrus hook that mirrors every log entry as JSON to
-// croniclePath/.cronicle/log/cronicle.jsonl, rotated by lumberjack.
+// EnableFileLog composes the current default handler with a JSON-mirroring
+// handler that writes to .cronicle/log/cronicle.jsonl, rotated by lumberjack.
 // Stdout output is unaffected.
 func EnableFileLog(croniclePath string) error {
 	logDir := filepath.Join(croniclePath, ".cronicle", "log")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return err
 	}
-	hook := &jsonFileHook{
-		writer: &lumberjack.Logger{
-			Filename:   filepath.Join(logDir, "cronicle.jsonl"),
-			MaxSize:    500, // MB per file before rotation
-			MaxBackups: 3,   // keep up to 3 rotated files
-			MaxAge:     28,  // days; older files deleted
-			Compress:   true,
-		},
-		formatter: &log.JSONFormatter{},
+	file := &lumberjack.Logger{
+		Filename:   filepath.Join(logDir, "cronicle.jsonl"),
+		MaxSize:    500, // MB per file before rotation
+		MaxBackups: 3,   // keep up to 3 rotated files
+		MaxAge:     28,  // days; older files deleted
+		Compress:   true,
 	}
-	log.AddHook(hook)
+	fileHandler := slog.NewJSONHandler(file, nil)
+	current := slog.Default().Handler()
+	slog.SetDefault(slog.New(&multiHandler{handlers: []slog.Handler{current, fileHandler}}))
 	return nil
 }
 
-// jsonFileHook writes every log entry as JSON to an io.Writer (typically a
-// rotating lumberjack logger). Stdout is untouched, so this hook composes with
-// any stdout formatter.
-type jsonFileHook struct {
-	writer    io.Writer
-	formatter log.Formatter
-}
-
-func (h *jsonFileHook) Levels() []log.Level {
-	return log.AllLevels
-}
-
-func (h *jsonFileHook) Fire(e *log.Entry) error {
-	b, err := h.formatter.Format(e)
-	if err != nil {
-		return err
+// ApplyTimezone wraps the default logger's current handler in a tzHandler so
+// timestamps render in loc. Idempotent — won't double-wrap.
+func ApplyTimezone(loc *time.Location) {
+	current := slog.Default().Handler()
+	if _, alreadyTZ := current.(*tzHandler); alreadyTZ {
+		return
 	}
-	_, err = h.writer.Write(b)
+	slog.SetDefault(slog.New(&tzHandler{inner: current, loc: loc}))
+}
+
+// Fatal logs an error-level message via slog and exits with status 1.
+// Accepts either a single error, a single string message, or a message
+// followed by slog-style key/value pairs.
+func Fatal(args ...any) {
+	switch len(args) {
+	case 0:
+		slog.Error("fatal")
+	case 1:
+		switch v := args[0].(type) {
+		case error:
+			slog.Error("fatal", "error", v.Error())
+		case string:
+			slog.Error(v)
+		default:
+			slog.Error(fmt.Sprint(v))
+		}
+	default:
+		if msg, ok := args[0].(string); ok {
+			slog.Error(msg, args[1:]...)
+		} else {
+			slog.Error(fmt.Sprint(args...))
+		}
+	}
+	os.Exit(1)
+}
+
+// ---- multiHandler ----------------------------------------------------------
+
+// multiHandler fans Handle out to multiple slog.Handlers, replicating the
+// "logrus hook" pattern for slog. Used to mirror stdout to the file.
+type multiHandler struct{ handlers []slog.Handler }
+
+func (m *multiHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	for _, h := range m.handlers {
+		if h.Enabled(ctx, l) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *multiHandler) Handle(ctx context.Context, r slog.Record) error {
+	var firstErr error
+	for _, h := range m.handlers {
+		if !h.Enabled(ctx, r.Level) {
+			continue
+		}
+		// Each handler gets its own clone since handlers may mutate Time.
+		if err := h.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (m *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	out := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		out[i] = h.WithAttrs(attrs)
+	}
+	return &multiHandler{handlers: out}
+}
+
+func (m *multiHandler) WithGroup(name string) slog.Handler {
+	out := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		out[i] = h.WithGroup(name)
+	}
+	return &multiHandler{handlers: out}
+}
+
+// ---- tzHandler -------------------------------------------------------------
+
+// tzHandler adjusts each record's Time to a fixed location before delegating.
+type tzHandler struct {
+	inner slog.Handler
+	loc   *time.Location
+}
+
+func (h *tzHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.inner.Enabled(ctx, l)
+}
+func (h *tzHandler) Handle(ctx context.Context, r slog.Record) error {
+	r.Time = r.Time.In(h.loc)
+	return h.inner.Handle(ctx, r)
+}
+func (h *tzHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &tzHandler{inner: h.inner.WithAttrs(attrs), loc: h.loc}
+}
+func (h *tzHandler) WithGroup(name string) slog.Handler {
+	return &tzHandler{inner: h.inner.WithGroup(name), loc: h.loc}
+}
+
+// ---- tintHandler -----------------------------------------------------------
+
+// tintHandler renders records in a colored "INFO[ts] msg key=val" style
+// reminiscent of logrus's default text output. Used as the fallback for
+// non-agent records in pretty mode.
+type tintHandler struct {
+	out   io.Writer
+	attrs []slog.Attr
+}
+
+func newTintHandler(out io.Writer) *tintHandler { return &tintHandler{out: out} }
+
+func (h *tintHandler) Enabled(_ context.Context, l slog.Level) bool {
+	return l >= slog.LevelInfo
+}
+
+func (h *tintHandler) Handle(_ context.Context, r slog.Record) error {
+	var lc, kc func(a ...any) string
+	switch r.Level {
+	case slog.LevelDebug:
+		lc = color.New(color.FgBlue).SprintFunc()
+	case slog.LevelWarn:
+		lc = color.New(color.FgYellow, color.Bold).SprintFunc()
+	case slog.LevelError:
+		lc = color.New(color.FgRed, color.Bold).SprintFunc()
+	default:
+		lc = color.New(color.FgCyan, color.Bold).SprintFunc()
+	}
+	kc = color.New(color.FgCyan).SprintFunc()
+
+	var b bytes.Buffer
+	levelTag := strings.ToUpper(r.Level.String())
+	if len(levelTag) > 4 {
+		levelTag = levelTag[:4]
+	}
+	fmt.Fprintf(&b, "%s[%s] %s", lc(levelTag), r.Time.Format(time.RFC3339), r.Message)
+
+	for _, a := range h.attrs {
+		fmt.Fprintf(&b, " %s=%s", kc(a.Key), formatValue(a.Value))
+	}
+	r.Attrs(func(a slog.Attr) bool {
+		fmt.Fprintf(&b, " %s=%s", kc(a.Key), formatValue(a.Value))
+		return true
+	})
+	b.WriteByte('\n')
+	_, err := h.out.Write(b.Bytes())
 	return err
 }
 
-// TZFormatter enables timezone specifc logrus formatting
-// Example:
-// loc, _ = time.LoadLocation("America/Los_Angeles")
-// log.SetFormatter(TZFormatter{Formatter: &log.TextFormatter{
-//
-//	FullTimestamp: true,
-//	}, loc: loc})
-type TZFormatter struct {
-	log.Formatter
-	loc *time.Location
+func (h *tintHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	cp := *h
+	cp.attrs = append(cp.attrs[:len(cp.attrs):len(cp.attrs)], attrs...)
+	return &cp
 }
 
-// Format sets the timezone for the given loc *time.Timezone
-func (u TZFormatter) Format(e *log.Entry) ([]byte, error) {
-	e.Time = e.Time.In(u.loc)
-	return u.Formatter.Format(e)
-}
+func (h *tintHandler) WithGroup(_ string) slog.Handler { return h }
 
-// ApplyTimezone wraps the standard logger's current formatter in a TZFormatter
-// so timestamps render in loc. This preserves the user's --log-format choice
-// instead of clobbering it with a fresh TextFormatter.
-func ApplyTimezone(loc *time.Location) {
-	current := log.StandardLogger().Formatter
-	if _, alreadyTZ := current.(TZFormatter); alreadyTZ {
-		return
+// formatValue renders a slog value in a logfmt-ish style: bare for safe
+// scalars, quoted when it contains whitespace or quotes.
+func formatValue(v slog.Value) string {
+	s := v.String()
+	if strings.ContainsAny(s, " \t\n\"") {
+		return fmt.Sprintf("%q", s)
 	}
-	log.SetFormatter(TZFormatter{Formatter: current, loc: loc})
+	return s
 }
 
-// prettyFormatter renders agent_run entries as a multi-line block and falls
-// back to a wrapped TextFormatter for everything else.
-type prettyFormatter struct {
-	fallback log.Formatter
+// ---- prettyHandler ---------------------------------------------------------
+
+// prettyHandler renders records with entry_type=agent_run as a multi-line
+// block; everything else falls through to the wrapped fallback handler.
+type prettyHandler struct {
+	fallback slog.Handler
+	out      io.Writer
 }
 
-func (p *prettyFormatter) Format(e *log.Entry) ([]byte, error) {
-	entryType, _ := e.Data["entry_type"].(string)
-	if entryType != "agent_run" {
-		return p.fallback.Format(e)
+func (p *prettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return p.fallback.Enabled(ctx, l)
+}
+
+func (p *prettyHandler) Handle(ctx context.Context, r slog.Record) error {
+	if !isAgentRun(r) {
+		return p.fallback.Handle(ctx, r)
 	}
-	return p.renderAgentRun(e), nil
+	return p.renderAgentRun(r)
 }
 
-func (p *prettyFormatter) renderAgentRun(e *log.Entry) []byte {
+func (p *prettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &prettyHandler{fallback: p.fallback.WithAttrs(attrs), out: p.out}
+}
+
+func (p *prettyHandler) WithGroup(name string) slog.Handler {
+	return &prettyHandler{fallback: p.fallback.WithGroup(name), out: p.out}
+}
+
+func isAgentRun(r slog.Record) bool {
+	found := false
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "entry_type" && a.Value.String() == "agent_run" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 	header := color.New(color.FgCyan, color.Bold).SprintFunc()
 	rule := color.New(color.FgCyan).SprintFunc()
 	footer := color.New(color.Faint).SprintFunc()
 	errc := color.New(color.FgRed, color.Bold).SprintFunc()
 
-	schedule, _ := e.Data["schedule"].(string)
-	task, _ := e.Data["task"].(string)
-	model, _ := e.Data["model"].(string)
-	response, _ := e.Data["response"].(string)
-	costStr, _ := e.Data["cost_usd"].(string)
-	durationMs := asInt64(e.Data["duration_ms"])
-	in := asInt64(e.Data["input_tokens"])
-	out := asInt64(e.Data["output_tokens"])
-	transcript, _ := e.Data["transcript"].(string)
-	stop, _ := e.Data["stop_reason"].(string)
-	errMsg, _ := e.Data["error"].(string)
-	success, _ := e.Data["success"].(bool)
+	var (
+		schedule, task, model, response, costStr string
+		stop, transcript, errMsg                  string
+		durationMs, in, out                       int64
+		success                                   bool
+	)
+	r.Attrs(func(a slog.Attr) bool {
+		switch a.Key {
+		case "schedule":
+			schedule = a.Value.String()
+		case "task":
+			task = a.Value.String()
+		case "model":
+			model = a.Value.String()
+		case "response":
+			response = a.Value.String()
+		case "cost_usd":
+			costStr = a.Value.String()
+		case "duration_ms":
+			durationMs = a.Value.Int64()
+		case "input_tokens":
+			in = a.Value.Int64()
+		case "output_tokens":
+			out = a.Value.Int64()
+		case "transcript":
+			transcript = a.Value.String()
+		case "stop_reason":
+			stop = a.Value.String()
+		case "error":
+			errMsg = a.Value.String()
+		case "success":
+			success = a.Value.Bool()
+		}
+		return true
+	})
 
 	headerLine := fmt.Sprintf("agent run · schedule=%s · task=%s · model=%s",
 		schedule, task, model)
-	bar := strings.Repeat("━", lenWithoutANSI(headerLine)+8)
+	bar := strings.Repeat("━", len(headerLine)+8)
 
 	var b bytes.Buffer
 	b.WriteString(rule(bar))
-	b.WriteString("\n")
+	b.WriteByte('\n')
 	b.WriteString(header(headerLine))
-	b.WriteString("\n")
+	b.WriteByte('\n')
 	b.WriteString(rule(bar))
 	b.WriteString("\n\n")
 
@@ -177,15 +343,15 @@ func (p *prettyFormatter) renderAgentRun(e *log.Entry) []byte {
 			b.WriteString(footer("(no text response)\n"))
 		} else {
 			b.WriteString(strings.TrimRight(response, "\n"))
-			b.WriteString("\n")
+			b.WriteByte('\n')
 		}
 	} else {
 		b.WriteString(errc("ERROR: "))
 		b.WriteString(errMsg)
-		b.WriteString("\n")
+		b.WriteByte('\n')
 	}
 
-	b.WriteString("\n")
+	b.WriteByte('\n')
 	footerParts := []string{
 		fmt.Sprintf("%d in / %d out tokens", in, out),
 		fmt.Sprintf("$%s", costStr),
@@ -200,38 +366,6 @@ func (p *prettyFormatter) renderAgentRun(e *log.Entry) []byte {
 	b.WriteString(footer("[" + strings.Join(footerParts, " · ") + "]"))
 	b.WriteString("\n\n")
 
-	return b.Bytes()
-}
-
-func asInt64(v any) int64 {
-	switch n := v.(type) {
-	case int:
-		return int64(n)
-	case int64:
-		return n
-	case float64:
-		return int64(n)
-	}
-	return 0
-}
-
-// lenWithoutANSI counts visible runes, ignoring ANSI escape codes. Used so the
-// rule line above the header matches its visible width when colors are on.
-func lenWithoutANSI(s string) int {
-	n := 0
-	in := false
-	for _, r := range s {
-		if r == 0x1b {
-			in = true
-			continue
-		}
-		if in {
-			if r == 'm' {
-				in = false
-			}
-			continue
-		}
-		n++
-	}
-	return n
+	_, err := p.out.Write(b.Bytes())
+	return err
 }

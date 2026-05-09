@@ -3,6 +3,7 @@ package cronicle
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
@@ -10,8 +11,6 @@ import (
 	"github.com/jshiv/cronicle/pkg/agent"
 	"github.com/jshiv/cronicle/pkg/exec"
 	"gopkg.in/matryer/try.v1"
-
-	log "github.com/sirupsen/logrus"
 )
 
 //Exec executes task.Command at task.Path and returns the exec.Result struct
@@ -66,28 +65,27 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	res, err := agent.Run(context.Background(), cfg)
 	durationMs := time.Since(startedAt).Milliseconds()
 
-	fields := log.Fields{
-		"entry_type":    "agent_run",
-		"schedule":      task.ScheduleName,
-		"task":          task.Name,
-		"model":         res.Model,
-		"input_tokens":  res.InputTokens,
-		"output_tokens": res.OutputTokens,
-		"cache_read":    res.CacheReadIn,
-		"cache_write":   res.CacheWriteIn,
-		"cost_usd":      fmt.Sprintf("%.6f", res.CostUSD),
-		"duration_ms":   durationMs,
-		"stop_reason":   res.StopReason,
-		"transcript":    res.TranscriptPath,
-		"response":      res.Stdout,
+	attrs := []slog.Attr{
+		slog.String("entry_type", "agent_run"),
+		slog.String("schedule", task.ScheduleName),
+		slog.String("task", task.Name),
+		slog.String("model", res.Model),
+		slog.Int("input_tokens", res.InputTokens),
+		slog.Int("output_tokens", res.OutputTokens),
+		slog.Int("cache_read", res.CacheReadIn),
+		slog.Int("cache_write", res.CacheWriteIn),
+		slog.String("cost_usd", fmt.Sprintf("%.6f", res.CostUSD)),
+		slog.Int64("duration_ms", durationMs),
+		slog.String("stop_reason", res.StopReason),
+		slog.String("transcript", res.TranscriptPath),
+		slog.String("response", res.Stdout),
 	}
 	if err != nil {
-		fields["success"] = false
-		fields["error"] = err.Error()
-		log.WithFields(fields).Error("agent run failed")
+		attrs = append(attrs, slog.Bool("success", false), slog.String("error", err.Error()))
+		slog.LogAttrs(context.Background(), slog.LevelError, "agent run failed", attrs...)
 	} else {
-		fields["success"] = true
-		log.WithFields(fields).Info("agent run")
+		attrs = append(attrs, slog.Bool("success", true))
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "agent run", attrs...)
 	}
 	return res.Result
 }
@@ -128,7 +126,7 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		// var err error
 		// task.Git, err = Clone(task.CroniclePath, task.CronicleRepo.URL, task.CronicleRepo.DeployKey)
 		if err != nil {
-			log.Error(err)
+			slog.Error("clone failed", "error", err.Error())
 			return exec.Result{}, err
 		}
 	}
@@ -137,13 +135,13 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 	var result exec.Result
 	err := try.Do(func(attempt int) (bool, error) {
 
-		log.WithFields(log.Fields{
-			"schedule": task.ScheduleName,
-			"task":     task.Name,
-			"attempt":  attempt,
-			"clock":    t.Format(time.Kitchen),
-			"date":     t.Format(time.RFC850),
-		}).Info("Executing...")
+		slog.Info("Executing...",
+			"schedule", task.ScheduleName,
+			"task", task.Name,
+			"attempt", attempt,
+			"clock", t.Format(time.Kitchen),
+			"date", t.Format(time.RFC850),
+		)
 		var err error
 		result = task.Exec(t)
 		err = result.Error
@@ -191,28 +189,28 @@ func (task *Task) Log(res exec.Result) {
 	}
 
 	if res.Error != nil {
-		log.WithFields(log.Fields{
-			"schedule": task.ScheduleName,
-			"task":     task.Name,
-			"path":     task.Path,
-			"exit":     res.ExitStatus,
-			"error":    res.Error,
-			"commit":   commit,
-			"email":    email,
-			"success":  false,
-			"command":  strings.Join(res.Command, " "),
-		}).Error(res.Stderr)
+		slog.Error(res.Stderr,
+			"schedule", task.ScheduleName,
+			"task", task.Name,
+			"path", task.Path,
+			"exit", res.ExitStatus,
+			"error", res.Error.Error(),
+			"commit", commit,
+			"email", email,
+			"success", false,
+			"command", strings.Join(res.Command, " "),
+		)
 	} else {
-		log.WithFields(log.Fields{
-			"schedule": task.ScheduleName,
-			"task":     task.Name,
-			"path":     task.Path,
-			"exit":     res.ExitStatus,
-			"commit":   commit,
-			"email":    email,
-			"success":  true,
-			"command":  strings.Join(res.Command, " "),
-		}).Info(res.Stdout)
+		slog.Info(res.Stdout,
+			"schedule", task.ScheduleName,
+			"task", task.Name,
+			"path", task.Path,
+			"exit", res.ExitStatus,
+			"commit", commit,
+			"email", email,
+			"success", true,
+			"command", strings.Join(res.Command, " "),
+		)
 	}
 
 }
