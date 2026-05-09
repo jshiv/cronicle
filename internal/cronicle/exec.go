@@ -1,9 +1,13 @@
 package cronicle
 
 import (
+	"context"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/jshiv/cronicle/pkg/agent"
 	"github.com/jshiv/cronicle/pkg/exec"
 	"gopkg.in/matryer/try.v1"
 
@@ -12,15 +16,21 @@ import (
 
 //Exec executes task.Command at task.Path and returns the exec.Result struct
 //prior to execution, the command will replace any ${date}, ${datetime}, ${timestamp}
-//with time t given in the bash command
+//with time t given in the bash command. If task.Agent is set, the task is
+//dispatched to pkg/agent instead.
 func (task *Task) Exec(t time.Time) exec.Result {
-	var result exec.Result
 	r := strings.NewReplacer(
 		"${date}", t.Format(TimeArgumentFormatMap["${date}"]),
 		"${datetime}", t.Format(TimeArgumentFormatMap["${datetime}"]),
 		"${timestamp}", t.Format(TimeArgumentFormatMap["${timestamp}"]),
 		"${path}", task.Path,
 	)
+
+	if task.Agent != nil {
+		return task.execAgent(t, r)
+	}
+
+	var result exec.Result
 	if len(task.Command) > 0 {
 		cmd := make([]string, len(task.Command))
 		for i, s := range task.Command {
@@ -31,6 +41,39 @@ func (task *Task) Exec(t time.Time) exec.Result {
 		result = exec.Execute(cmd, task.Path, task.Env)
 	}
 	return result
+}
+
+// execAgent dispatches the task to pkg/agent and surfaces the run as an
+// exec.Result so the rest of the cronicle execution path is unchanged.
+// Token/cost/transcript metadata is logged but lives in the transcript file.
+func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
+	transcriptDir := filepath.Join(task.CroniclePath, ".cronicle", "runs")
+	runID := fmt.Sprintf("%s-%s-%s", t.UTC().Format("20060102T150405Z"), task.ScheduleName, task.Name)
+
+	cfg := agent.Config{
+		Prompt:        r.Replace(task.Agent.Prompt),
+		System:        r.Replace(task.Agent.System),
+		Model:         task.Agent.Model,
+		MaxTokens:     task.Agent.MaxTokens,
+		BudgetUSD:     task.Agent.BudgetUSD,
+		TranscriptDir: transcriptDir,
+		RunID:         runID,
+	}
+
+	res, err := agent.Run(context.Background(), cfg)
+	if err == nil {
+		log.WithFields(log.Fields{
+			"schedule":      task.ScheduleName,
+			"task":          task.Name,
+			"model":         res.Model,
+			"input_tokens":  res.InputTokens,
+			"output_tokens": res.OutputTokens,
+			"cost_usd":      fmt.Sprintf("%.4f", res.CostUSD),
+			"transcript":    res.TranscriptPath,
+			"stop_reason":   res.StopReason,
+		}).Info("agent run complete")
+	}
+	return res.Result
 }
 
 // Execute does a git pull, git checkout and exec's the given command

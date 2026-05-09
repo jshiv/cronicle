@@ -154,6 +154,27 @@ retry {
 }
 ```
 
+### `agent` (optional)
+Run a Claude agent invocation in place of a shell command. A task may have an
+`agent` block or a `command`, but not both. `${date}`, `${datetime}`, and
+`${timestamp}` are substituted into `prompt` and `system` at execution time.
+Each run writes a JSONL transcript (request, response, token usage, cost) to
+`.cronicle/runs/` next to the cronicle root. Requires `ANTHROPIC_API_KEY` in the
+environment.
+
+```hcl
+task "summarize" {
+  agent {
+    prompt     = "Summarize what changed today: ${date}"
+    model      = "claude-opus-4-7"
+    system     = "You are a concise release-notes writer."
+    max_tokens = 2048
+    // abort the run if its actual cost exceeds this; 0 disables
+    budget_usd = 0.50
+  }
+}
+```
+
 ### `timezone` (optional)
 ```hcl
 // timezone sets the timezone location to run cron and execute tasks by.
