@@ -625,8 +625,8 @@ func NewAgentStreamRenderer(w io.Writer) agent.StreamHandler {
 		case agent.StreamEventToolUseStart:
 			flushThinking()
 			fmt.Fprintf(w, "\n%s%s%s %s\n",
-				toolHi("→ "), toolHi(e.ToolName), toolHi(":"),
-				formatToolInput(e.ToolInput))
+				toolHi("→ "), toolHi(displayToolName(e.ToolName)), toolHi(":"),
+				formatToolInput(e.ToolName, e.ToolInput))
 		case agent.StreamEventToolResult:
 			marker := ok("← exit=0")
 			if e.IsError {
@@ -640,19 +640,59 @@ func NewAgentStreamRenderer(w io.Writer) agent.StreamHandler {
 }
 
 // formatToolInput renders the raw JSON tool input compactly for the pretty
-// stream. For bash specifically, it extracts the command and shows it
-// directly (no JSON wrapping). For unknown tools, the JSON is shown verbatim.
-func formatToolInput(raw string) string {
+// stream. Per-tool formatting:
+//
+//	bash                          → command string
+//	str_replace_based_edit_tool   → "<command> <path>"  (e.g. "view foo.go")
+//	web_search                    → query
+//	web_fetch                     → url
+//
+// Unknown tools fall through to the raw JSON.
+func formatToolInput(toolName, raw string) string {
 	if raw == "" {
 		return ""
 	}
-	var args struct {
-		Command string `json:"command"`
+	var args map[string]any
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return raw
 	}
-	if err := json.Unmarshal([]byte(raw), &args); err == nil && args.Command != "" {
-		return args.Command
+	switch toolName {
+	case "bash":
+		if cmd, ok := args["command"].(string); ok {
+			return cmd
+		}
+	case "str_replace_based_edit_tool":
+		cmd, _ := args["command"].(string)
+		path, _ := args["path"].(string)
+		switch {
+		case cmd != "" && path != "":
+			return cmd + " " + path
+		case path != "":
+			return path
+		case cmd != "":
+			return cmd
+		}
+	case "web_search":
+		if q, ok := args["query"].(string); ok {
+			return q
+		}
+	case "web_fetch":
+		if u, ok := args["url"].(string); ok {
+			return u
+		}
 	}
 	return raw
+}
+
+// displayToolName maps the API tool name to a friendlier label for pretty
+// rendering. The model invokes tools by their API name (e.g.
+// "str_replace_based_edit_tool"); the user just wants to see "editor".
+func displayToolName(name string) string {
+	switch name {
+	case "str_replace_based_edit_tool":
+		return "editor"
+	}
+	return name
 }
 
 // renderShellRun renders a shell task as a block with the same shape as
