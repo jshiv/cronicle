@@ -21,6 +21,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jshiv/cronicle/internal/cronicle"
 	homedir "github.com/mitchellh/go-homedir"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
@@ -28,8 +29,15 @@ import (
 
 var cfgFile string
 
+// logFormat is bound to the --log-format persistent flag and resolved by
+// PersistentPreRun before any subcommand executes.
+var logFormat string
+
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		cronicle.SetupLogging(cronicle.LogFormat(logFormat))
+	},
 	Use:   "cronicle",
 	Short: "Cronicle is a distributed, git integrated cron based task engine.",
 	Long: `Cronicle is a distributed, "schedule as code" cron based task engine.
@@ -77,25 +85,12 @@ func init() {
 	// will be global for your application.
 
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.cronicle.yaml)")
+	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "auto",
+		"stdout log format: auto (pretty if TTY, text if piped), pretty, text, or json")
 
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
 	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-
-	// Log with the ASCII formatter with full timestamp.
-	log.SetFormatter(&log.TextFormatter{
-		DisableColors: false,
-		FullTimestamp: true,
-	})
-	// Log as JSON instead of the default ASCII formatter.
-	// log.SetFormatter(&log.JSONFormatter{})
-
-	// Output to stdout instead of the default stderr
-	// Can be any io.Writer, see below for File example
-	log.SetOutput(os.Stdout)
-
-	// Only log the warning severity or above.
-	log.SetLevel(log.InfoLevel)
 }
 
 // initConfig reads in config file and ENV variables if set.

@@ -3,7 +3,6 @@ package cronicle
 import (
 	"encoding/json"
 	"fmt"
-	"path"
 	"sync"
 	"time"
 
@@ -12,7 +11,6 @@ import (
 	nsqvice "github.com/matryer/vice/queues/nsq"
 	redisvice "github.com/matryer/vice/queues/redis"
 	"github.com/nsqio/go-nsq"
-	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/fatih/color"
 
@@ -45,15 +43,9 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
 
 	if runOptions.LogToFile {
-		logPath := path.Join(croniclePath, path.Join(".cronicle", "log"))
-		logFile := path.Join(logPath, "cronicle.log")
-		log.SetOutput(&lumberjack.Logger{
-			Filename:   logFile,
-			MaxSize:    500, // megabytes
-			MaxBackups: 3,
-			MaxAge:     28,   //days
-			Compress:   true, // disabled by default
-		})
+		if err := EnableFileLog(croniclePath); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	if runOptions.QueueType == "" {
@@ -168,9 +160,7 @@ func StartCron(cronicleFile string, queue chan<- []byte) {
 		loc = time.Local
 	}
 
-	log.SetFormatter(TZFormatter{Formatter: &log.TextFormatter{
-		FullTimestamp: true,
-	}, loc: loc})
+	ApplyTimezone(loc)
 	log.WithFields(log.Fields{"cronicle": "start"}).Info("Starting Scheduler...")
 
 	for _, schedule := range conf.Schedules {
@@ -328,9 +318,7 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 		loc = time.Local
 	}
 
-	log.SetFormatter(TZFormatter{Formatter: &log.TextFormatter{
-		FullTimestamp: true,
-	}, loc: loc})
+	ApplyTimezone(loc)
 	log.WithFields(log.Fields{"cronicle": "exec"}).Info("executing tasks...")
 
 	nowInLoc := now.In(loc)

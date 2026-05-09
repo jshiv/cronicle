@@ -86,7 +86,7 @@ func init() {
 	runCmd.Flags().String("addr", "", addrDesc)
 	runCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
 	runCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")
-	runCmd.Flags().Bool("log-to-file", false, "log to path/.cronicle/log/cronicle.log")
+	runCmd.Flags().Bool("log-to-file", false, "mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); stdout is unaffected and remains controlled by --log-format")
 
 	// Here you will define your flags and configuration settings.
 

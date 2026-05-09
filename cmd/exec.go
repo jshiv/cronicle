@@ -53,6 +53,15 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 		timeFlag, _ := cmd.Flags().GetString("time")
 		cron, _ := cmd.Flags().GetString("cron")
 		command, _ := cmd.Flags().GetString("command")
+		logToFile, _ := cmd.Flags().GetBool("log-to-file")
+
+		if logToFile {
+			if abs, err := filepath.Abs(path); err == nil {
+				if err := cronicle.EnableFileLog(filepath.Dir(abs)); err != nil {
+					log.Fatal(err)
+				}
+			}
+		}
 
 		if cron != "" && command != "" {
 			conf := cronicle.Default()
@@ -103,6 +112,7 @@ func init() {
 	execCmd.Flags().String("end", "", "date range end Timestamp [2006-01-02T15:04:05-08:00]")
 	execCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
 	execCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")
+	execCmd.Flags().Bool("log-to-file", false, "mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); stdout is unaffected")
 
 	// Here you will define your flags and configuration settings.
 
