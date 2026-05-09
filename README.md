@@ -40,12 +40,49 @@ schedule "example" {
 
 `cronicle run --path cron/cronicle.hcl`
 ```
-INFO[2020-10-06T21:44:16-07:00] Starting Scheduler...                         cronicle=start
-INFO[2020-10-06T21:44:16-07:00] Loading config...                             cronicle=heartbeat path=./cronicle.hcl
-INFO[2020-10-06T21:44:21-07:00] Queuing...                                    schedule=example
-INFO[2020-10-06T21:44:21-07:00]                                               attempt=1 schedule=example task=hello
-INFO[2020-10-06T21:44:21-07:00] X: 0.360346904169                             commit=f99ad6af7de email=jason.shiverick@gmail.com exit=0 schedule=example success=true task=hello
+21:44:16 config loaded path=./cronicle/cronicle.hcl schedules=1 tasks=1
+21:44:16 Starting Scheduler... cronicle=start
+21:44:16 Starting cron... schedule=example cron="@every 5s"
+21:44:21 Queuing... schedule=example
+──── 21:44:21 · schedule "example" ──────────────────────────────────
+DAG:
+  └─ hello
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+shell run · schedule=example · task=hello · python run.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+X: 0.360346904169
+
+[exit=0 · 12ms]
+
+✓ schedule "example" complete · 1 task · 0.5s
 ```
+
+Agent tasks render in the same shape, with token usage and cost in the footer:
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+agent run · schedule=example · task=summarize · model=claude-opus-4-7
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Today's deploy added agent task support, fixed a queue race, and bumped Go to 1.26.
+
+[64 in / 25 out tokens · $0.001050 · 873ms · stop=end_turn]
+```
+
+### Output formats
+
+`--log-format` controls stdout (default `auto` — pretty when at a TTY, text when piped):
+
+| flag | shape | best for |
+|---|---|---|
+| `--log-format=pretty` | bordered blocks, dim lifecycle | humans at a TTY |
+| `--log-format=text` | `time=... level=INFO msg=... key=val` | piping to a log consumer |
+| `--log-format=json` | one JSON object per line | strictest machine parsing |
+
+`--log-to-file` is independent of stdout: when set, structured JSON is mirrored to `.cronicle/log/cronicle.jsonl` (rotated by lumberjack: 500MB × 3 backups × 28 days, gzipped). Pretty stdout + tail-able JSON file at the same time is the intended composition.
+
+When `--log-to-file` is on, each task execution also writes a per-run JSONL transcript at `.cronicle/runs/{ts}-{schedule}-{task}.jsonl` (request / response / accounting). Without it, `cronicle exec` is fully ephemeral and writes nothing to disk.
 
 ---
 
@@ -158,9 +195,9 @@ retry {
 Run a Claude agent invocation in place of a shell command. A task may have an
 `agent` block or a `command`, but not both. `${date}`, `${datetime}`, and
 `${timestamp}` are substituted into `prompt` and `system` at execution time.
-Each run writes a JSONL transcript (request, response, token usage, cost) to
-`.cronicle/runs/` next to the cronicle root. Requires `ANTHROPIC_API_KEY` in the
-environment.
+With `--log-to-file`, each run writes a JSONL transcript (request, response,
+token usage, cost) to `.cronicle/runs/` next to the cronicle root. Requires
+`ANTHROPIC_API_KEY` in the environment.
 
 ```hcl
 task "summarize" {
