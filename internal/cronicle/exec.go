@@ -43,9 +43,11 @@ func (task *Task) Exec(t time.Time) exec.Result {
 	return result
 }
 
-// execAgent dispatches the task to pkg/agent and surfaces the run as an
-// exec.Result so the rest of the cronicle execution path is unchanged.
-// Token/cost/transcript metadata is logged but lives in the transcript file.
+// execAgent dispatches the task to pkg/agent and emits a single structured
+// log entry covering the run. The entry carries entry_type="agent_run" so the
+// pretty formatter can render it as a multi-line block; in text/json mode the
+// fields stay on one line. task.Log is skipped for agent tasks because this
+// function owns the agent's logging end-to-end.
 func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	transcriptDir := filepath.Join(task.CroniclePath, ".cronicle", "runs")
 	runID := fmt.Sprintf("%s-%s-%s", t.UTC().Format("20060102T150405Z"), task.ScheduleName, task.Name)
@@ -60,18 +62,32 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		RunID:         runID,
 	}
 
+	startedAt := time.Now()
 	res, err := agent.Run(context.Background(), cfg)
-	if err == nil {
-		log.WithFields(log.Fields{
-			"schedule":      task.ScheduleName,
-			"task":          task.Name,
-			"model":         res.Model,
-			"input_tokens":  res.InputTokens,
-			"output_tokens": res.OutputTokens,
-			"cost_usd":      fmt.Sprintf("%.4f", res.CostUSD),
-			"transcript":    res.TranscriptPath,
-			"stop_reason":   res.StopReason,
-		}).Info("agent run complete")
+	durationMs := time.Since(startedAt).Milliseconds()
+
+	fields := log.Fields{
+		"entry_type":    "agent_run",
+		"schedule":      task.ScheduleName,
+		"task":          task.Name,
+		"model":         res.Model,
+		"input_tokens":  res.InputTokens,
+		"output_tokens": res.OutputTokens,
+		"cache_read":    res.CacheReadIn,
+		"cache_write":   res.CacheWriteIn,
+		"cost_usd":      fmt.Sprintf("%.6f", res.CostUSD),
+		"duration_ms":   durationMs,
+		"stop_reason":   res.StopReason,
+		"transcript":    res.TranscriptPath,
+		"response":      res.Stdout,
+	}
+	if err != nil {
+		fields["success"] = false
+		fields["error"] = err.Error()
+		log.WithFields(fields).Error("agent run failed")
+	} else {
+		fields["success"] = true
+		log.WithFields(fields).Info("agent run")
 	}
 	return res.Result
 }
@@ -157,7 +173,12 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 }
 
 //Log logs the exit status, stderr, git commit and other logging data.
+//Agent tasks own their logging end-to-end via execAgent, so this is a no-op
+//for them.
 func (task *Task) Log(res exec.Result) {
+	if task.Agent != nil {
+		return
+	}
 
 	var commit string
 	var email string
