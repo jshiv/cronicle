@@ -55,12 +55,31 @@ type Task struct {
 	Depends      []string `hcl:"depends,optional"`
 	Repo         *Repo    `hcl:"repo,block"`
 	Retry        *Retry   `hcl:"retry,block"`
+	Agent        *Agent   `hcl:"agent,block"`
 	Env          []string `hcl:"env,optional"`
 	Path         string
 	CronicleRepo *Repo
 	CroniclePath string
 	Git          Git
 	ScheduleName string
+}
+
+// Agent is the configuration structure that defines an LLM agent invocation.
+// When a task has an Agent block instead of a Command, the task is dispatched
+// to pkg/agent rather than exec'd as a shell process.
+type Agent struct {
+	// Prompt is the user message sent to the model. ${date}/${datetime}/
+	// ${timestamp}/${path} are substituted at execution time.
+	Prompt string `hcl:"prompt"`
+	// Model selects the Claude model id, e.g. "claude-opus-4-7". Empty uses
+	// the pkg/agent default.
+	Model string `hcl:"model,optional"`
+	// System is an optional system prompt.
+	System string `hcl:"system,optional"`
+	// MaxTokens caps the response length. 0 uses the pkg/agent default.
+	MaxTokens int `hcl:"max_tokens,optional"`
+	// BudgetUSD aborts the task if the run's cost exceeds this. 0 disables.
+	BudgetUSD float64 `hcl:"budget_usd,optional"`
 }
 
 // Repo is the structure that defines a git repository
@@ -111,6 +130,11 @@ var (
 	ErrTaskNameEmpty = errors.New("task name can not be an empty string")
 	//ErrRepoGivenAndURLNotGiven is thrown because task.Name == "", hcl can not be given with task "" {}
 	ErrRepoGivenAndURLNotGiven = errors.New("if repo is populated, it must have an assoicated url")
+	//ErrCommandAndAgentBothGiven is thrown when a task has both a command and an agent block.
+	//A task is exec'd as one or the other, not both.
+	ErrCommandAndAgentBothGiven = errors.New("task can not have both command and agent")
+	//ErrAgentPromptEmpty is thrown when an agent block is present but its prompt is empty.
+	ErrAgentPromptEmpty = errors.New("agent block requires a non-empty prompt")
 )
 
 // Validate validates the fields and sets the default values.
@@ -130,6 +154,15 @@ func (task *Task) Validate() error {
 	if task.Repo != nil {
 		if task.Path == "" {
 			return ErrIfRepoGivenAndPathNotGiven
+		}
+	}
+
+	if task.Agent != nil {
+		if len(task.Command) > 0 {
+			return ErrCommandAndAgentBothGiven
+		}
+		if task.Agent.Prompt == "" {
+			return ErrAgentPromptEmpty
 		}
 	}
 
