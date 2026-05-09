@@ -274,6 +274,14 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 
 		conversation = append(conversation, msg.ToParam())
 
+		// pause_turn: server-side tool flow asked us to continue without
+		// dispatching anything ourselves. Loop back without appending tool
+		// results — the next request lets the model keep going from where
+		// it paused.
+		if msg.StopReason == "pause_turn" {
+			continue
+		}
+
 		if msg.StopReason != "tool_use" {
 			break
 		}
