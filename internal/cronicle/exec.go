@@ -157,7 +157,8 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 	var result exec.Result
 	err := try.Do(func(attempt int) (bool, error) {
 
-		slog.Info("Executing...",
+		slog.Info("task started",
+			"entry_type", "task_start",
 			"schedule", task.ScheduleName,
 			"task", task.Name,
 			"attempt", attempt,
@@ -203,6 +204,7 @@ func (task *Task) Log(res exec.Result) {
 	commit, email := task.gitMeta()
 
 	args := []any{
+		"entry_type", "shell_run",
 		"schedule", task.ScheduleName,
 		"task", task.Name,
 		"path", task.Path,
@@ -211,6 +213,8 @@ func (task *Task) Log(res exec.Result) {
 		"email", email,
 		"command", strings.Join(res.Command, " "),
 		"duration_ms", task.lastDurationMs,
+		"stdout", res.Stdout,
+		"stderr", res.Stderr,
 	}
 	if task.lastTranscript != "" {
 		args = append(args, "transcript", task.lastTranscript)
@@ -218,9 +222,9 @@ func (task *Task) Log(res exec.Result) {
 
 	if res.Error != nil {
 		args = append(args, "error", res.Error.Error(), "success", false)
-		slog.Error(res.Stderr, args...)
+		slog.Error("shell task failed", args...)
 	} else {
 		args = append(args, "success", true)
-		slog.Info(res.Stdout, args...)
+		slog.Info("shell task complete", args...)
 	}
 }

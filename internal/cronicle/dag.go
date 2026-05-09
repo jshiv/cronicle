@@ -20,22 +20,46 @@ func (schedule Schedule) ExecuteTasks() {
 	taskMap := schedule.TaskMap()
 
 	deps := make(map[string][]string)
+	taskNames := make([]string, 0, len(schedule.Tasks))
 	for _, task := range schedule.Tasks {
 		deps[task.Name] = task.Depends
+		taskNames = append(taskNames, task.Name)
 	}
 
-	slog.Info(dagString(deps),
+	startedAt := time.Now()
+	slog.Info("schedule started",
+		"entry_type", "schedule_start",
 		"schedule", schedule.Name,
 		"clock", now.Format(time.Kitchen),
 		"date", now.Format(time.RFC850),
+		"tasks", taskNames,
+		"dag", dagString(deps),
 	)
 
-	if err := walkDAG(deps, func(name string) error {
+	walkErr := walkDAG(deps, func(name string) error {
 		task := taskMap[name]
 		_, err := task.Execute(now)
 		return err
-	}); err != nil {
-		slog.Error("dag walk failed", "error", err.Error())
+	})
+	durationMs := time.Since(startedAt).Milliseconds()
+
+	if walkErr != nil {
+		slog.Error("schedule failed",
+			"entry_type", "schedule_complete",
+			"schedule", schedule.Name,
+			"task_count", len(schedule.Tasks),
+			"duration_ms", durationMs,
+			"success", false,
+			"error", walkErr.Error(),
+		)
+	} else {
+		slog.Info("schedule complete",
+			"entry_type", "schedule_complete",
+			"schedule", schedule.Name,
+			"task_count", len(schedule.Tasks),
+			"duration_ms", durationMs,
+			"success", true,
+		)
 	}
 }
 
