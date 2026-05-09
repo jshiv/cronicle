@@ -83,8 +83,20 @@ type Agent struct {
 	System string `hcl:"system,optional"`
 	// MaxTokens caps the response length. 0 uses the pkg/agent default.
 	MaxTokens int `hcl:"max_tokens,optional"`
-	// BudgetUSD aborts the task if the run's cost exceeds this. 0 disables.
+	// BudgetUSD aborts the task if the run's cumulative cost exceeds this.
+	// Checked after each turn for mid-run abort. 0 disables.
 	BudgetUSD float64 `hcl:"budget_usd,optional"`
+	// Tools is the allowlist of Anthropic-defined tools the agent can
+	// invoke. Empty means single-turn agent (current behavior). Known
+	// values: "bash". Unknown names cause Validate to fail.
+	Tools []string `hcl:"tools,optional"`
+	// MaxTurns is the hard cap on agent loop iterations. 0 means default
+	// (1 if no tools, 30 otherwise).
+	MaxTurns int `hcl:"max_turns,optional"`
+	// Wallclock is a duration string (e.g. "10m") setting an upper bound
+	// on the entire run. Empty means default ("10m"). Parsed via
+	// time.ParseDuration.
+	Wallclock string `hcl:"wallclock,optional"`
 }
 
 // Repo is the structure that defines a git repository
@@ -169,9 +181,32 @@ func (task *Task) Validate() error {
 		if task.Agent.Prompt == "" {
 			return ErrAgentPromptEmpty
 		}
+		for _, name := range task.Agent.Tools {
+			if !knownAgentTool(name) {
+				return fmt.Errorf("unknown agent tool %q (known: bash)", name)
+			}
+		}
+		if task.Agent.MaxTurns < 0 {
+			return errors.New("agent max_turns must be >= 0")
+		}
+		if task.Agent.Wallclock != "" {
+			if _, err := time.ParseDuration(task.Agent.Wallclock); err != nil {
+				return fmt.Errorf("agent wallclock parse: %w", err)
+			}
+		}
 	}
 
 	return nil
+}
+
+// knownAgentTool reports whether name is a recognized Anthropic-defined tool
+// in the current cronicle build. Extend as new tools (text_editor, etc.) land.
+func knownAgentTool(name string) bool {
+	switch name {
+	case "bash":
+		return true
+	}
+	return false
 }
 
 //Validate checks that schedule.Name is not empty and assigns task.ScheduleName
