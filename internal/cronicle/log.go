@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/jshiv/cronicle/pkg/agent"
 	"github.com/mattn/go-isatty"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -26,6 +28,11 @@ const (
 	LogFormatJSON   LogFormat = "json"
 )
 
+// resolvedLogFormat tracks what format SetupLogging settled on after auto-
+// resolution. Other subsystems (the agent streaming path) probe it via
+// IsStreamingPretty to decide whether to render in real time or buffer.
+var resolvedLogFormat LogFormat
+
 // SetupLogging configures slog's default logger according to format.
 // "auto" picks pretty when stdout is a TTY, text otherwise.
 func SetupLogging(format LogFormat) {
@@ -37,6 +44,7 @@ func SetupLogging(format LogFormat) {
 			resolved = LogFormatText
 		}
 	}
+	resolvedLogFormat = resolved
 
 	var handler slog.Handler
 	switch resolved {
@@ -52,6 +60,19 @@ func SetupLogging(format LogFormat) {
 	}
 	slog.SetDefault(slog.New(handler))
 }
+
+// IsStreamingPretty reports whether stdout is configured for pretty rendering.
+// Used by the agent dispatch path to decide whether to render text deltas in
+// real time vs buffer them into the consolidated slog event.
+func IsStreamingPretty() bool {
+	return resolvedLogFormat == LogFormatPretty
+}
+
+// StreamLock serializes streaming writes so concurrent task executions don't
+// interleave their header/body/footer blocks on stdout. Held across the entire
+// block of one task; concurrent tasks queue up visually even though execution
+// is still parallel under the hood.
+var StreamLock sync.Mutex
 
 // FileLoggingEnabled reports whether --log-to-file was passed on the
 // current invocation. It's the master switch for on-disk artifacts:
@@ -284,8 +305,17 @@ func (p *prettyHandler) Handle(_ context.Context, r slog.Record) error {
 	switch entryType(r) {
 	case "agent_run":
 		return p.renderAgentRun(r)
+	case "agent_run_streamed":
+		// The streaming dispatch path already wrote the block to stdout in
+		// real time; the slog event exists only for the file mirror and
+		// non-pretty consumers. Suppress here.
+		return nil
 	case "shell_run":
 		return p.renderShellRun(r)
+	case "shell_run_streamed":
+		// Already rendered to stdout in real time; the slog event exists
+		// only for the file mirror.
+		return nil
 	case "schedule_start":
 		return p.renderScheduleStart(r)
 	case "schedule_complete":
@@ -377,11 +407,6 @@ func attrStrings(r slog.Record, key string) []string {
 }
 
 func (p *prettyHandler) renderAgentRun(r slog.Record) error {
-	header := color.New(color.FgCyan, color.Bold).SprintFunc()
-	rule := color.New(color.FgCyan).SprintFunc()
-	footer := color.New(color.Faint).SprintFunc()
-	errc := color.New(color.FgRed, color.Bold).SprintFunc()
-
 	var (
 		schedule, task, model, response, costStr string
 		stop, transcript, errMsg                  string
@@ -418,21 +443,15 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 		return true
 	})
 
-	headerLine := fmt.Sprintf("agent run · schedule=%s · task=%s · model=%s",
-		schedule, task, model)
-	bar := strings.Repeat("━", len(headerLine)+8)
-
 	var b bytes.Buffer
-	b.WriteString(rule(bar))
+	WriteAgentRunHeader(&b, schedule, task, model)
 	b.WriteByte('\n')
-	b.WriteString(header(headerLine))
-	b.WriteByte('\n')
-	b.WriteString(rule(bar))
-	b.WriteString("\n\n")
 
+	footerColor := color.New(color.Faint).SprintFunc()
+	errc := color.New(color.FgRed, color.Bold).SprintFunc()
 	if success {
 		if response == "" {
-			b.WriteString(footer("(no text response)\n"))
+			b.WriteString(footerColor("(no text response)\n"))
 		} else {
 			b.WriteString(strings.TrimRight(response, "\n"))
 			b.WriteByte('\n')
@@ -442,24 +461,126 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 		b.WriteString(errMsg)
 		b.WriteByte('\n')
 	}
-
 	b.WriteByte('\n')
-	footerParts := []string{
+	WriteAgentRunFooter(&b, in, out, costStr, durationMs, stop, transcript)
+
+	_, err := p.out.Write(b.Bytes())
+	return err
+}
+
+// WriteAgentRunHeader writes the bordered header for an agent run block.
+// Shared by the slog renderAgentRun path and the streaming dispatch path.
+func WriteAgentRunHeader(w io.Writer, schedule, task, model string) {
+	header := color.New(color.FgCyan, color.Bold).SprintFunc()
+	rule := color.New(color.FgCyan).SprintFunc()
+
+	headerLine := fmt.Sprintf("agent run · schedule=%s · task=%s · model=%s",
+		schedule, task, model)
+	bar := strings.Repeat("━", len(headerLine)+8)
+
+	fmt.Fprintln(w, rule(bar))
+	fmt.Fprintln(w, header(headerLine))
+	fmt.Fprintln(w, rule(bar))
+}
+
+// WriteAgentRunFooter writes the bracketed metadata footer for an agent run.
+func WriteAgentRunFooter(w io.Writer, in, out int64, costStr string, durationMs int64, stopReason, transcriptPath string) {
+	footer := color.New(color.Faint).SprintFunc()
+
+	parts := []string{
 		fmt.Sprintf("%d in / %d out tokens", in, out),
 		fmt.Sprintf("$%s", costStr),
 		fmt.Sprintf("%dms", durationMs),
 	}
-	if stop != "" {
-		footerParts = append(footerParts, fmt.Sprintf("stop=%s", stop))
+	if stopReason != "" {
+		parts = append(parts, fmt.Sprintf("stop=%s", stopReason))
 	}
-	if transcript != "" {
-		footerParts = append(footerParts, fmt.Sprintf("transcript=%s", filepath.Base(transcript)))
+	if transcriptPath != "" {
+		parts = append(parts, fmt.Sprintf("transcript=%s", filepath.Base(transcriptPath)))
 	}
-	b.WriteString(footer("[" + strings.Join(footerParts, " · ") + "]"))
-	b.WriteString("\n\n")
+	fmt.Fprintln(w, footer("["+strings.Join(parts, " · ")+"]"))
+	fmt.Fprintln(w)
+}
 
-	_, err := p.out.Write(b.Bytes())
-	return err
+// WriteShellRunHeader writes the bordered header for a shell task run block.
+func WriteShellRunHeader(w io.Writer, schedule, task, command string) {
+	header := color.New(color.FgCyan, color.Bold).SprintFunc()
+	rule := color.New(color.FgCyan).SprintFunc()
+
+	headerLine := fmt.Sprintf("shell run · schedule=%s · task=%s · %s",
+		schedule, task, truncate(escapeControl(command), 60))
+	bar := strings.Repeat("━", len(headerLine)+8)
+
+	fmt.Fprintln(w, rule(bar))
+	fmt.Fprintln(w, header(headerLine))
+	fmt.Fprintln(w, rule(bar))
+}
+
+// WriteShellRunFooter writes the bracketed metadata footer for a shell run.
+func WriteShellRunFooter(w io.Writer, exit int64, durationMs int64, transcriptPath string) {
+	footer := color.New(color.Faint).SprintFunc()
+
+	parts := []string{
+		fmt.Sprintf("exit=%d", exit),
+		fmt.Sprintf("%dms", durationMs),
+	}
+	if transcriptPath != "" {
+		parts = append(parts, fmt.Sprintf("transcript=%s", filepath.Base(transcriptPath)))
+	}
+	fmt.Fprintln(w, footer("["+strings.Join(parts, " · ")+"]"))
+	fmt.Fprintln(w)
+}
+
+// NewAgentStreamRenderer returns a StreamHandler that writes the body of an
+// agent run block to w. Text deltas pass through; thinking deltas render
+// dimmed and prefixed; tool_use events render as a structured indicator.
+// The caller is responsible for writing the header before the first event
+// and the footer after the run completes.
+func NewAgentStreamRenderer(w io.Writer) agent.StreamHandler {
+	dim := color.New(color.Faint).SprintFunc()
+	toolHi := color.New(color.FgYellow).SprintFunc()
+
+	inThinking := false
+	inToolUse := false
+
+	closeMode := func() {
+		if inThinking {
+			fmt.Fprintln(w)
+			inThinking = false
+		}
+		if inToolUse {
+			fmt.Fprintln(w, toolHi(")"))
+			inToolUse = false
+		}
+	}
+
+	return func(e agent.StreamEvent) {
+		switch e.Type {
+		case agent.StreamEventTextDelta:
+			closeMode()
+			fmt.Fprint(w, e.Text)
+		case agent.StreamEventThinkingDelta:
+			if inToolUse {
+				fmt.Fprintln(w, toolHi(")"))
+				inToolUse = false
+			}
+			if !inThinking {
+				fmt.Fprint(w, dim("\n┊ thinking: "))
+				inThinking = true
+			}
+			fmt.Fprint(w, dim(e.Text))
+		case agent.StreamEventToolUseStart:
+			closeMode()
+			fmt.Fprintf(w, "\n%s%s%s",
+				toolHi("→ tool: "), toolHi(e.ToolName), toolHi("("))
+			inToolUse = true
+		case agent.StreamEventToolUseDelta:
+			fmt.Fprint(w, toolHi(e.ToolInput))
+		case agent.StreamEventToolUseStop:
+			fmt.Fprintln(w, toolHi(")"))
+			inToolUse = false
+		}
+	}
 }
 
 // renderShellRun renders a shell task as a block with the same shape as

@@ -3,7 +3,9 @@ package cronicle
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -36,8 +38,28 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			cmd[i] = s
 		}
 
+		streaming := IsStreamingPretty()
+		if streaming {
+			// Serialize the entire block so concurrent tasks don't garble
+			// each other on stdout.
+			StreamLock.Lock()
+			defer StreamLock.Unlock()
+			WriteShellRunHeader(os.Stdout, task.ScheduleName, task.Name, strings.Join(cmd, " "))
+			fmt.Fprintln(os.Stdout)
+		}
+
+		var stdoutW, stderrW io.Writer
+		if streaming {
+			stdoutW = os.Stdout
+			stderrW = os.Stderr
+		}
+
 		startedAt := time.Now()
-		result = exec.Execute(cmd, task.Path, task.Env)
+		if streaming {
+			result = exec.ExecuteWithStream(cmd, task.Path, task.Env, stdoutW, stderrW)
+		} else {
+			result = exec.Execute(cmd, task.Path, task.Env)
+		}
 		finishedAt := time.Now()
 		task.lastDurationMs = finishedAt.Sub(startedAt).Milliseconds()
 
@@ -47,6 +69,13 @@ func (task *Task) Exec(t time.Time) exec.Result {
 				task.Env, startedAt, finishedAt, result, commit, email); err == nil {
 				task.lastTranscript = path
 			}
+		}
+
+		if streaming {
+			fmt.Fprintln(os.Stdout)
+			WriteShellRunFooter(os.Stdout,
+				int64(result.ExitStatus), task.lastDurationMs, task.lastTranscript)
+			task.shellStreamed = true
 		}
 	}
 	return result
@@ -81,12 +110,44 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		RunID:         runID,
 	}
 
+	streaming := IsStreamingPretty()
+	effectiveModel := cfg.Model
+	if effectiveModel == "" {
+		effectiveModel = agent.DefaultModel
+	}
+	if streaming {
+		// Render header + body deltas + footer directly to stdout in real
+		// time. The slog event below carries entry_type=agent_run_streamed
+		// so prettyHandler skips stdout, but the file mirror still records
+		// the consolidated event. StreamLock serializes concurrent tasks
+		// so their blocks don't interleave on stdout.
+		StreamLock.Lock()
+		defer StreamLock.Unlock()
+		WriteAgentRunHeader(os.Stdout, task.ScheduleName, task.Name, effectiveModel)
+		fmt.Fprintln(os.Stdout)
+		cfg.StreamHandler = NewAgentStreamRenderer(os.Stdout)
+	}
+
 	startedAt := time.Now()
 	res, err := agent.Run(context.Background(), cfg)
 	durationMs := time.Since(startedAt).Milliseconds()
 
+	if streaming {
+		fmt.Fprintln(os.Stdout)
+		fmt.Fprintln(os.Stdout)
+		WriteAgentRunFooter(os.Stdout,
+			int64(res.InputTokens), int64(res.OutputTokens),
+			fmt.Sprintf("%.6f", res.CostUSD), durationMs,
+			res.StopReason, res.TranscriptPath)
+	}
+
+	streamingEntryType := "agent_run"
+	if streaming {
+		streamingEntryType = "agent_run_streamed"
+	}
+
 	attrs := []slog.Attr{
-		slog.String("entry_type", "agent_run"),
+		slog.String("entry_type", streamingEntryType),
 		slog.String("schedule", task.ScheduleName),
 		slog.String("task", task.Name),
 		slog.String("model", res.Model),
@@ -203,8 +264,13 @@ func (task *Task) Log(res exec.Result) {
 
 	commit, email := task.gitMeta()
 
+	entryType := "shell_run"
+	if task.shellStreamed {
+		entryType = "shell_run_streamed"
+	}
+
 	args := []any{
-		"entry_type", "shell_run",
+		"entry_type", entryType,
 		"schedule", task.ScheduleName,
 		"task", task.Name,
 		"path", task.Path,
