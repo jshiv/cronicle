@@ -53,9 +53,19 @@ func SetupLogging(format LogFormat) {
 	slog.SetDefault(slog.New(handler))
 }
 
+// FileLoggingEnabled reports whether --log-to-file was passed on the
+// current invocation. It's the master switch for on-disk artifacts:
+// cronicle.jsonl AND per-run transcripts. Set by EnableFileLog.
+var FileLoggingEnabled bool
+
+// CroniclePath is the directory under which on-disk artifacts (.cronicle/log,
+// .cronicle/runs) are rooted. Set by EnableFileLog.
+var CroniclePath string
+
 // EnableFileLog composes the current default handler with a JSON-mirroring
 // handler that writes to .cronicle/log/cronicle.jsonl, rotated by lumberjack.
-// Stdout output is unaffected.
+// Stdout output is unaffected. Also flips FileLoggingEnabled so other
+// subsystems (agent transcripts, shell transcripts) can opt in.
 func EnableFileLog(croniclePath string) error {
 	logDir := filepath.Join(croniclePath, ".cronicle", "log")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
@@ -71,7 +81,18 @@ func EnableFileLog(croniclePath string) error {
 	fileHandler := slog.NewJSONHandler(file, nil)
 	current := slog.Default().Handler()
 	slog.SetDefault(slog.New(&multiHandler{handlers: []slog.Handler{current, fileHandler}}))
+	FileLoggingEnabled = true
+	CroniclePath = croniclePath
 	return nil
+}
+
+// TranscriptDir returns the directory where per-run transcripts should be
+// written, or "" if file logging is disabled.
+func TranscriptDir() string {
+	if !FileLoggingEnabled {
+		return ""
+	}
+	return filepath.Join(CroniclePath, ".cronicle", "runs")
 }
 
 // ApplyTimezone wraps the default logger's current handler in a tzHandler so

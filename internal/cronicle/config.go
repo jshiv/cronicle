@@ -61,6 +61,11 @@ type Task struct {
 	CroniclePath string
 	Git          Git
 	ScheduleName string
+
+	// per-run state populated by Exec, read by Log. Unexported so they don't
+	// pollute JSON marshaling or HCL encoding.
+	lastTranscript string
+	lastDurationMs int64
 }
 
 // Agent is the configuration structure that defines an LLM agent invocation.
