@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,9 +36,31 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			cmd[i] = s
 		}
 
+		startedAt := time.Now()
 		result = exec.Execute(cmd, task.Path, task.Env)
+		finishedAt := time.Now()
+		task.lastDurationMs = finishedAt.Sub(startedAt).Milliseconds()
+
+		if FileLoggingEnabled {
+			commit, email := task.gitMeta()
+			if path, err := writeShellTranscript(task.ScheduleName, task.Name, task.Path,
+				task.Env, startedAt, finishedAt, result, commit, email); err == nil {
+				task.lastTranscript = path
+			}
+		}
 	}
 	return result
+}
+
+// gitMeta extracts the commit hash and author email from task.Git, returning
+// "null" placeholders when no commit is attached.
+func (task *Task) gitMeta() (commit, email string) {
+	if task.Git.Commit != nil {
+		commit = task.Git.Commit.Hash.String()[:11]
+		email = task.Git.Commit.Author.Email
+		return
+	}
+	return "null", "null"
 }
 
 // execAgent dispatches the task to pkg/agent and emits a single structured
@@ -48,7 +69,6 @@ func (task *Task) Exec(t time.Time) exec.Result {
 // fields stay on one line. task.Log is skipped for agent tasks because this
 // function owns the agent's logging end-to-end.
 func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
-	transcriptDir := filepath.Join(task.CroniclePath, ".cronicle", "runs")
 	runID := fmt.Sprintf("%s-%s-%s", t.UTC().Format("20060102T150405Z"), task.ScheduleName, task.Name)
 
 	cfg := agent.Config{
@@ -57,7 +77,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		Model:         task.Agent.Model,
 		MaxTokens:     task.Agent.MaxTokens,
 		BudgetUSD:     task.Agent.BudgetUSD,
-		TranscriptDir: transcriptDir,
+		TranscriptDir: TranscriptDir(), // "" unless --log-to-file
 		RunID:         runID,
 	}
 
@@ -77,8 +97,10 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		slog.String("cost_usd", fmt.Sprintf("%.6f", res.CostUSD)),
 		slog.Int64("duration_ms", durationMs),
 		slog.String("stop_reason", res.StopReason),
-		slog.String("transcript", res.TranscriptPath),
 		slog.String("response", res.Stdout),
+	}
+	if res.TranscriptPath != "" {
+		attrs = append(attrs, slog.String("transcript", res.TranscriptPath))
 	}
 	if err != nil {
 		attrs = append(attrs, slog.Bool("success", false), slog.String("error", err.Error()))
@@ -178,39 +200,27 @@ func (task *Task) Log(res exec.Result) {
 		return
 	}
 
-	var commit string
-	var email string
-	if task.Git.Commit != nil {
-		commit = task.Git.Commit.Hash.String()[:11]
-		email = task.Git.Commit.Author.Email
-	} else {
-		commit = "null"
-		email = "null"
+	commit, email := task.gitMeta()
+
+	args := []any{
+		"schedule", task.ScheduleName,
+		"task", task.Name,
+		"path", task.Path,
+		"exit", res.ExitStatus,
+		"commit", commit,
+		"email", email,
+		"command", strings.Join(res.Command, " "),
+		"duration_ms", task.lastDurationMs,
+	}
+	if task.lastTranscript != "" {
+		args = append(args, "transcript", task.lastTranscript)
 	}
 
 	if res.Error != nil {
-		slog.Error(res.Stderr,
-			"schedule", task.ScheduleName,
-			"task", task.Name,
-			"path", task.Path,
-			"exit", res.ExitStatus,
-			"error", res.Error.Error(),
-			"commit", commit,
-			"email", email,
-			"success", false,
-			"command", strings.Join(res.Command, " "),
-		)
+		args = append(args, "error", res.Error.Error(), "success", false)
+		slog.Error(res.Stderr, args...)
 	} else {
-		slog.Info(res.Stdout,
-			"schedule", task.ScheduleName,
-			"task", task.Name,
-			"path", task.Path,
-			"exit", res.ExitStatus,
-			"commit", commit,
-			"email", email,
-			"success", true,
-			"command", strings.Join(res.Command, " "),
-		)
+		args = append(args, "success", true)
+		slog.Info(res.Stdout, args...)
 	}
-
 }
