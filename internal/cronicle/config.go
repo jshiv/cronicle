@@ -200,10 +200,13 @@ func (task *Task) Validate() error {
 }
 
 // knownAgentTool reports whether name is a recognized Anthropic-defined tool
-// in the current cronicle build. Extend as new tools (text_editor, etc.) land.
+// in the current cronicle build.
+//
+// Client-side (cronicle implements execution): bash, text_editor.
+// Server-side (Anthropic runs them; we just declare): web_search, web_fetch.
 func knownAgentTool(name string) bool {
 	switch name {
-	case "bash":
+	case "bash", "text_editor", "web_search", "web_fetch":
 		return true
 	}
 	return false
