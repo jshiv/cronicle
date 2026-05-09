@@ -70,14 +70,14 @@ var _ = Describe("Exec", func() {
 		task := schedule.Tasks[0]
 		task.Repo.Commit = "699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1"
 
-		task.Command = []string{"python", "test.py"}
+		task.Command = []string{"python3", "test.py"}
 		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
 		r, err := task.Execute(t)
 		Expect(err).To(BeNil())
 		c := task.Git.Commit
 		Expect(c.Hash.String()).To(Equal("699b2794b2b0f6ddfe8a0fe386e6013eeeec1ad1"))
 		Expect(r).To(Equal(exec.Result{
-			Command:    []string{"python", "test.py"},
+			Command:    []string{"python3", "test.py"},
 			Stdout:     "test specific commit: SUCCESS\n",
 			Stderr:     "",
 			ExitStatus: 0,
@@ -94,14 +94,14 @@ var _ = Describe("Exec", func() {
 		task := schedule.Tasks[0]
 		task.Repo.Branch = "test/checkout_specific_branch"
 
-		task.Command = []string{"python", "test.py"}
+		task.Command = []string{"python3", "test.py"}
 		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
 		r, err := task.Execute(t)
 		Expect(err).To(BeNil())
 		h, err := task.Git.Repository.Head()
 		Expect(h.Name().String()).To(Equal("refs/heads/test/checkout_specific_branch"))
 		Expect(r).To(Equal(exec.Result{
-			Command:    []string{"python", "test.py"},
+			Command:    []string{"python3", "test.py"},
 			Stdout:     "test specific branch: SUCCESS\n",
 			Stderr:     "",
 			ExitStatus: 0,
@@ -118,14 +118,14 @@ var _ = Describe("Exec", func() {
 		schedule.PropigateTaskProperties(taskPath)
 		task := schedule.Tasks[0]
 
-		task.Command = []string{"python", "test.py"}
+		task.Command = []string{"python3", "test.py"}
 		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
 		r, err := task.Execute(t)
 		Expect(err).To(BeNil())
 		h, err := task.Git.Repository.Head()
 		Expect(h.Name().String()).To(Equal("refs/heads/master"))
 		Expect(r).To(Equal(exec.Result{
-			Command:    []string{"python", "test.py"},
+			Command:    []string{"python3", "test.py"},
 			Stdout:     "test master: SUCCESS\n",
 			Stderr:     "",
 			ExitStatus: 0,

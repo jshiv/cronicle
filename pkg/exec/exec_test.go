@@ -16,8 +16,8 @@ var _ = Describe("exec", func() {
 		expected := Result{Command: command, Stdout: "cronicle\n", Stderr: "", ExitStatus: 0, Error: nil}
 		Expect(res).To(Equal(expected))
 	})
-	It("Execute python os.environ.get('FOO') should print 'bar'", func() {
-		command := []string{"python", "-c", "import os; print(os.environ.get('FOO'))"}
+	It("Execute python3 os.environ.get('FOO') should print 'bar'", func() {
+		command := []string{"python3", "-c", "import os; print(os.environ.get('FOO'))"}
 		env := []string{"FOO=bar"}
 		res := Execute(command, "./", env)
 		Expect(res.Error).To(BeNil())
