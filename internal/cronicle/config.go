@@ -66,6 +66,7 @@ type Task struct {
 	// pollute JSON marshaling or HCL encoding.
 	lastTranscript string
 	lastDurationMs int64
+	shellStreamed  bool
 }
 
 // Agent is the configuration structure that defines an LLM agent invocation.

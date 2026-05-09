@@ -3,6 +3,7 @@ package exec
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	goexec "os/exec"
 	"syscall"
@@ -66,6 +67,67 @@ func Execute(command []string, dir string, env []string) Result {
 		}
 	} else {
 		// Success
+		waitStatus = cmd.ProcessState.Sys().(syscall.WaitStatus)
+		result.ExitStatus = waitStatus.ExitStatus()
+	}
+
+	if result.Error == nil {
+		result.Error = exitStatusError(result)
+	}
+	return result
+}
+
+// ExecuteWithStream is like Execute but pipes process stdout and stderr
+// through stdoutW / stderrW in real time while still capturing the full
+// output into the returned Result. Pass nil writers to skip streaming for
+// either stream — Execute is implemented as ExecuteWithStream(..., nil, nil).
+//
+// Used by the cronicle pretty-mode dispatch path so a long-running shell
+// task's output appears at the terminal as the process emits it, while the
+// final Result still carries the complete stdout/stderr for transcripts and
+// the structured log event.
+func ExecuteWithStream(command []string, dir string, env []string, stdoutW, stderrW io.Writer) Result {
+	var result Result
+	result.Command = command
+	var cmd *goexec.Cmd
+	switch len(command) {
+	case 1:
+		cmd = goexec.Command(command[0])
+	default:
+		cmd = goexec.Command(command[0], command[1:]...)
+	}
+	cmd.Dir = dir
+	cmd.Env = os.Environ()
+	for _, e := range env {
+		cmd.Env = append(cmd.Env, e)
+	}
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	if stdoutW != nil {
+		cmd.Stdout = io.MultiWriter(&stdoutBuf, stdoutW)
+	} else {
+		cmd.Stdout = &stdoutBuf
+	}
+	if stderrW != nil {
+		cmd.Stderr = io.MultiWriter(&stderrBuf, stderrW)
+	} else {
+		cmd.Stderr = &stderrBuf
+	}
+
+	runErr := cmd.Run()
+	result.Stdout = stdoutBuf.String()
+	result.Stderr = stderrBuf.String()
+
+	var waitStatus syscall.WaitStatus
+	if runErr != nil {
+		if exitError, ok := runErr.(*goexec.ExitError); ok {
+			waitStatus = exitError.Sys().(syscall.WaitStatus)
+			result.ExitStatus = waitStatus.ExitStatus()
+			result.Error = errors.New(exitError.Error())
+		} else {
+			result.Error = runErr
+		}
+	} else if cmd.ProcessState != nil {
 		waitStatus = cmd.ProcessState.Sys().(syscall.WaitStatus)
 		result.ExitStatus = waitStatus.ExitStatus()
 	}

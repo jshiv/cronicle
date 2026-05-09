@@ -32,7 +32,36 @@ type Config struct {
 	APIKey        string
 	TranscriptDir string
 	RunID         string
+	// StreamHandler, when non-nil, is called with semantic streaming events
+	// (text/thinking deltas, tool use start/delta/stop) as they arrive from
+	// the API. Use it to render deltas in real time. The aggregated Result
+	// is still returned by Run regardless. nil = silent (still streamed
+	// internally; no per-delta callback fired).
+	StreamHandler StreamHandler
 }
+
+// StreamEventType identifies the kind of streaming event.
+type StreamEventType string
+
+const (
+	StreamEventTextDelta     StreamEventType = "text_delta"
+	StreamEventThinkingDelta StreamEventType = "thinking_delta"
+	StreamEventToolUseStart  StreamEventType = "tool_use_start"
+	StreamEventToolUseDelta  StreamEventType = "tool_use_delta"
+	StreamEventToolUseStop   StreamEventType = "tool_use_stop"
+)
+
+// StreamEvent is a single semantic event from an agent run.
+type StreamEvent struct {
+	Type      StreamEventType
+	Text      string // text_delta and thinking_delta carry the partial text here
+	ToolID    string // tool_use_* events
+	ToolName  string // tool_use_start
+	ToolInput string // tool_use_delta carries partial JSON here
+}
+
+// StreamHandler is called with each StreamEvent as it arrives.
+type StreamHandler func(StreamEvent)
 
 // Result is what an agent run produces. It embeds exec.Result so it can drop
 // into the rest of cronicle's task execution path; the agent-specific fields
@@ -102,9 +131,77 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	}
 
 	startedAt := time.Now().UTC()
-	msg, err := client.Messages.New(ctx, params)
+	stream := client.Messages.NewStreaming(ctx, params)
+
+	var (
+		sb               strings.Builder
+		currentBlockType string
+		currentToolID    string
+		finalMsg         anthropic.Message
+	)
+
+	for stream.Next() {
+		event := stream.Current()
+		switch event.Type {
+		case "message_start":
+			finalMsg = event.Message
+		case "content_block_start":
+			cb := event.ContentBlock
+			currentBlockType = cb.Type
+			currentToolID = cb.ID
+			if cb.Type == "tool_use" && cfg.StreamHandler != nil {
+				cfg.StreamHandler(StreamEvent{
+					Type:     StreamEventToolUseStart,
+					ToolID:   cb.ID,
+					ToolName: cb.Name,
+				})
+			}
+		case "content_block_delta":
+			switch event.Delta.Type {
+			case "text_delta":
+				sb.WriteString(event.Delta.Text)
+				if cfg.StreamHandler != nil {
+					cfg.StreamHandler(StreamEvent{
+						Type: StreamEventTextDelta,
+						Text: event.Delta.Text,
+					})
+				}
+			case "thinking_delta":
+				if cfg.StreamHandler != nil {
+					cfg.StreamHandler(StreamEvent{
+						Type: StreamEventThinkingDelta,
+						Text: event.Delta.Thinking,
+					})
+				}
+			case "input_json_delta":
+				if cfg.StreamHandler != nil {
+					cfg.StreamHandler(StreamEvent{
+						Type:      StreamEventToolUseDelta,
+						ToolID:    currentToolID,
+						ToolInput: event.Delta.PartialJSON,
+					})
+				}
+			}
+		case "content_block_stop":
+			if currentBlockType == "tool_use" && cfg.StreamHandler != nil {
+				cfg.StreamHandler(StreamEvent{
+					Type:   StreamEventToolUseStop,
+					ToolID: currentToolID,
+				})
+			}
+			currentBlockType = ""
+			currentToolID = ""
+		case "message_delta":
+			finalMsg.StopReason = event.Delta.StopReason
+			finalMsg.Usage.InputTokens = event.Usage.InputTokens
+			finalMsg.Usage.OutputTokens = event.Usage.OutputTokens
+			finalMsg.Usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
+			finalMsg.Usage.CacheReadInputTokens = event.Usage.CacheReadInputTokens
+		}
+	}
 	finishedAt := time.Now().UTC()
-	if err != nil {
+
+	if err := stream.Err(); err != nil {
 		res.Error = err
 		res.ExitStatus = 1
 		res.Stderr = err.Error()
@@ -112,21 +209,23 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return res, err
 	}
 
-	var sb strings.Builder
-	for _, block := range msg.Content {
-		if block.Type == "text" {
-			sb.WriteString(block.Text)
-		}
+	// Synthesize a Message containing the aggregated text content for the
+	// transcript writer. Tool-use / thinking blocks aren't reconstructed here
+	// because today's transcript schema captures them as the API sees them
+	// (and we don't yet send tool definitions).
+	finalMsg.Content = []anthropic.ContentBlockUnion{
+		{Type: "text", Text: sb.String()},
 	}
+
 	res.Stdout = sb.String()
-	res.InputTokens = int(msg.Usage.InputTokens)
-	res.OutputTokens = int(msg.Usage.OutputTokens)
-	res.CacheReadIn = int(msg.Usage.CacheReadInputTokens)
-	res.CacheWriteIn = int(msg.Usage.CacheCreationInputTokens)
-	res.StopReason = string(msg.StopReason)
+	res.InputTokens = int(finalMsg.Usage.InputTokens)
+	res.OutputTokens = int(finalMsg.Usage.OutputTokens)
+	res.CacheReadIn = int(finalMsg.Usage.CacheReadInputTokens)
+	res.CacheWriteIn = int(finalMsg.Usage.CacheCreationInputTokens)
+	res.StopReason = string(finalMsg.StopReason)
 	res.CostUSD = computeCost(model, res.InputTokens, res.OutputTokens, res.CacheWriteIn, res.CacheReadIn)
 
-	if path, werr := writeTranscript(cfg, model, startedAt, finishedAt, msg, res); werr == nil {
+	if path, werr := writeTranscript(cfg, model, startedAt, finishedAt, &finalMsg, res); werr == nil {
 		res.TranscriptPath = path
 	}
 
