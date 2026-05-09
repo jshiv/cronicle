@@ -2,11 +2,13 @@ package exec
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
 	goexec "os/exec"
 	"syscall"
+	"time"
 )
 
 //BashRun pulls from examples at https://zaiste.net/executing_external_commands_in_go/
@@ -67,6 +69,78 @@ func Execute(command []string, dir string, env []string) Result {
 		}
 	} else {
 		// Success
+		waitStatus = cmd.ProcessState.Sys().(syscall.WaitStatus)
+		result.ExitStatus = waitStatus.ExitStatus()
+	}
+
+	if result.Error == nil {
+		result.Error = exitStatusError(result)
+	}
+	return result
+}
+
+// ExecuteWithStreamContext is like ExecuteWithStream but ties the child
+// process lifetime to ctx: when ctx is cancelled (e.g. via the agent
+// runtime's wallclock deadline), the entire process group is signalled with
+// SIGTERM, escalating to SIGKILL after 2 seconds if needed. The child runs
+// in its own pgid so subprocesses spawned by the command (think
+// `bash -c "sleep 30 | cat"`) all die together — important for unattended
+// cronicle agents where a stuck bash invocation would otherwise outlive
+// the run.
+func ExecuteWithStreamContext(ctx context.Context, command []string, dir string, env []string, stdoutW, stderrW io.Writer) Result {
+	var result Result
+	result.Command = command
+	var cmd *goexec.Cmd
+	switch len(command) {
+	case 1:
+		cmd = goexec.CommandContext(ctx, command[0])
+	default:
+		cmd = goexec.CommandContext(ctx, command[0], command[1:]...)
+	}
+	cmd.Dir = dir
+	cmd.Env = os.Environ()
+	for _, e := range env {
+		cmd.Env = append(cmd.Env, e)
+	}
+	// Run the child in its own process group so we can signal the whole
+	// group on cancellation instead of just the immediate child.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Override the default Cancel (which is cmd.Process.Kill on the leader)
+	// to signal the entire group, then let WaitDelay escalate to SIGKILL.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	}
+	cmd.WaitDelay = 2 * time.Second
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	if stdoutW != nil {
+		cmd.Stdout = io.MultiWriter(&stdoutBuf, stdoutW)
+	} else {
+		cmd.Stdout = &stdoutBuf
+	}
+	if stderrW != nil {
+		cmd.Stderr = io.MultiWriter(&stderrBuf, stderrW)
+	} else {
+		cmd.Stderr = &stderrBuf
+	}
+
+	runErr := cmd.Run()
+	result.Stdout = stdoutBuf.String()
+	result.Stderr = stderrBuf.String()
+
+	var waitStatus syscall.WaitStatus
+	if runErr != nil {
+		if exitError, ok := runErr.(*goexec.ExitError); ok {
+			waitStatus = exitError.Sys().(syscall.WaitStatus)
+			result.ExitStatus = waitStatus.ExitStatus()
+			result.Error = errors.New(exitError.Error())
+		} else {
+			result.Error = runErr
+		}
+	} else if cmd.ProcessState != nil {
 		waitStatus = cmd.ProcessState.Sys().(syscall.WaitStatus)
 		result.ExitStatus = waitStatus.ExitStatus()
 	}

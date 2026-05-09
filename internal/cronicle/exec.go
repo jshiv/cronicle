@@ -104,6 +104,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		Model:         task.Agent.Model,
 		MaxTokens:     task.Agent.MaxTokens,
 		BudgetUSD:     task.Agent.BudgetUSD,
+		MaxTurns:      task.Agent.MaxTurns,
 		TranscriptDir: TranscriptDir(), // "" unless --log-to-file
 		RunID:         runID,
 	}
@@ -126,8 +127,29 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		cfg.StreamHandler = NewAgentStreamRenderer(sw)
 	}
 
+	// Tools: bind to the task's workspace and stream writer so bash output
+	// flows into the agent's pretty block AND the cronicle execution
+	// context stays consistent (same cwd as a shell task would have).
+	var toolWriter io.Writer
+	if streaming {
+		toolWriter = sw
+	}
+	cfg.Tools = buildAgentTools(task.Agent.Tools, task.Path, task.Env, toolWriter)
+
+	// Wallclock bound: derive a context deadline from the HCL string. Default
+	// 10m if unset. Wallclock is enforced via context cancellation; the agent
+	// loop will return whatever's been gathered so far when the deadline fires.
+	wallclock := 10 * time.Minute
+	if task.Agent.Wallclock != "" {
+		if d, err := time.ParseDuration(task.Agent.Wallclock); err == nil {
+			wallclock = d
+		}
+	}
+	runCtx, cancel := context.WithTimeout(context.Background(), wallclock)
+	defer cancel()
+
 	startedAt := time.Now()
-	res, err := agent.Run(context.Background(), cfg)
+	res, err := agent.Run(runCtx, cfg)
 	durationMs := time.Since(startedAt).Milliseconds()
 
 	if streaming {

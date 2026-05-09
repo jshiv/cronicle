@@ -3,6 +3,7 @@ package cronicle
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -589,54 +590,69 @@ func WriteShellRunFooter(w io.Writer, exit int64, durationMs int64, transcriptPa
 
 // NewAgentStreamRenderer returns a StreamHandler that writes the body of an
 // agent run block to w. Text deltas pass through; thinking deltas render
-// dimmed and prefixed; tool_use events render as a structured indicator.
+// dimmed and prefixed; tool_use events render with the parsed command (for
+// bash) on tool_use_stop; tool_result events render an exit/duration line
+// (success green, error red).
+//
 // The caller is responsible for writing the header before the first event
 // and the footer after the run completes.
 func NewAgentStreamRenderer(w io.Writer) agent.StreamHandler {
 	dim := color.New(color.Faint).SprintFunc()
 	toolHi := color.New(color.FgYellow).SprintFunc()
+	ok := color.New(color.FgGreen, color.Faint).SprintFunc()
+	bad := color.New(color.FgRed, color.Faint).SprintFunc()
 
 	inThinking := false
-	inToolUse := false
 
-	closeMode := func() {
+	flushThinking := func() {
 		if inThinking {
 			fmt.Fprintln(w)
 			inThinking = false
-		}
-		if inToolUse {
-			fmt.Fprintln(w, toolHi(")"))
-			inToolUse = false
 		}
 	}
 
 	return func(e agent.StreamEvent) {
 		switch e.Type {
 		case agent.StreamEventTextDelta:
-			closeMode()
+			flushThinking()
 			fmt.Fprint(w, e.Text)
 		case agent.StreamEventThinkingDelta:
-			if inToolUse {
-				fmt.Fprintln(w, toolHi(")"))
-				inToolUse = false
-			}
 			if !inThinking {
 				fmt.Fprint(w, dim("\n┊ thinking: "))
 				inThinking = true
 			}
 			fmt.Fprint(w, dim(e.Text))
 		case agent.StreamEventToolUseStart:
-			closeMode()
-			fmt.Fprintf(w, "\n%s%s%s",
-				toolHi("→ tool: "), toolHi(e.ToolName), toolHi("("))
-			inToolUse = true
-		case agent.StreamEventToolUseDelta:
-			fmt.Fprint(w, toolHi(e.ToolInput))
-		case agent.StreamEventToolUseStop:
-			fmt.Fprintln(w, toolHi(")"))
-			inToolUse = false
+			flushThinking()
+			fmt.Fprintf(w, "\n%s%s%s %s\n",
+				toolHi("→ "), toolHi(e.ToolName), toolHi(":"),
+				formatToolInput(e.ToolInput))
+		case agent.StreamEventToolResult:
+			marker := ok("← exit=0")
+			if e.IsError {
+				marker = bad("← error")
+			}
+			fmt.Fprintf(w, "%s %s\n", marker, dim(formatDuration(e.DurationMs)))
+		case agent.StreamEventTurnStart:
+			fmt.Fprintln(w, dim(fmt.Sprintf("\n— turn %d —", e.TurnIndex+1)))
 		}
 	}
+}
+
+// formatToolInput renders the raw JSON tool input compactly for the pretty
+// stream. For bash specifically, it extracts the command and shows it
+// directly (no JSON wrapping). For unknown tools, the JSON is shown verbatim.
+func formatToolInput(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(raw), &args); err == nil && args.Command != "" {
+		return args.Command
+	}
+	return raw
 }
 
 // renderShellRun renders a shell task as a block with the same shape as

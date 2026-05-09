@@ -1,7 +1,9 @@
 package exec
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -44,5 +46,19 @@ var _ = Describe("exec", func() {
 		expected := Result{Command: command, Stdout: "", Stderr: "/bin/bash: not_a_script: No such file or directory\n", ExitStatus: 127, Error: exitError}
 		Expect(res).To(Equal(expected))
 		Expect(err).To(Equal(exitError))
+	})
+
+	It("ExecuteWithStreamContext should kill the process group when ctx is cancelled", func() {
+		// Spawn `bash -c "sleep 30 | sleep 30"` so there are subprocesses
+		// in the group, set a short timeout, and verify the call returns
+		// well before the sleep would have completed.
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		started := time.Now()
+		res := ExecuteWithStreamContext(ctx, []string{"/bin/sh", "-c", "sleep 30 | sleep 30"},
+			"./", nil, nil, nil)
+		elapsed := time.Since(started)
+		Expect(elapsed).To(BeNumerically("<", 5*time.Second))
+		Expect(res.Error).NotTo(BeNil())
 	})
 })
