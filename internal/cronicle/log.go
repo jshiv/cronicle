@@ -481,7 +481,7 @@ func (p *prettyHandler) renderShellRun(r slog.Record) error {
 	success := attrBool(r, "success")
 
 	headerLine := fmt.Sprintf("shell run · schedule=%s · task=%s · %s",
-		schedule, task, truncate(command, 60))
+		schedule, task, truncate(escapeControl(command), 60))
 	bar := strings.Repeat("━", len(headerLine)+8)
 
 	var b bytes.Buffer
@@ -624,6 +624,13 @@ func (p *prettyHandler) renderDimLine(r slog.Record) error {
 
 	_, err := p.out.Write(b.Bytes())
 	return err
+}
+
+// escapeControl replaces newlines and tabs with their literal escape forms so
+// they don't break a single-line header layout when the source is shell input.
+func escapeControl(s string) string {
+	r := strings.NewReplacer("\n", "\\n", "\t", "\\t", "\r", "\\r")
+	return r.Replace(s)
 }
 
 // truncate trims s to at most n runes, appending "…" when shortened.
