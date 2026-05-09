@@ -68,11 +68,67 @@ func IsStreamingPretty() bool {
 	return resolvedLogFormat == LogFormatPretty
 }
 
-// StreamLock serializes streaming writes so concurrent task executions don't
-// interleave their header/body/footer blocks on stdout. Held across the entire
-// block of one task; concurrent tasks queue up visually even though execution
-// is still parallel under the hood.
-var StreamLock sync.Mutex
+// streamLock coordinates per-task streaming writers so concurrent tasks don't
+// interleave their blocks on stdout. The first task to start streaming
+// acquires the lock and streams live; others buffer their output and dump it
+// atomically when the leader finishes. Compute parallelism is preserved —
+// tasks run concurrently regardless of who holds the lock.
+var streamLock sync.Mutex
+
+// StreamingWriter is the per-task io.Writer used during streaming pretty
+// mode. The first one to be constructed acquires the streamLock and becomes
+// the "leader": all writes pass straight to stdout, giving live streaming UX
+// for whichever task got there first. Concurrent tasks become followers —
+// their writes accumulate in an internal buffer, and Close flushes the buffer
+// to stdout atomically once the leader (or any earlier follower) releases
+// the lock.
+//
+// Use newStreamingWriter to construct, and call Close exactly once via defer.
+type StreamingWriter struct {
+	leader bool
+	buf    bytes.Buffer
+	out    io.Writer
+	closed bool
+	mu     sync.Mutex // guards buf for concurrent Write calls within one task
+}
+
+// NewStreamingWriter returns a writer for one task's streaming output.
+func NewStreamingWriter() *StreamingWriter {
+	sw := &StreamingWriter{out: os.Stdout}
+	if streamLock.TryLock() {
+		sw.leader = true
+	}
+	return sw
+}
+
+// Write either passes the bytes through to stdout (if leader) or appends them
+// to the buffer (if follower).
+func (s *StreamingWriter) Write(p []byte) (int, error) {
+	if s.leader {
+		return s.out.Write(p)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+// Close releases the leader lock, or — for followers — blocks to acquire the
+// lock, flushes the accumulated buffer atomically, and releases. Idempotent.
+func (s *StreamingWriter) Close() {
+	if s.closed {
+		return
+	}
+	s.closed = true
+	if s.leader {
+		streamLock.Unlock()
+		return
+	}
+	streamLock.Lock()
+	s.mu.Lock()
+	_, _ = s.out.Write(s.buf.Bytes())
+	s.mu.Unlock()
+	streamLock.Unlock()
+}
 
 // FileLoggingEnabled reports whether --log-to-file was passed on the
 // current invocation. It's the master switch for on-disk artifacts:

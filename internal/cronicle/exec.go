@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -39,19 +38,18 @@ func (task *Task) Exec(t time.Time) exec.Result {
 		}
 
 		streaming := IsStreamingPretty()
-		if streaming {
-			// Serialize the entire block so concurrent tasks don't garble
-			// each other on stdout.
-			StreamLock.Lock()
-			defer StreamLock.Unlock()
-			WriteShellRunHeader(os.Stdout, task.ScheduleName, task.Name, strings.Join(cmd, " "))
-			fmt.Fprintln(os.Stdout)
-		}
-
+		var sw *StreamingWriter
 		var stdoutW, stderrW io.Writer
 		if streaming {
-			stdoutW = os.Stdout
-			stderrW = os.Stderr
+			// Per-task writer: leader streams to stdout, followers buffer.
+			// The shell command runs WITHOUT holding the global lock, so
+			// parallel shell tasks still overlap their compute.
+			sw = NewStreamingWriter()
+			defer sw.Close()
+			WriteShellRunHeader(sw, task.ScheduleName, task.Name, strings.Join(cmd, " "))
+			fmt.Fprintln(sw)
+			stdoutW = sw
+			stderrW = sw
 		}
 
 		startedAt := time.Now()
@@ -72,8 +70,8 @@ func (task *Task) Exec(t time.Time) exec.Result {
 		}
 
 		if streaming {
-			fmt.Fprintln(os.Stdout)
-			WriteShellRunFooter(os.Stdout,
+			fmt.Fprintln(sw)
+			WriteShellRunFooter(sw,
 				int64(result.ExitStatus), task.lastDurationMs, task.lastTranscript)
 			task.shellStreamed = true
 		}
@@ -115,17 +113,17 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	if effectiveModel == "" {
 		effectiveModel = agent.DefaultModel
 	}
+	var sw *StreamingWriter
 	if streaming {
-		// Render header + body deltas + footer directly to stdout in real
-		// time. The slog event below carries entry_type=agent_run_streamed
-		// so prettyHandler skips stdout, but the file mirror still records
-		// the consolidated event. StreamLock serializes concurrent tasks
-		// so their blocks don't interleave on stdout.
-		StreamLock.Lock()
-		defer StreamLock.Unlock()
-		WriteAgentRunHeader(os.Stdout, task.ScheduleName, task.Name, effectiveModel)
-		fmt.Fprintln(os.Stdout)
-		cfg.StreamHandler = NewAgentStreamRenderer(os.Stdout)
+		// Per-task writer: the leader streams live to stdout; followers
+		// buffer and atomically flush on Close. agent.Run runs WITHOUT
+		// holding the global lock, so parallel tasks still execute
+		// concurrently.
+		sw = NewStreamingWriter()
+		defer sw.Close()
+		WriteAgentRunHeader(sw, task.ScheduleName, task.Name, effectiveModel)
+		fmt.Fprintln(sw)
+		cfg.StreamHandler = NewAgentStreamRenderer(sw)
 	}
 
 	startedAt := time.Now()
@@ -133,9 +131,9 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	durationMs := time.Since(startedAt).Milliseconds()
 
 	if streaming {
-		fmt.Fprintln(os.Stdout)
-		fmt.Fprintln(os.Stdout)
-		WriteAgentRunFooter(os.Stdout,
+		fmt.Fprintln(sw)
+		fmt.Fprintln(sw)
+		WriteAgentRunFooter(sw,
 			int64(res.InputTokens), int64(res.OutputTokens),
 			fmt.Sprintf("%.6f", res.CostUSD), durationMs,
 			res.StopReason, res.TranscriptPath)
