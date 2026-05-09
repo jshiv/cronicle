@@ -537,7 +537,8 @@ func (p *prettyHandler) renderScheduleStart(r slog.Record) error {
 	schedule := attrString(r, "schedule")
 	tasks := attrStrings(r, "tasks")
 
-	headerLine := fmt.Sprintf("schedule \"%s\"", schedule)
+	timeStr := r.Time.Format("15:04:05")
+	headerLine := fmt.Sprintf("%s · schedule \"%s\"", timeStr, schedule)
 	const totalWidth = 70
 	const leftRule = 4 // "────"
 	trailingCount := totalWidth - leftRule - 1 - len(headerLine) - 1
