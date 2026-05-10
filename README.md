@@ -94,6 +94,7 @@ When `--log-to-file` is on, each task execution also writes a per-run JSONL tran
 ## Example Deployments
 
 * [Centralize cronicle logs on a local loki/graphana log aggregator](deploy/local/README.md)
+* [Distribute cronicle tasks with a Redis broker (docker-compose)](deploy/redis/README.md)
 * [Distribute cronicle tasks with nsq message broker](deploy/nsq/README.md)
 
 
