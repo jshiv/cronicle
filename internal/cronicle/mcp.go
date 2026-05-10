@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -97,7 +98,11 @@ func LaunchMCPServers(ctx context.Context, mcps []MCP, taskEnv []string, w io.Wr
 }
 
 func launchOne(ctx context.Context, m MCP, taskEnv []string, w io.Writer) (*MCPHandle, []agent.Tool, error) {
-	cmd := exec.Command(m.Command[0], m.Command[1:]...)
+	// CommandContext (vs plain Command) ensures a panic between launch
+	// and the deferred Close still tears down the subprocess when ctx
+	// cancels (wallclock, parent ctx, etc.). Under normal flow Close
+	// handles teardown via stdin-close + SIGTERM grace period.
+	cmd := exec.CommandContext(ctx, m.Command[0], m.Command[1:]...)
 	cmd.Env = mcpProcessEnv(m.Env, taskEnv)
 	// Server stderr is forwarded to the agent's pretty-mode writer (or
 	// discarded when nil) so npm/install chatter and runtime logs appear
@@ -261,19 +266,25 @@ func mcpContentToString(contents []mcpsdk.Content) string {
 // are compatible. Invalid/missing schemas degrade to an empty
 // `{type: object}` schema so the tool is still callable with no args
 // rather than rejected outright.
+//
+// `additionalProperties` and other JSON Schema keywords beyond
+// properties+required are passed through ExtraFields so non-trivial
+// schemas (anyOf, default, format, etc.) survive verbatim — this is the
+// difference between "agent can call the tool" and "agent calls the tool
+// and the server gets the input it actually expects".
 func mcpSchemaToAnthropic(in any) (anthropic.ToolInputSchemaParam, error) {
+	out := anthropic.ToolInputSchemaParam{}
 	if in == nil {
-		return anthropic.ToolInputSchemaParam{}, nil
+		return out, nil
 	}
 	raw, err := json.Marshal(in)
 	if err != nil {
-		return anthropic.ToolInputSchemaParam{}, err
+		return out, err
 	}
 	var asMap map[string]any
 	if err := json.Unmarshal(raw, &asMap); err != nil {
-		return anthropic.ToolInputSchemaParam{}, err
+		return out, err
 	}
-	out := anthropic.ToolInputSchemaParam{}
 	if props, ok := asMap["properties"]; ok {
 		out.Properties = props
 	}
@@ -283,6 +294,19 @@ func mcpSchemaToAnthropic(in any) (anthropic.ToolInputSchemaParam, error) {
 				out.Required = append(out.Required, s)
 			}
 		}
+	}
+	// Forward any additional schema keywords (additionalProperties,
+	// description, $defs, etc.) so the server sees its own schema.
+	// `type` and `properties`/`required` are already handled above.
+	for k, v := range asMap {
+		switch k {
+		case "type", "properties", "required":
+			continue
+		}
+		if out.ExtraFields == nil {
+			out.ExtraFields = map[string]any{}
+		}
+		out.ExtraFields[k] = v
 	}
 	return out, nil
 }
@@ -297,10 +321,6 @@ func MCPServerNames(handles []*MCPHandle) []string {
 	for _, h := range handles {
 		out = append(out, h.Name)
 	}
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1] > out[j]; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
+	sort.Strings(out)
 	return out
 }

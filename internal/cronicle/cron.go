@@ -87,7 +87,12 @@ type RunOptions struct {
 }
 
 // StartWorker listens to a vice transport queue for schedules
-// produced by cronicle run
+// produced by cronicle run.
+//
+// File logging is honored on workers too — they're exactly where you want
+// per-run agent transcripts and the rotated cronicle.jsonl, since the work
+// happens here, not on the producer. Without this, distributed runs leave
+// no audit trail on disk.
 func StartWorker(path string, runOptions RunOptions) {
 
 	pathAbs, err := filepath.Abs(path)
@@ -98,6 +103,13 @@ func StartWorker(path string, runOptions RunOptions) {
 	if runOptions.QueueType == "" {
 		slog.Error("--queue must be specified in distributed mode. [Options: redis, nsq]")
 	}
+
+	if runOptions.LogToFile {
+		if err := EnableFileLog(pathAbs); err != nil {
+			Fatal(err)
+		}
+	}
+
 	transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
 	schedules := transport.Receive(runOptions.QueueName)
 	var wg sync.WaitGroup
