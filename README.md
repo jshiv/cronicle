@@ -216,10 +216,12 @@ task "morning_brief" {
     // Tools available to the agent. Omit to default to local-only:
     //   bash         — run shell commands in the task workspace
     //   text_editor  — view/create/edit files (workspace-confined)
+    //   git          — read+write git operations via embedded go-git
+    //                  (no host git CLI required)
     // Opt-in (server-side, billed per call on Anthropic):
     //   web_search   — server-side web search
     //   web_fetch    — server-side URL fetch
-    tools = ["bash", "text_editor", "web_search"]
+    tools = ["bash", "text_editor", "git", "web_search"]
 
     // Anthropic Agent Skills (progressive disclosure). Each entry is a
     // SKILL.md (workspace-relative); only frontmatter name+description
@@ -308,6 +310,43 @@ BRIEF COMPLETE
 The `agent_run` slog event carries `skills_available` (the catalog the agent
 saw) and `skills_loaded` (the subset whose bodies it actually fetched), so
 unattended runs are auditable: *did the 3am job actually use what it had?*
+
+#### Built-in `git` tool
+
+Cronicle ships with [go-git](https://github.com/go-git/go-git) embedded — the same library that powers the `repo` block — and exposes it to agents as a `git` tool. Agents can read and modify a repo without the host having `git` installed, preserving cronicle's single-binary-on-a-bare-machine property.
+
+Subcommands:
+
+| | |
+|---|---|
+| `status` | List tracked changes (porcelain-style summary) |
+| `log` | Recent commits in `<sha> <subject>` form (default 10, max 200) |
+| `diff` | Unified diff. `from`/`to` are refs (branch, hash, `HEAD~N`); default is HEAD vs working tree |
+| `branch` | Create + switch to a new branch from current HEAD |
+| `commit` | Stage all worktree changes and commit |
+| `push` | Push current branch using the same auth as the task's `repo` block |
+
+Example:
+
+```hcl
+agent {
+  prompt = "Summarize the last 10 commits as a 5-bullet changelog at ./CHANGELOG.md."
+  tools  = ["git", "text_editor"]
+}
+```
+
+In the pretty stream, git calls render as `→ git: <subcommand> <key arg>`:
+
+```
+→ git: log
+← exit=0 4ms
+→ git: diff abc1234~1..abc1234
+← exit=0 6ms
+→ editor: create ./CHANGELOG.md
+← exit=0 0ms
+```
+
+`push` reuses the auth method captured at clone time; an agent that ran on a task with no `repo` block won't have credentials for a private remote.
 
 #### MCP servers
 

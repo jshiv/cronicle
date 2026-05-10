@@ -705,6 +705,43 @@ func formatToolInput(toolName, raw string) string {
 		if n, ok := args["name"].(string); ok {
 			return n
 		}
+	case "git":
+		// Render `git <command> <key arg>` so the stream reads naturally:
+		// e.g. `→ git: log limit=20`, `→ git: commit "msg…"`.
+		cmd, _ := args["command"].(string)
+		sub, _ := args["args"].(map[string]any)
+		if cmd == "" {
+			return raw
+		}
+		switch cmd {
+		case "log", "status", "push":
+			if sub == nil || len(sub) == 0 {
+				return cmd
+			}
+		case "branch":
+			if name, ok := sub["name"].(string); ok && name != "" {
+				return cmd + " " + name
+			}
+		case "commit":
+			if msg, ok := sub["message"].(string); ok && msg != "" {
+				return cmd + " " + truncate(escapeControl(msg), 60)
+			}
+		case "diff":
+			if sub == nil {
+				return cmd
+			}
+			from, _ := sub["from"].(string)
+			to, _ := sub["to"].(string)
+			if from != "" && to != "" {
+				return cmd + " " + from + ".." + to
+			}
+			return cmd
+		}
+		// Fallback: cmd plus a compact JSON of args.
+		if b, err := json.Marshal(sub); err == nil && len(b) > 2 {
+			return cmd + " " + truncate(string(b), 60)
+		}
+		return cmd
 	}
 	// MCP tools (server__tool) — show the args as compact JSON, but trim
 	// to keep the line readable. Generic since tool schemas vary widely.

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/jshiv/cronicle/pkg/agent"
 	"github.com/jshiv/cronicle/pkg/exec"
 )
@@ -369,17 +370,22 @@ func (WebFetchTool) Execute(_ context.Context, _ json.RawMessage) (string, bool)
 }
 
 // defaultAgentToolNames is the tool universe an agent gets when the HCL
-// `tools` field is omitted. Local-only tools by default — bash and
-// text_editor run inside the task workspace and don't add per-call cost
-// beyond the model itself.
+// `tools` field is omitted. Local-only tools by default — bash,
+// text_editor, and git run inside the task workspace and don't add per-call
+// cost beyond the model itself.
+//
+// git is included by default because cronicle ships with go-git embedded;
+// the agent gets read+write git access without the host needing the git
+// CLI installed. This preserves cronicle's "single binary on a bare
+// machine" property for any agent task that already has a `repo` block.
 //
 // web_search and web_fetch are deliberately excluded: they bill on
 // Anthropic's side per call, which is surprising for an unattended cron
 // job that "just runs" with the default toolkit. Add them explicitly:
 //
-//	tools = ["bash", "text_editor", "web_search", "web_fetch"]
+//	tools = ["bash", "text_editor", "git", "web_search", "web_fetch"]
 func defaultAgentToolNames() []string {
-	return []string{"bash", "text_editor"}
+	return []string{"bash", "text_editor", "git"}
 }
 
 // buildAgentTools converts the HCL `tools` field into a slice of agent.Tool
@@ -387,7 +393,7 @@ func defaultAgentToolNames() []string {
 // pretty streaming mode). Empty/nil names defaults to the full native
 // toolkit (defaultAgentToolNames). Unknown names are filtered out (Validate
 // has already rejected them at parse time, so this is defensive).
-func buildAgentTools(names []string, workspace string, env []string, w io.Writer) []agent.Tool {
+func buildAgentTools(names []string, workspace string, env []string, gitAuth transport.AuthMethod, w io.Writer) []agent.Tool {
 	if len(names) == 0 {
 		names = defaultAgentToolNames()
 	}
@@ -404,6 +410,11 @@ func buildAgentTools(names []string, workspace string, env []string, w io.Writer
 		case "text_editor":
 			out = append(out, &TextEditorTool{
 				Workspace: workspace,
+			})
+		case "git":
+			out = append(out, &GitTool{
+				Workspace: workspace,
+				Auth:      gitAuth,
 			})
 		case "web_search":
 			out = append(out, WebSearchTool{})

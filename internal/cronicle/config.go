@@ -288,14 +288,14 @@ func isValidToolNamePart(s string) bool {
 	return true
 }
 
-// knownAgentTool reports whether name is a recognized Anthropic-defined tool
-// in the current cronicle build.
+// knownAgentTool reports whether name is a recognized agent tool in the
+// current cronicle build.
 //
-// Client-side (cronicle implements execution): bash, text_editor.
+// Client-side (cronicle implements execution): bash, text_editor, git.
 // Server-side (Anthropic runs them; we just declare): web_search, web_fetch.
 func knownAgentTool(name string) bool {
 	switch name {
-	case "bash", "text_editor", "web_search", "web_fetch":
+	case "bash", "text_editor", "git", "web_search", "web_fetch":
 		return true
 	}
 	return false
