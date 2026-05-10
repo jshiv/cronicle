@@ -467,7 +467,7 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 	var (
 		schedule, task, model, response, costStr string
 		stop, transcript, errMsg                  string
-		durationMs, in, out                       int64
+		durationMs, in, out, cacheRead            int64
 		success                                   bool
 		skills                                    []string
 	)
@@ -489,6 +489,8 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 			in = a.Value.Int64()
 		case "output_tokens":
 			out = a.Value.Int64()
+		case "cache_read":
+			cacheRead = a.Value.Int64()
 		case "transcript":
 			transcript = a.Value.String()
 		case "stop_reason":
@@ -524,7 +526,7 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
-	WriteAgentRunFooter(&b, in, out, costStr, durationMs, stop, transcript)
+	WriteAgentRunFooter(&b, in, out, cacheRead, costStr, durationMs, stop, transcript)
 
 	_, err := p.out.Write(b.Bytes())
 	return err
@@ -551,14 +553,21 @@ func WriteAgentRunHeader(w io.Writer, schedule, task, model string, skills []str
 }
 
 // WriteAgentRunFooter writes the bracketed metadata footer for an agent run.
-func WriteAgentRunFooter(w io.Writer, in, out int64, costStr string, durationMs int64, stopReason, transcriptPath string) {
+// cacheRead is the cumulative cache-read tokens; >0 indicates a cache hit
+// occurred during the run (turn 2+ replayed the cached prefix at 0.1× cost).
+func WriteAgentRunFooter(w io.Writer, in, out, cacheRead int64, costStr string, durationMs int64, stopReason, transcriptPath string) {
 	footer := color.New(color.Faint).SprintFunc()
 
 	parts := []string{
 		fmt.Sprintf("%d in / %d out tokens", in, out),
+	}
+	if cacheRead > 0 {
+		parts = append(parts, fmt.Sprintf("cached=%d", cacheRead))
+	}
+	parts = append(parts,
 		fmt.Sprintf("$%s", costStr),
 		fmt.Sprintf("%dms", durationMs),
-	}
+	)
 	if stopReason != "" {
 		parts = append(parts, fmt.Sprintf("stop=%s", stopReason))
 	}
