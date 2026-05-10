@@ -94,8 +94,8 @@ When `--log-to-file` is on, each task execution also writes a per-run JSONL tran
 ## Example Deployments
 
 * [Centralize cronicle logs on a local loki/graphana log aggregator](deploy/local/README.md)
-* [Distribute cronicle tasks with a Redis broker (docker-compose)](deploy/redis/README.md)
-* [Distribute cronicle tasks with nsq message broker](deploy/nsq/README.md)
+* [Daily-report agent fan-out + composer demo](deploy/daily-report/README.md)
+* Distributed mode without a broker — see "Distributed mode without a broker (`--queue self`)" below.
 
 
 ---
@@ -429,10 +429,11 @@ The `exec` command will execute a named task/schedule for a given time or date r
 cronicle exec --task bar
 ```
 
-The `worker` will start a schedule consumer when `cronicle run --queue ` is in distributed mode.
+The `worker` command runs a remote consumer that long-polls a producer started with `--queue self`.
 ```bash
-cronicle worker --queue redis
+cronicle worker --producer http://producer:8765 --producer-token "$CRONICLE_LISTEN_TOKEN"
 ```
+See "Distributed mode without a broker" below for the full setup.
 
 ---
 
@@ -477,9 +478,9 @@ curl -X POST \
 # -> 202 Accepted {"queued":"daily-report","schedule":"daily-report"}
 ```
 
-In distributed mode (`--queue redis|nsq`) the listener pushes to the
-broker, so any worker consuming the queue picks the trigger up — same
-as a cron tick.
+In distributed mode (`--queue self`) the listener writes the schedule
+to the SQLite jobs table, and any worker long-polling `/v1/jobs` picks
+it up — same as a cron tick.
 
 ---
 
@@ -596,7 +597,12 @@ How it works:
 - **Event shipping**: workers tee their slog event stream to the producer via `POST /v1/events` (JSONL, batched every 500ms or 64 events). Producer's projection reflects what the worker actually did. Events also write to the worker's local `cronicle.jsonl` for on-host audit.
 - **Two persistent connections per worker**: the rolling `GET /v1/jobs` long-poll and the slog→events shipper. Plus short-lived `POST /v1/jobs/{id}/ack` and `/heartbeat`. No SSE control channel yet (that's Phase 3, for cancel signals).
 
-For comparison: legacy `--queue redis` and `--queue nsq` still work but are scheduled for removal.
+As of v0.5, Redis and NSQ broker support has been removed. The vice transport, the
+`--queue redis|nsq` flags, and the `deploy/redis` / `deploy/nsq` docker-compose
+demos are gone. Existing configs that set `queue { type = "redis" | "nsq" }`
+will get a startup error pointing at this section. Migration is one flag flip:
+`type = "self"` on the producer + `cronicle worker --producer URL` for any
+remote consumers.
 
 ---
 
