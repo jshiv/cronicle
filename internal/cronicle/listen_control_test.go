@@ -157,6 +157,42 @@ func TestRunRetry_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRunResume_HappyPath: cancel a 3-task run after task A succeeded,
+// resume → new run has only B and C with depends rewired.
+func TestRunResume_HappyPath(t *testing.T) {
+	srv, store := controlHarness(t)
+	payload := `{"Name":"daily","RunID":"R1","Tasks":[
+		{"Name":"A","Depends":null},
+		{"Name":"B","Depends":["A"]},
+		{"Name":"C","Depends":["B"]}
+	]}`
+	_ = store.Enqueue("R1", "daily", []byte(payload))
+	_, _ = store.Claim("W_A", time.Minute)
+	apply := func(line string) {
+		ev, _ := state.DecodeEvent([]byte(line))
+		_ = store.Apply(ev)
+	}
+	apply(`{"time":"2026-05-10T12:00:00Z","entry_type":"schedule_start","run_id":"R1","schedule":"daily","tasks":["A","B","C"]}`)
+	apply(`{"time":"2026-05-10T12:00:01Z","entry_type":"shell_run","run_id":"R1","schedule":"daily","task":"A","exit":0,"duration_ms":5,"success":true}`)
+	apply(`{"time":"2026-05-10T12:00:02Z","entry_type":"shell_run","run_id":"R1","schedule":"daily","task":"B","exit":1,"duration_ms":5,"success":false,"error":"boom"}`)
+	_, _ = store.Cancel("R1")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs/R1/resume", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	srv.handleRunRoute(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("got %d, want 202; body=%s", rr.Code, rr.Body.String())
+	}
+	var res state.RetryResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(res.SkippedTasks) != 1 || res.SkippedTasks[0] != "A" {
+		t.Fatalf("expected skipped=[A], got %v", res.SkippedTasks)
+	}
+}
+
 // TestRunRetry_StillInFlight: in-flight run → 400.
 func TestRunRetry_StillInFlight(t *testing.T) {
 	srv, store := controlHarness(t)

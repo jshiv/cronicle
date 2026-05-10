@@ -470,7 +470,8 @@ set `CRONICLE_LISTEN_TOKEN` in the environment.
 | GET    | `/v1/workers`                                          | Registry: who's connected, what they ran |
 | GET    | `/v1/workers/{id}/control`                             | SSE; producer pushes cancel signals  |
 | POST   | `/v1/runs/{run_id}/cancel`                             | Stop a pending or in-flight run      |
-| POST   | `/v1/runs/{run_id}/retry`                              | Re-enqueue a terminal run with a new id |
+| POST   | `/v1/runs/{run_id}/retry`                              | Re-enqueue a terminal run from scratch |
+| POST   | `/v1/runs/{run_id}/resume`                             | Re-enqueue only the tasks that didn't succeed |
 
 Auth is bearer-token (`Authorization: Bearer <token>`). Rotate by
 restarting the process.
@@ -612,19 +613,36 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   http://localhost:8765/v1/runs/$RUN_ID/cancel
 # -> {"run_id":"...","worker_id":"ext-1","was_claimed":true,"status":"canceled"}
 
-# Re-enqueue a terminal run (succeeded or failed) with a fresh run_id.
-# Original run row stays in the projection as audit trail.
+# Re-enqueue a terminal run (succeeded or failed) FROM SCRATCH.
+# All tasks run again. Original run row stays in the projection.
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   http://localhost:8765/v1/runs/$RUN_ID/retry
 # -> {"original_run_id":"...","new_run_id":"...","schedule":"daily"}
+
+# Re-enqueue a terminal run BUT SKIP TASKS THAT ALREADY SUCCEEDED.
+# Common operator workflow: cancel a stuck run, debug/fix the issue,
+# resume from where you stopped without re-running the work that
+# already completed. depends pointing at skipped tasks are stripped
+# so the resumed DAG has correct entry points.
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/runs/$RUN_ID/resume
+# -> {"original_run_id":"...","new_run_id":"...","schedule":"daily","skipped_tasks":["A","B"]}
 ```
 
-Cancel honors are best-effort for tool calls already in flight (a bash
-command in progress runs to completion before the agent's between-turn
-check sees the cancel). For shell tasks, the per-run context is
-plumbed in but `pkg/exec.Execute`'s no-context path still finishes the
-process — preempting mid-shell needs `--log-format=pretty` streaming
-mode which uses `ExecuteWithStreamContext`. Future work.
+`/resume` uses the **stored payload** from the original run, not the
+current HCL — replay semantics, deterministic. If you need the latest
+HCL (e.g. a config-level fix), `POST /v1/schedules/{name}/trigger`
+fires a fresh run instead. Returns 400 with a clear message when every
+task in the original already succeeded (nothing left to resume).
+
+Cancel preempts shell tasks via `exec.CommandContext` + process-group
+kill (SIGTERM, escalating to SIGKILL after 2 seconds). Sub-fans like
+`bash -c "sleep 30 | cat"` die together because the child runs in its
+own pgid on unix. For agent tasks, the loop checks `ctx.Done()` between
+turns — a tool call already in flight finishes before the cancel
+takes effect, but no further turns start. Cancel arrives via SSE
+push (~ms latency); heartbeat-based 409 detection is the fallback when
+the SSE channel is down (within one heartbeat cycle, ~100s).
 
 ### Worker registry
 

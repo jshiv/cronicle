@@ -57,6 +57,8 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 		s.runCancel(w, store, runID)
 	case len(parts) == 2 && parts[1] == "retry" && r.Method == http.MethodPost:
 		s.runRetry(w, store, runID)
+	case len(parts) == 2 && parts[1] == "resume" && r.Method == http.MethodPost:
+		s.runResume(w, store, runID)
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
@@ -125,6 +127,28 @@ func (s *listenServer) runRetry(w http.ResponseWriter, store *state.Store, runID
 		"original_run_id", runID,
 		"new_run_id", newID,
 		"schedule", res.Schedule,
+	)
+	writeJSON(w, http.StatusAccepted, res)
+}
+
+// runResume re-enqueues a terminal run with only the tasks that didn't
+// succeed in the original. Intended workflow: cancel → investigate →
+// fix → resume from where it stopped. The new run's DAG is the
+// original DAG minus already-succeeded nodes, with depends stripped
+// of references to those nodes.
+func (s *listenServer) runResume(w http.ResponseWriter, store *state.Store, runID string) {
+	newID := newRunID()
+	res, err := store.Resume(runID, newID)
+	if err != nil {
+		slog.Warn("resume failed", "run_id", runID, "error", err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	slog.Info("run resumed",
+		"original_run_id", runID,
+		"new_run_id", newID,
+		"schedule", res.Schedule,
+		"skipped", res.SkippedTasks,
 	)
 	writeJSON(w, http.StatusAccepted, res)
 }

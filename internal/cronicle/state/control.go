@@ -116,13 +116,15 @@ func (s *Store) Cancel(runID string) (CancelResult, error) {
 	return res, nil
 }
 
-// RetryResult is the outcome of state.Retry: the new run_id assigned
-// to the re-enqueued job, and a copy of the schedule name for the
-// caller's convenience.
+// RetryResult is the outcome of state.Retry / state.Resume: the new
+// run_id assigned to the re-enqueued job, the schedule name, and (for
+// Resume) the list of tasks that were skipped because they had already
+// succeeded in the original run.
 type RetryResult struct {
-	OriginalRunID string `json:"original_run_id"`
-	NewRunID      string `json:"new_run_id"`
-	Schedule      string `json:"schedule"`
+	OriginalRunID string   `json:"original_run_id"`
+	NewRunID      string   `json:"new_run_id"`
+	Schedule      string   `json:"schedule"`
+	SkippedTasks  []string `json:"skipped_tasks,omitempty"`
 }
 
 // Retry re-enqueues the schedule that was originally fired as runID.
@@ -192,6 +194,168 @@ func (s *Store) Retry(runID, newRunID string) (RetryResult, error) {
 		NewRunID:      newRunID,
 		Schedule:      schedule,
 	}, nil
+}
+
+// Resume re-enqueues a terminal run with only the tasks that did NOT
+// succeed in the original. The common operator workflow this serves:
+//
+//  1. A scheduled run lights up; some early tasks succeed.
+//  2. A later task gets stuck / runs away / emits bad output.
+//  3. Operator hits POST /v1/runs/{id}/cancel — the canceled status is
+//     sticky in the projection, including per-task succeed/fail/cancel.
+//  4. Operator investigates, fixes whatever was wrong.
+//  5. Operator hits POST /v1/runs/{id}/resume — the new run skips the
+//     tasks that already succeeded and re-runs the rest.
+//
+// Implementation detail: depends pointing at skipped (succeeded)
+// tasks are stripped from the remaining tasks, so a task whose only
+// upstream had already succeeded becomes a fresh DAG entry point.
+// This matches the cancel/resume semantics most operators expect from
+// CI pipeline restarts ("re-run failed jobs only").
+//
+// Like Retry, the original run row is preserved as audit trail and a
+// fresh run_id is minted for the resumed work.
+func (s *Store) Resume(runID, newRunID string) (RetryResult, error) {
+	if runID == "" || newRunID == "" {
+		return RetryResult{}, errors.New("Resume: empty run_id or new_run_id")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var (
+		schedule string
+		payload  string
+		status   string
+	)
+	err := s.db.QueryRow(`SELECT schedule, payload, status FROM jobs WHERE run_id = ?`, runID).
+		Scan(&schedule, &payload, &status)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RetryResult{}, fmt.Errorf("Resume: run %q not in queue", runID)
+		}
+		return RetryResult{}, fmt.Errorf("Resume: read job: %w", err)
+	}
+	if status == JobPending || status == JobClaimed {
+		return RetryResult{}, fmt.Errorf("Resume: run %q is still in flight (status=%s)", runID, status)
+	}
+
+	// Walk the original run's per-task status to identify which tasks
+	// to skip. We read tasks via a direct query rather than the
+	// public GetRun helper to avoid the mutex-reentry that would cause
+	// (s.mu is held here; GetRun doesn't acquire it, but we keep
+	// reads local for clarity).
+	rows, err := s.db.Query(`SELECT name, status FROM tasks WHERE run_id = ?`, runID)
+	if err != nil {
+		return RetryResult{}, fmt.Errorf("Resume: read tasks: %w", err)
+	}
+	skipped := make(map[string]bool)
+	var skippedList []string
+	for rows.Next() {
+		var name, taskStatus string
+		if err := rows.Scan(&name, &taskStatus); err != nil {
+			rows.Close()
+			return RetryResult{}, fmt.Errorf("Resume: scan task: %w", err)
+		}
+		if taskStatus == StatusSucceeded {
+			skipped[name] = true
+			skippedList = append(skippedList, name)
+		}
+	}
+	rows.Close()
+
+	// Patch the payload: filter Tasks, strip stale depends.
+	newPayload, err := filterScheduleTasks([]byte(payload), skipped, newRunID)
+	if err != nil {
+		return RetryResult{}, err
+	}
+
+	// If every task was already succeeded, there's nothing to do —
+	// surface a 400-friendly error so the operator notices.
+	if jsonHasEmptyTasks(newPayload) {
+		return RetryResult{}, fmt.Errorf("Resume: every task in run %q already succeeded; nothing to resume", runID)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.Exec(`
+		INSERT OR IGNORE INTO jobs(run_id, schedule, payload, status, enqueued_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		newRunID, schedule, string(newPayload), JobPending, now,
+	); err != nil {
+		return RetryResult{}, fmt.Errorf("Resume: enqueue: %w", err)
+	}
+	w := s.waiters()
+	w.mu.Lock()
+	w.cond.Broadcast()
+	w.mu.Unlock()
+
+	return RetryResult{
+		OriginalRunID: runID,
+		NewRunID:      newRunID,
+		Schedule:      schedule,
+		SkippedTasks:  skippedList,
+	}, nil
+}
+
+// filterScheduleTasks decodes a serialized Schedule payload, drops the
+// tasks whose names appear in skip, also drops references to skipped
+// tasks from the remaining tasks' Depends, and patches the top-level
+// RunID. Kept here (vs. cronicle/config.go) so the state package owns
+// the queue-payload mutation logic end-to-end.
+func filterScheduleTasks(payload []byte, skip map[string]bool, newRunID string) ([]byte, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, fmt.Errorf("filterScheduleTasks: decode: %w", err)
+	}
+	raw["RunID"] = newRunID
+
+	tasksAny, _ := raw["Tasks"].([]any)
+	kept := make([]any, 0, len(tasksAny))
+	for _, t := range tasksAny {
+		tm, ok := t.(map[string]any)
+		if !ok {
+			kept = append(kept, t)
+			continue
+		}
+		name, _ := tm["Name"].(string)
+		if skip[name] {
+			continue
+		}
+		// Strip stale depends pointing at filtered-out tasks.
+		if deps, ok := tm["Depends"].([]any); ok {
+			filtered := make([]any, 0, len(deps))
+			for _, d := range deps {
+				if s, ok := d.(string); ok && skip[s] {
+					continue
+				}
+				filtered = append(filtered, d)
+			}
+			if len(filtered) == 0 {
+				tm["Depends"] = nil
+			} else {
+				tm["Depends"] = filtered
+			}
+		}
+		kept = append(kept, tm)
+	}
+	raw["Tasks"] = kept
+
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("filterScheduleTasks: encode: %w", err)
+	}
+	return out, nil
+}
+
+// jsonHasEmptyTasks returns true when the payload's Tasks array is
+// empty/null. Used by Resume to detect "nothing left to run."
+func jsonHasEmptyTasks(payload []byte) bool {
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return false
+	}
+	tasks, _ := raw["Tasks"].([]any)
+	return len(tasks) == 0
 }
 
 // ---- Control-channel registry ----------------------------------------------
