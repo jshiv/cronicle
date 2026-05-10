@@ -38,6 +38,7 @@ func (schedule Schedule) ExecuteTasks() {
 	}
 	for i := range schedule.Tasks {
 		schedule.Tasks[i].RunID = schedule.RunID
+		schedule.Tasks[i].RunCtx = schedule.RunCtx
 	}
 	taskMap = schedule.TaskMap()
 

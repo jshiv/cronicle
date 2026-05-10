@@ -106,4 +106,32 @@ CREATE INDEX IF NOT EXISTS idx_jobs_claim_expires   ON jobs(claim_expires_at)
   WHERE status = 'claimed';
 `
 
-const targetSchemaVersion = 2
+// schemaSQL_v3 adds a workers registry. Phase 3 introduces stop / retry
+// semantics, and the operator UI wants to answer "which workers are
+// alive, what are they running?" Workers are upserted on every Claim
+// and Heartbeat — last_seen is the heartbeat timestamp, current_run
+// is the claimed run_id (or empty when idle).
+//
+// Status values:
+//   active   — claimed a job, last seen within visibility window
+//   idle     — no current claim; last_seen is the most recent poll/ack
+//   stale    — last_seen older than 2× heartbeat cadence (set by janitor)
+//
+// For now we record the row but compute "stale" on read in ListWorkers
+// rather than running a janitor. Cheap to derive, and avoids yet
+// another goroutine.
+const schemaSQL_v3 = `
+CREATE TABLE IF NOT EXISTS workers (
+    worker_id    TEXT PRIMARY KEY,
+    host         TEXT NOT NULL DEFAULT '',
+    last_seen    TEXT NOT NULL,
+    current_run  TEXT NOT NULL DEFAULT '',
+    claimed_at   TEXT,
+    runs_total   INTEGER NOT NULL DEFAULT 0,
+    runs_failed  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_workers_last_seen ON workers(last_seen DESC);
+`
+
+const targetSchemaVersion = 3

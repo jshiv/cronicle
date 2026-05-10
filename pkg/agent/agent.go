@@ -196,6 +196,16 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	)
 
 	for turn := 0; turn < maxTurns; turn++ {
+		// Cancellation check between turns. Cronicle's HTTP worker
+		// passes a per-run context that's canceled when the producer
+		// signals POST /v1/runs/{id}/cancel. Without this, an agent
+		// in a multi-turn loop would happily keep racking up tokens
+		// until MaxTurns or the wallclock deadline; with it, we exit
+		// at most one turn after the cancel arrives.
+		if err := ctx.Err(); err != nil {
+			runErr = err
+			break
+		}
 		if turn > 0 && cfg.StreamHandler != nil {
 			cfg.StreamHandler(StreamEvent{Type: StreamEventTurnStart, TurnIndex: turn})
 		}

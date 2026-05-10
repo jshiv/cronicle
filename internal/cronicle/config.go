@@ -1,6 +1,7 @@
 package cronicle
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -55,6 +56,13 @@ type Schedule struct {
 	//is included in schedule_start so the projection can populate
 	//runs.source. Default empty (back-compat); ProduceSchedule fills it.
 	Source string
+	// RunCtx is the per-run cancel context used to preempt in-flight
+	// task execution when a /v1/runs/{id}/cancel signal arrives. Set
+	// by the HTTP worker before calling ExecuteTasks; nil in default
+	// in-process mode (where cancellation isn't supported because the
+	// run is foreground anyway). Excluded from JSON so the wire
+	// payload stays clean.
+	RunCtx context.Context `json:"-"`
 }
 
 // Task is the configuration structure that defines a task (i.e., a command)
@@ -75,6 +83,11 @@ type Task struct {
 	// (set in dag.go's ExecuteTasks). Threaded into per-task events so
 	// the projection groups them under the right run.
 	RunID string
+	// RunCtx is the per-run cancel context propagated from
+	// Schedule.RunCtx. The agent dispatch path uses it as parent so a
+	// /v1/runs/{id}/cancel signal preempts long multi-turn runs at the
+	// next ctx.Done() check between turns.
+	RunCtx context.Context `json:"-"`
 
 	// per-run state populated by Exec, read by Log. Unexported so they don't
 	// pollute JSON marshaling or HCL encoding.
@@ -178,16 +191,12 @@ type Retry struct {
 	Hours int `hcl:"hours,optional"`
 }
 
-// Queue declares the dispatch mode for distributed operation. Set
-// type = "self" to enable the producer-served queue (SQLite-backed
-// jobs table, workers consume via HTTP long-poll).
-//
-// As of v0.5 the only supported type is "self"; "redis" and "nsq" were
-// removed when the vice broker dependency was dropped. Empty type
-// defaults to in-process (single-binary, no remote workers).
-//
-// Addr is preserved as a no-op field for backwards-compatible HCL
-// parsing; it is unused.
+// Queue is a vestigial HCL block, kept so existing cronicle.hcl files
+// that still declare `queue { ... }` continue to parse. Its fields
+// have no effect: as of v0.5 queue mode is derived from whether the
+// HTTP listener is configured (see `cronicle run`'s --listen flag).
+// Future queue tuning (retention windows, claim visibility) may layer
+// in here, which is why we keep the block rather than reject it.
 type Queue struct {
 	Type string `hcl:"type,optional"`
 	Addr string `hcl:"addr,optional"`

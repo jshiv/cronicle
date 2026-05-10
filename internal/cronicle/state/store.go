@@ -44,11 +44,17 @@ const (
 // share the same mutex. wait/waitOnce gate the lazy initialization of
 // the long-poll wakeup primitive so single-node mode (no queue methods
 // ever called) doesn't pay for it.
+//
+// Phase 3 adds controlOnce/controlReg2 for the SSE worker control
+// channel — workers subscribe and receive cancel signals from the
+// producer. Lazy-init keeps single-node mode free of the cost.
 type Store struct {
-	db       *sql.DB
-	mu       sync.Mutex // serializes write transactions
-	waitOnce sync.Once
-	wait     *jobWaiters
+	db          *sql.DB
+	mu          sync.Mutex // serializes write transactions
+	waitOnce    sync.Once
+	wait        *jobWaiters
+	controlOnce sync.Once
+	controlReg2 *controlRegistry
 }
 
 // Open returns a Store backed by the given DSN. Use ":memory:" for an
@@ -121,6 +127,12 @@ func (s *Store) migrate() error {
 	if current < 2 {
 		if _, err := s.db.Exec(schemaSQL_v2); err != nil {
 			return fmt.Errorf("state.migrate v2: %w", err)
+		}
+	}
+	// v3: workers (registry)
+	if current < 3 {
+		if _, err := s.db.Exec(schemaSQL_v3); err != nil {
+			return fmt.Errorf("state.migrate v3: %w", err)
 		}
 	}
 	if current >= targetSchemaVersion {
@@ -294,16 +306,21 @@ func (s *Store) applyTaskTerminal(tx *sql.Tx, e Event, kind string) error {
 		cost = *e.CostUSD
 	}
 
+	// Sticky cancel: if a run was explicitly canceled (by /v1/runs/{id}/cancel),
+	// a subsequent shell_run/agent_run carrying success=false from the
+	// SIGTERM'd process shouldn't promote the status back to failed —
+	// the operator's intent is what landed first. Preserve status when
+	// the existing row is already 'canceled'.
 	_, err := tx.Exec(`
 		INSERT INTO tasks(run_id, name, status, started_at, ended_at, duration_ms, exit_code, cost_usd, error, kind)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id, name) DO UPDATE SET
-		    status = excluded.status,
+		    status = CASE WHEN tasks.status = 'canceled' THEN tasks.status ELSE excluded.status END,
 		    ended_at = excluded.ended_at,
 		    duration_ms = COALESCE(excluded.duration_ms, tasks.duration_ms),
 		    exit_code = COALESCE(excluded.exit_code, tasks.exit_code),
 		    cost_usd = excluded.cost_usd,
-		    error = excluded.error,
+		    error = CASE WHEN tasks.status = 'canceled' THEN tasks.error ELSE excluded.error END,
 		    kind = excluded.kind
 		`,
 		e.RunID, e.Task, status, ts, ts, dur, exitCode, cost, e.Error, kind,
@@ -332,13 +349,15 @@ func (s *Store) applyScheduleComplete(tx *sql.Tx, e Event) error {
 		dur = e.DurationMs
 	}
 	taskCount := e.TaskCount
+	// Sticky cancel: preserve the canceled status if cancel won the race
+	// with the post-SIGTERM schedule_complete event.
 	_, err := tx.Exec(`
 		UPDATE runs SET
-		    status = ?,
+		    status = CASE WHEN status = 'canceled' THEN status ELSE ? END,
 		    ended_at = ?,
 		    duration_ms = COALESCE(?, duration_ms),
 		    task_count = CASE WHEN ? > 0 THEN ? ELSE task_count END,
-		    error = ?
+		    error = CASE WHEN status = 'canceled' THEN error ELSE ? END
 		WHERE run_id = ?`,
 		status, ts, dur, taskCount, taskCount, e.Error, e.RunID,
 	)

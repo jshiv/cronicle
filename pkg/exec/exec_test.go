@@ -61,4 +61,28 @@ var _ = Describe("exec", func() {
 		Expect(elapsed).To(BeNumerically("<", 5*time.Second))
 		Expect(res.Error).NotTo(BeNil())
 	})
+
+	It("ExecuteContext should kill the process group when ctx is cancelled", func() {
+		// Same shape as the streaming-context test, but for the
+		// non-streaming entry point that internal/cronicle/exec.go
+		// uses by default. Validates that the shared run() path
+		// honors ctx regardless of whether stdoutW/stderrW are nil.
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		started := time.Now()
+		res := ExecuteContext(ctx, []string{"/bin/sh", "-c", "sleep 30 | sleep 30"},
+			"./", nil)
+		elapsed := time.Since(started)
+		Expect(elapsed).To(BeNumerically("<", 5*time.Second))
+		Expect(res.Error).NotTo(BeNil())
+	})
+
+	It("ExecuteContext should pass through happy-path output identically to Execute", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		res := ExecuteContext(ctx, []string{"/bin/echo", "cronicle"}, "./", nil)
+		Expect(res.Error).To(BeNil())
+		Expect(res.Stdout).To(Equal("cronicle\n"))
+		Expect(res.ExitStatus).To(Equal(0))
+	})
 })

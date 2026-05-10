@@ -154,6 +154,23 @@ func (s *Store) Claim(workerID string, visibility time.Duration) (Job, error) {
 		// "no job for us" and let the caller retry.
 		return Job{}, ErrNoJobs
 	}
+
+	// Worker registry upsert: stamp last_seen + current_run + runs_total.
+	// Same transaction as the claim so the registry is always consistent
+	// with the queue.
+	if _, err := tx.Exec(`
+		INSERT INTO workers(worker_id, last_seen, current_run, claimed_at, runs_total)
+		VALUES (?, ?, ?, ?, 1)
+		ON CONFLICT(worker_id) DO UPDATE SET
+		    last_seen = excluded.last_seen,
+		    current_run = excluded.current_run,
+		    claimed_at = excluded.claimed_at,
+		    runs_total = workers.runs_total + 1`,
+		workerID, now.Format(time.RFC3339Nano), j.RunID, now.Format(time.RFC3339Nano),
+	); err != nil {
+		return Job{}, fmt.Errorf("Claim: worker upsert: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return Job{}, fmt.Errorf("Claim: commit: %w", err)
 	}
@@ -182,7 +199,7 @@ func (s *Store) Ack(runID, workerID string, success bool, errMsg string) error {
 	// reaper has already cleared claimed_by; this UPDATE then matches
 	// nothing and we return without error — the new owner's ack will
 	// land instead.
-	_, err := s.db.Exec(`
+	res, err := s.db.Exec(`
 		UPDATE jobs SET
 		    status = ?,
 		    completed_at = ?,
@@ -193,6 +210,22 @@ func (s *Store) Ack(runID, workerID string, success bool, errMsg string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("Ack: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		// Worker registry: clear current_run, bump failed counter on
+		// failure ack.
+		failedInc := 0
+		if !success {
+			failedInc = 1
+		}
+		_, _ = s.db.Exec(`
+			UPDATE workers SET
+			    last_seen = ?,
+			    current_run = '',
+			    runs_failed = runs_failed + ?
+			WHERE worker_id = ?`,
+			now, failedInc, workerID,
+		)
 	}
 	return nil
 }
@@ -207,7 +240,8 @@ func (s *Store) Heartbeat(runID, workerID string, visibility time.Duration) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	expires := time.Now().UTC().Add(visibility).Format(time.RFC3339Nano)
+	now := time.Now().UTC()
+	expires := now.Add(visibility).Format(time.RFC3339Nano)
 	res, err := s.db.Exec(`
 		UPDATE jobs SET claim_expires_at = ?
 		WHERE run_id = ? AND claimed_by = ? AND status = ?`,
@@ -223,6 +257,11 @@ func (s *Store) Heartbeat(runID, workerID string, visibility time.Duration) erro
 		// run's status via /v1/runs/{id} if it still cares.
 		return errors.New("Heartbeat: no matching claimed job (lost ownership?)")
 	}
+	// Refresh worker registry's last_seen — the heartbeat IS the
+	// liveness signal we need on the producer side.
+	_, _ = s.db.Exec(`UPDATE workers SET last_seen = ? WHERE worker_id = ?`,
+		now.Format(time.RFC3339Nano), workerID,
+	)
 	return nil
 }
 

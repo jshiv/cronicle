@@ -1,6 +1,7 @@
 package cronicle
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -117,6 +118,11 @@ func StartHTTPWorker(ctx context.Context, opts HTTPWorkerOptions) error {
 		"poll_block", opts.PollBlock.String(),
 	)
 
+	// Control channel: a long-lived SSE connection to the producer
+	// for cancel signals. The goroutine reconnects on disconnects so
+	// transient producer restarts don't permanently disable cancel.
+	go w.controlLoop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -148,6 +154,43 @@ type httpWorker struct {
 	opts   HTTPWorkerOptions
 	client *http.Client
 	ctx    context.Context
+	// activeRuns maps run_id → cancel func of the per-run execute
+	// context. The control-channel goroutine consults this when a
+	// cancel SSE message arrives for a run we hold. Guarded by a
+	// mutex because the SSE goroutine and the execute goroutine touch
+	// it concurrently.
+	mu         sync.Mutex
+	activeRuns map[string]context.CancelFunc
+}
+
+// registerRun records that we've started executing run_id with the
+// given cancel func. Caller calls unregisterRun via defer.
+func (w *httpWorker) registerRun(runID string, cancel context.CancelFunc) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.activeRuns == nil {
+		w.activeRuns = make(map[string]context.CancelFunc)
+	}
+	w.activeRuns[runID] = cancel
+}
+
+func (w *httpWorker) unregisterRun(runID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.activeRuns, runID)
+}
+
+// cancelRun preempts an in-flight run if we hold it. Idempotent —
+// calling cancel() on a context multiple times is safe.
+func (w *httpWorker) cancelRun(runID string) bool {
+	w.mu.Lock()
+	cancel, ok := w.activeRuns[runID]
+	w.mu.Unlock()
+	if !ok {
+		return false
+	}
+	cancel()
+	return true
 }
 
 func (w *httpWorker) authHeader() string { return "Bearer " + w.opts.Token }
@@ -184,10 +227,14 @@ func (w *httpWorker) pollOnce() (state.Job, bool, error) {
 	}
 }
 
-// execute runs the job and acks it. Heartbeats while running. The
-// schedule's events stay local to the worker via slog (file + stdout
-// + memory projection); a future enhancement is to POST them back to
-// the producer via /v1/events.
+// execute runs the job and acks it. Heartbeats while running.
+//
+// Phase 3: a per-run execute context carries the cancel signal from
+// the SSE control channel. Workers register their cancel func before
+// starting the DAG walk; an inbound cancel SSE message routes through
+// w.cancelRun(runID) which calls cancel() on the matching context.
+// Shell tasks die because exec.CommandContext is bound to runCtx;
+// agent tasks check ctx.Done() between turns (see pkg/agent).
 func (w *httpWorker) execute(croniclePath string, job state.Job) {
 	slog.Info("worker claimed job",
 		"run_id", job.RunID,
@@ -195,25 +242,31 @@ func (w *httpWorker) execute(croniclePath string, job state.Job) {
 		"attempt", job.Attempt,
 	)
 
-	hbCtx, hbCancel := context.WithCancel(w.ctx)
+	runCtx, runCancel := context.WithCancel(w.ctx)
+	defer runCancel()
+	w.registerRun(job.RunID, runCancel)
+	defer w.unregisterRun(job.RunID)
+
+	hbCtx, hbCancel := context.WithCancel(runCtx)
 	defer hbCancel()
 	go w.heartbeatLoop(hbCtx, job.RunID)
 
 	var sch Schedule
 	success := true
 	errMsg := ""
+	canceled := false
 	if err := json.Unmarshal(job.Payload, &sch); err != nil {
 		slog.Error("worker: bad payload", "run_id", job.RunID, "error", err.Error())
 		success = false
 		errMsg = err.Error()
 	} else {
-		// Stamp source so the projection's runs row records "executed
-		// on a remote worker" rather than reusing whatever value the
-		// producer set. Most workers will run cron-fired or HTTP-fired
-		// schedules; we keep the producer's source if already set.
 		if sch.Source == "" {
 			sch.Source = "worker"
 		}
+		// Plumb the per-run ctx onto the schedule so its task
+		// dispatch path (shell exec.CommandContext, agent loop) can
+		// honor cancel.
+		sch.RunCtx = runCtx
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -224,9 +277,25 @@ func (w *httpWorker) execute(croniclePath string, job state.Job) {
 			sch.PropigateTaskProperties(croniclePath)
 			sch.ExecuteTasks()
 		}()
+		// If our run ctx was canceled mid-execute, mark the ack as
+		// canceled rather than failed. The projection row already
+		// reflects "canceled" from the producer's POST /cancel; this
+		// is just the queue-side record.
+		if runCtx.Err() == context.Canceled {
+			success = false
+			errMsg = "canceled"
+			canceled = true
+		}
 	}
 
 	hbCancel()
+	// Don't ack a canceled run as failed — the producer already moved
+	// the job row to canceled when it called Cancel(); a subsequent
+	// Ack(failed) would be a no-op (UPDATE with WHERE status=claimed
+	// matches nothing) but it avoids spurious projection writes.
+	if canceled {
+		return
+	}
 	if err := w.ack(job.RunID, success, errMsg); err != nil {
 		slog.Error("worker: ack failed", "run_id", job.RunID, "error", err.Error())
 	}
@@ -285,6 +354,133 @@ func (w *httpWorker) post(url string, body []byte, expectCode int) error {
 		return fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	return nil
+}
+
+// controlLoop maintains an SSE subscription to /v1/workers/{id}/control
+// for cancel signals. Reconnects on transient errors with backoff so a
+// brief producer restart doesn't permanently disable cancel.
+//
+// The loop respects w.ctx — when the worker is shutting down, the
+// SSE connection closes and we exit. Per-message handling routes to
+// the run's cancel func via w.cancelRun.
+func (w *httpWorker) controlLoop() {
+	url := strings.TrimRight(w.opts.ProducerURL, "/") +
+		"/v1/workers/" + w.opts.WorkerID + "/control"
+
+	host, _ := os.Hostname()
+	backoff := time.Second
+
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		default:
+		}
+
+		req, err := http.NewRequestWithContext(w.ctx, http.MethodGet, url, nil)
+		if err != nil {
+			// non-recoverable construction error; just exit
+			return
+		}
+		req.Header.Set("Authorization", w.authHeader())
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("X-Cronicle-Host", host)
+
+		// SSE connection has no overall timeout — long-lived by design.
+		// We use a separate client to avoid the long-poll client's
+		// 60s+30s budget bleeding into here.
+		sseClient := &http.Client{}
+		resp, err := sseClient.Do(req)
+		if err != nil {
+			if w.ctx.Err() != nil {
+				return
+			}
+			slog.Warn("control channel: connect failed; backing off",
+				"error", err.Error(), "backoff", backoff)
+			select {
+			case <-w.ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			slog.Warn("control channel: non-200; backing off",
+				"status", resp.StatusCode,
+				"body", strings.TrimSpace(string(body)),
+				"backoff", backoff)
+			select {
+			case <-w.ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			continue
+		}
+		backoff = time.Second // reset on successful connect
+		slog.Info("control channel: subscribed", "worker_id", w.opts.WorkerID)
+		w.consumeSSE(resp.Body)
+		// Connection closed (server hangup, network issue). Reconnect.
+	}
+}
+
+// consumeSSE parses the SSE stream until the body closes. Lines we
+// care about: `event: control` followed by `data: {...}` whose JSON
+// has type=cancel + run_id. Pings are noted at debug level only.
+func (w *httpWorker) consumeSSE(body io.ReadCloser) {
+	defer body.Close()
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+
+	var event string
+	for scanner.Scan() {
+		select {
+		case <-w.ctx.Done():
+			return
+		default:
+		}
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "event:"):
+			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		case strings.HasPrefix(line, "data:"):
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if event == "control" {
+				var msg state.ControlMsg
+				if err := json.Unmarshal([]byte(data), &msg); err != nil {
+					slog.Warn("control channel: bad data", "data", data)
+					continue
+				}
+				w.handleControl(msg)
+			}
+		case line == "":
+			event = "" // SSE message boundary
+		}
+	}
+}
+
+// handleControl dispatches an inbound control message to the matching
+// in-flight run. Unknown types are logged-and-dropped — forward-compat
+// with future verbs (drain, pause).
+func (w *httpWorker) handleControl(msg state.ControlMsg) {
+	switch msg.Type {
+	case "cancel":
+		if w.cancelRun(msg.RunID) {
+			slog.Info("control: canceling run", "run_id", msg.RunID)
+		} else {
+			// Cancel arrived for a run we don't hold (already finished
+			// locally, or the producer signaled the wrong worker). Benign.
+			slog.Debug("control: cancel for unknown run", "run_id", msg.RunID)
+		}
+	case "ping":
+		// no-op
+	default:
+		slog.Debug("control: unknown msg type", "type", msg.Type)
+	}
 }
 
 // defaultWorkerID returns "<hostname>-<pid>" for stable-but-unique
