@@ -3,6 +3,7 @@ package cronicle
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	homedir "github.com/mitchellh/go-homedir"
@@ -144,9 +145,15 @@ func (g *Git) Checkout(branch string, commit string) error {
 		return ErrBranchAndCommitGiven
 	}
 
-	// var branch string
-	if branch == "" {
-		branch = "master"
+	// When no branch was specified, resolve the remote's default branch
+	// from `refs/remotes/origin/HEAD` (a symbolic ref set during Clone).
+	// This picks `main` for repos where the remote default is main and
+	// `master` for older repos — no guessing or hardcoded fallback per
+	// platform convention. Fallback chain: remote HEAD → local HEAD →
+	// "main" (the GitHub default since 2020) → bare "master" only if
+	// nothing else resolves.
+	if branch == "" && commit == "" {
+		branch = g.defaultBranch()
 	}
 
 	var fetchOptions git.FetchOptions
@@ -206,4 +213,52 @@ func (g *Git) Checkout(branch string, commit string) error {
 //task.Git = Git{}
 func (task *Task) CleanGit() {
 	task.Git = Git{}
+}
+
+// defaultBranch returns the branch name to check out when neither branch
+// nor commit is specified by the user. Fallback chain:
+//
+//  1. `refs/remotes/origin/HEAD` symbolic ref — only set when go-git
+//     receives explicit info from the remote (HTTP smart protocol);
+//     skipped for local file-protocol clones.
+//  2. `main` if origin has it — modern GitHub default.
+//  3. `master` if origin has it — legacy default for older repos.
+//  4. Local HEAD's branch — covers init-without-remote setups.
+//  5. Literal "main" as a last resort, since "master" is no longer
+//     the GitHub convention.
+//
+// (2) and (3) check the remote-tracking ref so the answer reflects
+// the remote's branches, not whatever the local HEAD happens to point
+// at after a previous checkout.
+func (g *Git) defaultBranch() string {
+	if g == nil || g.Repository == nil {
+		return "main"
+	}
+
+	const remoteHEAD = "refs/remotes/origin/HEAD"
+	if ref, err := g.Repository.Reference(plumbing.ReferenceName(remoteHEAD), true); err == nil {
+		full := ref.Name().String()
+		const prefix = "refs/remotes/origin/"
+		if strings.HasPrefix(full, prefix) {
+			short := full[len(prefix):]
+			if short != "" && short != "HEAD" {
+				return short
+			}
+		}
+	}
+
+	for _, candidate := range []string{"main", "master"} {
+		if _, err := g.Repository.Reference(
+			plumbing.NewRemoteReferenceName("origin", candidate), false,
+		); err == nil {
+			return candidate
+		}
+	}
+
+	if h, err := g.Repository.Head(); err == nil {
+		if name := h.Name(); name.IsBranch() {
+			return name.Short()
+		}
+	}
+	return "main"
 }
