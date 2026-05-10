@@ -16,7 +16,7 @@ One-liner (Linux, macOS):
 curl -fsSL https://raw.githubusercontent.com/jshiv/cronicle/master/install.sh | sh
 ```
 
-Detects OS/arch, downloads the matching release artifact, installs to `/usr/local/bin` (or `$HOME/.local/bin` if `/usr/local/bin` isn't writable). Pin a version with `CRONICLE_VERSION=v0.4.0` or override the path with `CRONICLE_INSTALL_DIR=$HOME/.local/bin`.
+Detects OS/arch, downloads the matching release artifact, installs to `/usr/local/bin` (or `$HOME/.local/bin` if `/usr/local/bin` isn't writable). Pin a version with `CRONICLE_VERSION=v0.5.0` or override the path with `CRONICLE_INSTALL_DIR=$HOME/.local/bin`.
 
 Manual install: download the matching tarball from the [releases page](https://github.com/jshiv/cronicle/releases/latest) and place the `cronicle` binary on your `PATH`.
 
