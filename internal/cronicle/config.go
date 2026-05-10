@@ -100,6 +100,13 @@ type Agent struct {
 	// the body loads on demand via the load_skill tool (progressive
 	// disclosure, per the standard).
 	Skills []string `hcl:"skills,optional"`
+	// MCPs lists Model Context Protocol servers to spawn for this agent
+	// run. Each server is launched as a subprocess; cronicle speaks
+	// JSON-RPC over its stdin/stdout, lists its tools, and registers
+	// them with the agent (namespaced as `<server-name>__<tool-name>` so
+	// names from different servers don't collide). Servers shut down
+	// when the run ends.
+	MCPs []MCP `hcl:"mcp,block"`
 	// MaxTurns is the hard cap on agent loop iterations. 0 means default
 	// (1 if no tools, 30 otherwise).
 	MaxTurns int `hcl:"max_turns,optional"`
@@ -107,6 +114,23 @@ type Agent struct {
 	// on the entire run. Empty means default ("10m"). Parsed via
 	// time.ParseDuration.
 	Wallclock string `hcl:"wallclock,optional"`
+}
+
+// MCP is a Model Context Protocol server definition. Cronicle launches the
+// command as a subprocess and speaks JSON-RPC over its stdin/stdout to
+// discover and invoke tools. Each MCP block on an agent contributes its
+// tools to the agent's tool universe, namespaced by the block label
+// (e.g. `mcp "github" {...}` exposes tools as `github__create_issue`).
+type MCP struct {
+	// Name labels this server in the namespace. Tools from this server
+	// appear to the model as `<Name>__<tool-name>`.
+	Name string `hcl:"name,label"`
+	// Command is the argv used to spawn the server. The first element is
+	// the executable, the rest are arguments. Required and non-empty.
+	Command []string `hcl:"command"`
+	// Env is the list of env-var names to forward from cronicle's process
+	// to the server (e.g. ["GITHUB_TOKEN"]). Empty inherits nothing.
+	Env []string `hcl:"env,optional"`
 }
 
 // Repo is the structure that defines a git repository
@@ -213,6 +237,20 @@ func (task *Task) Validate() error {
 				return fmt.Errorf("agent skill path %q escapes task workspace", sp)
 			}
 		}
+		// MCP servers: each block needs a non-empty name and command. The
+		// name has to be a valid tool-name component since we namespace
+		// tools as `<name>__<tool>` and Anthropic enforces ^[a-zA-Z0-9_-]{1,128}$.
+		for i, m := range task.Agent.MCPs {
+			if m.Name == "" {
+				return fmt.Errorf("agent mcp[%d]: name (block label) is required", i)
+			}
+			if !isValidToolNamePart(m.Name) {
+				return fmt.Errorf("agent mcp %q: name must match ^[a-zA-Z0-9_-]+$", m.Name)
+			}
+			if len(m.Command) == 0 {
+				return fmt.Errorf("agent mcp %q: command is required", m.Name)
+			}
+		}
 		if task.Agent.MaxTurns < 0 {
 			return errors.New("agent max_turns must be >= 0")
 		}
@@ -224,6 +262,26 @@ func (task *Task) Validate() error {
 	}
 
 	return nil
+}
+
+// isValidToolNamePart reports whether s is a legal MCP server label. Used
+// to namespace MCP tools as `<server>__<tool>` — Anthropic's tool name
+// regex is ^[a-zA-Z0-9_-]{1,128}$ and we want the prefix to fit cleanly.
+func isValidToolNamePart(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // knownAgentTool reports whether name is a recognized Anthropic-defined tool
