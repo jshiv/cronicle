@@ -85,12 +85,12 @@ func TestResolveInWorkspace(t *testing.T) {
 	}
 }
 
-// defaultAgentToolNames is local-only by default (bash + text_editor).
+// defaultAgentToolNames is local-only by default (bash + text_editor + git).
 // web_search / web_fetch bill per call and are opt-in — adding them by
 // default would surprise unattended cron jobs.
 func TestDefaultAgentToolNamesContents(t *testing.T) {
 	names := defaultAgentToolNames()
-	want := map[string]bool{"bash": true, "text_editor": true}
+	want := map[string]bool{"bash": true, "text_editor": true, "git": true}
 	if len(names) != len(want) {
 		t.Fatalf("default tools count: got %d, want %d (%v)", len(names), len(want), names)
 	}
@@ -104,15 +104,15 @@ func TestDefaultAgentToolNamesContents(t *testing.T) {
 // buildAgentTools defaults to the native universe when names is empty.
 // Empty list and nil should both expand. Explicit list narrows.
 func TestBuildAgentTools(t *testing.T) {
-	tools := buildAgentTools(nil, t.TempDir(), nil, nil)
+	tools := buildAgentTools(nil, t.TempDir(), nil, nil, nil)
 	if len(tools) != len(defaultAgentToolNames()) {
 		t.Fatalf("nil tools: got %d, want %d", len(tools), len(defaultAgentToolNames()))
 	}
-	tools = buildAgentTools([]string{}, t.TempDir(), nil, nil)
+	tools = buildAgentTools([]string{}, t.TempDir(), nil, nil, nil)
 	if len(tools) != len(defaultAgentToolNames()) {
 		t.Fatalf("empty slice tools: got %d, want %d", len(tools), len(defaultAgentToolNames()))
 	}
-	tools = buildAgentTools([]string{"bash"}, t.TempDir(), nil, nil)
+	tools = buildAgentTools([]string{"bash"}, t.TempDir(), nil, nil, nil)
 	if len(tools) != 1 {
 		t.Fatalf("explicit narrow: got %d tools, want 1", len(tools))
 	}

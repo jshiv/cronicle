@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/jshiv/cronicle/pkg/agent"
 	"github.com/jshiv/cronicle/pkg/exec"
 	"gopkg.in/matryer/try.v1"
@@ -183,7 +184,16 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	if streaming {
 		toolWriter = sw
 	}
-	cfg.Tools = buildAgentTools(task.Agent.Tools, task.Path, task.Env, toolWriter)
+	// git tool reuses the task's repo auth so push works against the same
+	// remote the clone came from. Errors here are non-fatal — read-only
+	// git operations (status, log, diff) work without auth.
+	var gitAuth transport.AuthMethod
+	if task.Repo != nil {
+		if a, err := task.Repo.Auth(); err == nil {
+			gitAuth = a
+		}
+	}
+	cfg.Tools = buildAgentTools(task.Agent.Tools, task.Path, task.Env, gitAuth, toolWriter)
 	if skillTool != nil {
 		cfg.Tools = append(cfg.Tools, skillTool)
 	}
