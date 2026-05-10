@@ -250,6 +250,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 
 	attrs := []slog.Attr{
 		slog.String("entry_type", streamingEntryType),
+		slog.String("run_id", task.RunID),
 		slog.String("schedule", task.ScheduleName),
 		slog.String("task", task.Name),
 		slog.String("model", res.Model),
@@ -333,6 +334,7 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 
 		slog.Info("task started",
 			"entry_type", "task_start",
+			"run_id", task.RunID,
 			"schedule", task.ScheduleName,
 			"task", task.Name,
 			"attempt", attempt,
@@ -384,6 +386,7 @@ func (task *Task) Log(res exec.Result) {
 
 	args := []any{
 		"entry_type", entryType,
+		"run_id", task.RunID,
 		"schedule", task.ScheduleName,
 		"task", task.Name,
 		"path", task.Path,

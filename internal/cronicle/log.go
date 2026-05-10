@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/jshiv/cronicle/internal/cronicle/state"
 	"github.com/jshiv/cronicle/pkg/agent"
 	"github.com/mattn/go-isatty"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -139,6 +140,46 @@ var FileLoggingEnabled bool
 // CroniclePath is the directory under which on-disk artifacts (.cronicle/log,
 // .cronicle/runs) are rooted. Set by EnableFileLog.
 var CroniclePath string
+
+// stateStore is the process-wide projection store. nil when disabled
+// (tests, exec without state). Read by the listener / API endpoints.
+// Set by EnableStateStore; closed by CloseStateStore at shutdown.
+var stateStore *state.Store
+
+// StateStore returns the process-wide state.Store, or nil if not enabled.
+// Listener handlers and tests use this to issue queries.
+func StateStore() *state.Store { return stateStore }
+
+// EnableStateStore opens the projection store at dsn (":memory:" or a
+// filesystem path), wires its slog Sink into the default handler chain,
+// and stashes the handle for retrieval via StateStore. Idempotent — a
+// second call closes the prior store and replaces it.
+func EnableStateStore(dsn string) error {
+	if stateStore != nil {
+		_ = stateStore.Close()
+		stateStore = nil
+	}
+	s, err := state.Open(dsn)
+	if err != nil {
+		return err
+	}
+	stateStore = s
+	current := slog.Default().Handler()
+	sink := state.NewSink(s)
+	slog.SetDefault(slog.New(&multiHandler{handlers: []slog.Handler{current, sink}}))
+	return nil
+}
+
+// CloseStateStore tears down the projection store. Safe to call when
+// none was ever opened.
+func CloseStateStore() error {
+	if stateStore == nil {
+		return nil
+	}
+	err := stateStore.Close()
+	stateStore = nil
+	return err
+}
 
 // EnableFileLog composes the current default handler with a JSON-mirroring
 // handler that writes to .cronicle/log/cronicle.jsonl, rotated by lumberjack.

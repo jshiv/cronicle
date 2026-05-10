@@ -46,6 +46,15 @@ type Schedule struct {
 	Now time.Time
 	//repo given at the config level, will be overridden by repo given at schedule or task level.
 	CronicleRepo *Repo
+	//RunID is a per-trigger ULID that threads through every event emitted
+	//for this fire of the schedule. Set by ProduceSchedule (cron tick),
+	//the listener's trigger handler (HTTP), and ExecTasks (one-shot exec).
+	//Used by the state plane projection to group events into a single run.
+	RunID string
+	//Source records why this fire happened — "cron", "http", "exec" — and
+	//is included in schedule_start so the projection can populate
+	//runs.source. Default empty (back-compat); ProduceSchedule fills it.
+	Source string
 }
 
 // Task is the configuration structure that defines a task (i.e., a command)
@@ -62,6 +71,10 @@ type Task struct {
 	CroniclePath string
 	Git          Git
 	ScheduleName string
+	// RunID is propagated from the parent Schedule at execution time
+	// (set in dag.go's ExecuteTasks). Threaded into per-task events so
+	// the projection groups them under the right run.
+	RunID string
 
 	// per-run state populated by Exec, read by Log. Unexported so they don't
 	// pollute JSON marshaling or HCL encoding.

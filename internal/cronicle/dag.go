@@ -26,10 +26,25 @@ func (schedule Schedule) ExecuteTasks() {
 		taskNames = append(taskNames, task.Name)
 	}
 
+	// Ensure tasks know their parent run id so per-task events carry it.
+	// Producers (ProduceSchedule, listener trigger handlers, ExecTasks) set
+	// schedule.RunID before reaching here; if a caller didn't, mint one
+	// now so the projection still gets a coherent grouping rather than
+	// silently dropping events.
+	if schedule.RunID == "" {
+		schedule.RunID = newRunID()
+	}
+	for i := range schedule.Tasks {
+		schedule.Tasks[i].RunID = schedule.RunID
+	}
+	taskMap = schedule.TaskMap()
+
 	startedAt := time.Now()
 	slog.Info("schedule started",
 		"entry_type", "schedule_start",
+		"run_id", schedule.RunID,
 		"schedule", schedule.Name,
+		"source", schedule.Source,
 		"clock", now.Format(time.Kitchen),
 		"date", now.Format(time.RFC850),
 		"tasks", taskNames,
@@ -46,6 +61,7 @@ func (schedule Schedule) ExecuteTasks() {
 	if walkErr != nil {
 		slog.Error("schedule failed",
 			"entry_type", "schedule_complete",
+			"run_id", schedule.RunID,
 			"schedule", schedule.Name,
 			"task_count", len(schedule.Tasks),
 			"duration_ms", durationMs,
@@ -55,6 +71,7 @@ func (schedule Schedule) ExecuteTasks() {
 	} else {
 		slog.Info("schedule complete",
 			"entry_type", "schedule_complete",
+			"run_id", schedule.RunID,
 			"schedule", schedule.Name,
 			"task_count", len(schedule.Tasks),
 			"duration_ms", durationMs,
