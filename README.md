@@ -10,13 +10,15 @@ Shell tasks still work the way they always did. Agent tasks share the same sched
 
 ## Install
 
-Linux
+One-liner (Linux, macOS):
+
 ```bash
-wget -c https://github.com/jshiv/cronicle/releases/download/v0.3.8/cronicle_0.3.8_Linux_x86_64.tar.gz -O - | tar -xz
-sudo mv cronicle /usr/local/bin/cronicle
+curl -fsSL https://raw.githubusercontent.com/jshiv/cronicle/master/install.sh | sh
 ```
 
-Mac/Windows download from the [releases page.](https://github.com/jshiv/cronicle/releases/latest)
+Detects OS/arch, downloads the matching release artifact, installs to `/usr/local/bin` (or `$HOME/.local/bin` if `/usr/local/bin` isn't writable). Pin a version with `CRONICLE_VERSION=v0.4.0` or override the path with `CRONICLE_INSTALL_DIR=$HOME/.local/bin`.
+
+Manual install: download the matching tarball from the [releases page](https://github.com/jshiv/cronicle/releases/latest) and place the `cronicle` binary on your `PATH`.
 
 ## Quick start
 ```bash
