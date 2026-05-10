@@ -33,6 +33,12 @@ func (task *Task) Exec(t time.Time) exec.Result {
 		"${datetime}", t.Format(TimeArgumentFormatMap["${datetime}"]),
 		"${timestamp}", t.Format(TimeArgumentFormatMap["${timestamp}"]),
 		"${path}", task.Path,
+		// ${scratch} is the schedule-scoped shared dir tasks use to pass
+		// artifacts to downstream tasks (set by Schedule.ExecuteTasks).
+		// Empty string when the schedule wasn't routed through ExecuteTasks
+		// (e.g. one-off `cronicle exec`) — the substitution leaves the
+		// literal in place, which is loud enough to debug.
+		"${scratch}", task.ScratchDir,
 	)
 
 	if task.Agent != nil {
@@ -193,7 +199,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 			gitAuth = a
 		}
 	}
-	cfg.Tools = buildAgentTools(task.Agent.Tools, task.Path, task.Env, gitAuth, toolWriter)
+	cfg.Tools = buildAgentTools(task.Agent.Tools, task.Path, task.Env, gitAuth, task.ScratchDir, toolWriter)
 	if skillTool != nil {
 		cfg.Tools = append(cfg.Tools, skillTool)
 	}

@@ -384,6 +384,15 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 		taskMap := schedule.TaskMap()
 		if taskName != "" {
 			if task, ok := taskMap[taskName]; ok {
+				// Set the schedule-scoped scratch dir so single-task
+				// `cronicle exec --task X` produces the same ${scratch}
+				// artifacts as a full schedule run. The dir is created
+				// best-effort; ${scratch} substitution silently no-ops on
+				// failure.
+				if scratch := schedule.scratchDirFor(nowInLoc); scratch != "" {
+					_ = os.MkdirAll(scratch, 0o755)
+					task.ScratchDir = scratch
+				}
 				task.Execute(nowInLoc)
 			}
 		} else {

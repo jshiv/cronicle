@@ -3,6 +3,8 @@ package cronicle
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -39,8 +41,24 @@ func (schedule Schedule) ExecuteTasks() {
 	}
 	taskMap = schedule.TaskMap()
 
+	// Schedule-scoped scratch dir: a single dir per schedule run, shared by
+	// every task within it via task.ScratchDir (substituted into prompts as
+	// ${scratch}). The cronicle-native pattern for cross-task context: an
+	// upstream task writes a file, a downstream task reads it. Survives the
+	// run so transcripts and post-hoc audits can reference produced
+	// artifacts. Created best-effort — if mkdir fails, tasks just see an
+	// empty ScratchDir and ${scratch} substitution is a no-op.
+	scratchDir := schedule.scratchDirFor(now)
+	if scratchDir != "" {
+		_ = os.MkdirAll(scratchDir, 0o755)
+		for name, t := range taskMap {
+			t.ScratchDir = scratchDir
+			taskMap[name] = t
+		}
+	}
+
 	startedAt := time.Now()
-	slog.Info("schedule started",
+	startAttrs := []any{
 		"entry_type", "schedule_start",
 		"run_id", schedule.RunID,
 		"schedule", schedule.Name,
@@ -49,7 +67,11 @@ func (schedule Schedule) ExecuteTasks() {
 		"date", now.Format(time.RFC850),
 		"tasks", taskNames,
 		"dag", dagString(deps),
-	)
+	}
+	if scratchDir != "" {
+		startAttrs = append(startAttrs, "scratch", scratchDir)
+	}
+	slog.Info("schedule started", startAttrs...)
 
 	walkErr := walkDAG(deps, func(name string) error {
 		task := taskMap[name]
@@ -133,6 +155,24 @@ func walkDAG(deps map[string][]string, fn func(string) error) error {
 	}
 
 	return firstErr
+}
+
+// scratchDirFor computes the absolute scratch dir for one schedule run.
+// Lives under <croniclePath>/.cronicle/scratch/<schedule>/<utc-runid>/ so
+// concurrent runs of the same schedule don't collide and each run is
+// addressable by timestamp. Returns "" if the schedule has no tasks (no
+// croniclePath to resolve), in which case dag.go skips the mkdir and
+// ${scratch} substitution becomes a no-op.
+func (schedule *Schedule) scratchDirFor(now time.Time) string {
+	if len(schedule.Tasks) == 0 {
+		return ""
+	}
+	croniclePath := schedule.Tasks[0].CroniclePath
+	if croniclePath == "" {
+		return ""
+	}
+	runID := now.UTC().Format("20060102T150405Z")
+	return filepath.Join(croniclePath, ".cronicle", "scratch", schedule.Name, runID)
 }
 
 // dagString produces a human-readable representation of the DAG for logging.
