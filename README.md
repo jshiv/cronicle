@@ -462,6 +462,7 @@ set `CRONICLE_LISTEN_TOKEN` in the environment.
 | POST   | `/v1/schedules/{name}/tasks/{task}/trigger`            | Fire one task (depends stripped)     |
 | GET    | `/v1/runs`                                             | List recent runs (filterable)        |
 | GET    | `/v1/runs/{run_id}`                                    | Single run + per-task detail         |
+| POST   | `/v1/events`                                           | JSONL ingest (batched events)        |
 
 Auth is bearer-token (`Authorization: Bearer <token>`). Rotate by
 restarting the process.
@@ -528,6 +529,36 @@ Response shape (list):
 `cronicle exec` uses an in-memory projection (the run is foreground, you
 are watching it; nothing later queries the DB). `cronicle run` opens
 `.cronicle/state.db` in WAL mode and persists across restarts.
+
+### Posting events directly (POST /v1/events)
+
+External producers — distributed workers (Phase 2 onwards), debug
+shippers, integration tests — can write events into the projection
+directly. Body is JSONL (one event per line, same shape as
+`cronicle.jsonl` on disk):
+
+```bash
+# Replay the local log file into a remote producer:
+tail -F .cronicle/log/cronicle.jsonl | \
+  curl -s -X POST \
+    -H "Authorization: Bearer $TOKEN" \
+    --data-binary @- \
+    http://producer.internal:8765/v1/events
+
+# Or post a one-off batch:
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  --data-binary @batch.jsonl \
+  http://localhost:8765/v1/events
+# -> {"accepted":4,"dropped":0}
+```
+
+Lines that don't parse, or that lack `entry_type` / `run_id`, are counted
+as `dropped` but the rest still apply (the projection is happy to ignore
+unknown fields, so the JSONL log format is the only contract). Body
+limit is 16 MiB per request; oversized bodies return 413. The endpoint
+is idempotent at the row level — re-POSTing the same events updates
+the same projection rows monotonically.
 
 ---
 
