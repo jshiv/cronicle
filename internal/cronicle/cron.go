@@ -58,11 +58,6 @@ func Run(cronicleFile string, runOptions RunOptions) {
 		slog.Warn("state store open failed; projection disabled", "error", err.Error())
 	}
 
-	if runOptions.QueueType == "" {
-		if conf.Queue != nil {
-			runOptions.QueueType = conf.Queue.Type
-		}
-	}
 	//TODO: WaitGroup is currently only used for testing, could be used in Producer
 	var wg sync.WaitGroup
 	wg.Add(1) //Ensure WaitGroup counter > 0
@@ -70,27 +65,16 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	// cron tick. The listener (if enabled) writes to it for remote-trigger
 	// fires, so triggered and cron-fired runs are identical from the
 	// consumer's perspective — same JSON, same DAG walk, same logs.
+	//
+	// Queue mode is derived, not flagged: when the HTTP listener is
+	// configured (`--listen + --listen-token`), the producer runs the
+	// SQLite-backed jobs queue so remote workers can long-poll /v1/jobs
+	// AND so cancel/retry/resume can persist payloads. When the listener
+	// is off, it's a single-process operation — in-memory chan, in-process
+	// consumer. Same operator intent: "if I'm exposing HTTP, I need
+	// durable queueing; if I'm not, I don't."
 	var triggerQueue chan<- []byte
-	switch runOptions.QueueType {
-	case "":
-		// Single-process default: cron + trigger push to an in-memory
-		// channel that the in-process consumer drains. Cheap, simple,
-		// no disk write per fire. The right shape for foreground demos
-		// and `cronicle exec`-style usage where the producer and worker
-		// are the same process anyway.
-		queue := make(chan []byte)
-		triggerQueue = queue
-		go StartCron(cronicleFileAbs, queue)
-		go ConsumeSchedule(queue, croniclePath, &wg)
-	case "self":
-		// Producer-served queue. cron tick + listener trigger write
-		// through to the SQLite jobs table; the in-process self-worker
-		// claims them. External workers (cronicle worker --producer URL)
-		// can claim from the same store via long-poll over HTTP — the
-		// distributed-mode replacement for Redis/NSQ.
-		if stateStore == nil {
-			Fatal("--queue self requires the state store; check that .cronicle/ is writable")
-		}
+	if runOptions.ListenAddr != "" && runOptions.ListenToken != "" && stateStore != nil {
 		enqueueChan := make(chan []byte, 64)
 		triggerQueue = enqueueChan
 		go enqueueAdapter(enqueueChan, stateStore)
@@ -99,8 +83,11 @@ func Run(cronicleFile string, runOptions RunOptions) {
 			go selfWorker(stateStore, croniclePath, &wg)
 		}
 		go reaperLoop(stateStore)
-	default:
-		Fatal(fmt.Sprintf("unsupported --queue %q (only 'self' or empty are supported; redis/nsq were removed in v0.5)", runOptions.QueueType))
+	} else {
+		queue := make(chan []byte)
+		triggerQueue = queue
+		go StartCron(cronicleFileAbs, queue)
+		go ConsumeSchedule(queue, croniclePath, &wg)
 	}
 
 	startListener(runOptions.ListenAddr, runOptions.ListenToken, triggerQueue)
@@ -109,16 +96,18 @@ func Run(cronicleFile string, runOptions RunOptions) {
 
 }
 
-// RunOptions controls cronicle run's process-level behavior.
+// RunOptions controls cronicle run's process-level behavior. Queue mode
+// is no longer a knob: it's derived from ListenAddr/ListenToken — when
+// the HTTP listener is configured, the producer runs the SQLite-backed
+// jobs queue so workers can long-poll /v1/jobs and cancel/retry/resume
+// have a payload to replay. Otherwise it's an in-memory chan in a
+// single process.
 type RunOptions struct {
 	// RunWorker controls whether the in-process consumer runs alongside
-	// the producer. With --queue self this is the self-worker; with the
-	// default (empty) queue it's the chan-based ConsumeSchedule. Set to
-	// false on dedicated producers so external workers do all execution.
+	// the producer. With listener mode it's the self-worker; without
+	// listener it's the chan-based ConsumeSchedule. Set to false on
+	// dedicated producers so external workers do all execution.
 	RunWorker bool
-	// QueueType selects the dispatch shape: "" (in-memory) or "self"
-	// (SQLite-backed; supports remote workers over HTTP).
-	QueueType string
 	// LogToFile mirrors structured logs to .cronicle/log/cronicle.jsonl
 	// rotated by lumberjack. Independent of stdout.
 	LogToFile bool

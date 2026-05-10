@@ -40,7 +40,6 @@ The run command will log schedule information to stdout including git commit inf
 		path, _ := cmd.Flags().GetString("path")
 
 		runWorker, _ := cmd.Flags().GetBool("worker")
-		queueType, _ := cmd.Flags().GetString("queue")
 		cron, _ := cmd.Flags().GetString("cron")
 		command, _ := cmd.Flags().GetString("command")
 		logToFile, _ := cmd.Flags().GetBool("log-to-file")
@@ -52,7 +51,6 @@ The run command will log schedule information to stdout including git commit inf
 
 		runOptions := cronicle.RunOptions{
 			RunWorker:   runWorker,
-			QueueType:   queueType,
 			LogToFile:   logToFile,
 			ListenAddr:  listenAddr,
 			ListenToken: listenToken,
@@ -76,13 +74,6 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	runCmd.Flags().String("path", "./cronicle.hcl", "Path to a cronicle.hcl file")
 	runCmd.Flags().Bool("worker", true, "start a worker thread to consume tasks in distributed mode")
-	queueDesc := `
-	queue mode for schedule dispatch.
-	Options:
-		(empty) — single-process: in-memory channel, in-process consumer (default)
-		self    — SQLite-backed queue; supports remote workers over HTTP long-poll
-	`
-	runCmd.Flags().String("queue", "", queueDesc)
 	runCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
 	runCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")
 	runCmd.Flags().Bool("log-to-file", false, "mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); stdout is unaffected and remains controlled by --log-format")

@@ -95,7 +95,7 @@ When `--log-to-file` is on, each task execution also writes a per-run JSONL tran
 
 * [Centralize cronicle logs on a local loki/graphana log aggregator](deploy/local/README.md)
 * [Daily-report agent fan-out + composer demo](deploy/daily-report/README.md)
-* Distributed mode without a broker — see "Distributed mode without a broker (`--queue self`)" below.
+* Distributed mode without a broker — see "Distributed mode" below.
 
 
 ---
@@ -429,7 +429,7 @@ The `exec` command will execute a named task/schedule for a given time or date r
 cronicle exec --task bar
 ```
 
-The `worker` command runs a remote consumer that long-polls a producer started with `--queue self`.
+The `worker` command runs a remote consumer that long-polls a producer started with `--listen + --listen-token`.
 ```bash
 cronicle worker --producer http://producer:8765 --producer-token "$CRONICLE_LISTEN_TOKEN"
 ```
@@ -483,9 +483,9 @@ curl -X POST \
 # -> 202 Accepted {"queued":"daily-report","schedule":"daily-report"}
 ```
 
-In distributed mode (`--queue self`) the listener writes the schedule
-to the SQLite jobs table, and any worker long-polling `/v1/jobs` picks
-it up — same as a cron tick.
+In distributed mode (when the listener is up), the producer writes the
+schedule to the SQLite jobs table, and any worker long-polling
+`/v1/jobs` picks it up — same as a cron tick.
 
 ---
 
@@ -571,20 +571,30 @@ the same projection rows monotonically.
 
 ---
 
-## Distributed mode without a broker (`--queue self`)
+## Distributed mode
 
-Run `cronicle run --queue self` and the producer becomes its own queue.
-Cron-tick fires + HTTP triggers enqueue into the SQLite jobs table at
-`<cronicle-path>/.cronicle/state.db`. Workers — local goroutines or
-remote `cronicle worker` processes — claim jobs over HTTP long-poll,
-execute, ship events back, and ack. No Redis, no NSQ, no Sentinel.
+There's no `--queue` flag. Queue mode is derived from whether the
+HTTP listener is up:
+
+- **`cronicle run`** alone → in-memory channel queue, single-process
+  loop. Cron + trigger push through a Go channel that the in-process
+  consumer drains. The state-plane projection (`runs`, `tasks`,
+  `events` tables) is still on disk at `.cronicle/state.db`, but the
+  jobs table is unused. Right shape for foreground demos.
+- **`cronicle run --listen :PORT --listen-token TOKEN`** → SQLite
+  jobs table queue + listener API. Cron + triggers enqueue durably.
+  Local goroutines OR remote `cronicle worker` processes claim over
+  HTTP long-poll, execute, ship events back, ack. Cancel / retry /
+  resume work because payloads persist.
+
+The intuition: exposing HTTP signals "I want remote control + remote
+workers." Both need the durable queue; one flag answers both.
 
 ```bash
-# Producer: state plane + queue + listener, in-process worker disabled
+# Producer: listener on, in-process worker disabled — pure dispatcher
 cronicle run \
   --path cronicle.hcl \
   --listen :8765 --listen-token "$TOKEN" \
-  --queue self \
   --worker=false
 
 # Remote worker: long-polls /v1/jobs, executes, posts events back
@@ -670,12 +680,12 @@ on first claim AND on SSE control-channel connect; a `stale` worker
 might have hard-died, in which case the visibility-timeout reaper
 recovers their in-flight job within 5 minutes.
 
-As of v0.5, Redis and NSQ broker support has been removed. The vice transport, the
-`--queue redis|nsq` flags, and the `deploy/redis` / `deploy/nsq` docker-compose
-demos are gone. Existing configs that set `queue { type = "redis" | "nsq" }`
-will get a startup error pointing at this section. Migration is one flag flip:
-`type = "self"` on the producer + `cronicle worker --producer URL` for any
-remote consumers.
+As of v0.5, Redis and NSQ broker support has been removed. The vice
+transport, the `--queue redis|nsq` flags, and the `deploy/redis` /
+`deploy/nsq` docker-compose demos are gone. The `--queue` flag itself
+was also dropped — queue mode is now derived from `--listen` presence
+(see above). The `queue { ... }` HCL block is parsed for back-compat
+but its fields have no effect.
 
 ---
 
