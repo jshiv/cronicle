@@ -463,6 +463,9 @@ set `CRONICLE_LISTEN_TOKEN` in the environment.
 | GET    | `/v1/runs`                                             | List recent runs (filterable)        |
 | GET    | `/v1/runs/{run_id}`                                    | Single run + per-task detail         |
 | POST   | `/v1/events`                                           | JSONL ingest (batched events)        |
+| GET    | `/v1/jobs?worker=&block=`                              | Long-poll job claim                  |
+| POST   | `/v1/jobs/{run_id}/ack`                                | Worker reports completion            |
+| POST   | `/v1/jobs/{run_id}/heartbeat`                          | Visibility-timeout renewal           |
 
 Auth is bearer-token (`Authorization: Bearer <token>`). Rotate by
 restarting the process.
@@ -559,6 +562,41 @@ unknown fields, so the JSONL log format is the only contract). Body
 limit is 16 MiB per request; oversized bodies return 413. The endpoint
 is idempotent at the row level — re-POSTing the same events updates
 the same projection rows monotonically.
+
+---
+
+## Distributed mode without a broker (`--queue self`)
+
+Run `cronicle run --queue self` and the producer becomes its own queue.
+Cron-tick fires + HTTP triggers enqueue into the SQLite jobs table at
+`<cronicle-path>/.cronicle/state.db`. Workers — local goroutines or
+remote `cronicle worker` processes — claim jobs over HTTP long-poll,
+execute, ship events back, and ack. No Redis, no NSQ, no Sentinel.
+
+```bash
+# Producer: state plane + queue + listener, in-process worker disabled
+cronicle run \
+  --path cronicle.hcl \
+  --listen :8765 --listen-token "$TOKEN" \
+  --queue self \
+  --worker=false
+
+# Remote worker: long-polls /v1/jobs, executes, posts events back
+cronicle worker \
+  --path /local/repo \
+  --producer http://producer:8765 \
+  --producer-token "$TOKEN" \
+  --worker-id node-1
+```
+
+How it works:
+
+- **Atomic claim**: `BEGIN IMMEDIATE; UPDATE jobs SET status='claimed', claimed_by=? WHERE id=? AND status='pending'`. SQLite WAL serializes writers, so two concurrent workers cannot both acquire the same row. The losing worker's long-poll sees no row and reconnects.
+- **Visibility timeout**: claimed jobs expire after 5 minutes. A janitor goroutine sweeps every 10 seconds, moving expired claims back to `pending`. A worker dies → its job is re-dispatched. Long agent runs `POST /v1/jobs/{id}/heartbeat` to extend the deadline.
+- **Event shipping**: workers tee their slog event stream to the producer via `POST /v1/events` (JSONL, batched every 500ms or 64 events). Producer's projection reflects what the worker actually did. Events also write to the worker's local `cronicle.jsonl` for on-host audit.
+- **Two persistent connections per worker**: the rolling `GET /v1/jobs` long-poll and the slog→events shipper. Plus short-lived `POST /v1/jobs/{id}/ack` and `/heartbeat`. No SSE control channel yet (that's Phase 3, for cancel signals).
+
+For comparison: legacy `--queue redis` and `--queue nsq` still work but are scheduled for removal.
 
 ---
 

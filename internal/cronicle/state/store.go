@@ -39,9 +39,16 @@ const (
 // Store is the projection store. Concurrent-safe — internal mutex
 // serializes Apply() so out-of-order events (e.g. a shell_run racing
 // schedule_complete on a fast task) don't interleave their UPDATEs.
+//
+// Phase 2b adds queue methods (Enqueue/Claim/Ack/Heartbeat/Reap) that
+// share the same mutex. wait/waitOnce gate the lazy initialization of
+// the long-poll wakeup primitive so single-node mode (no queue methods
+// ever called) doesn't pay for it.
 type Store struct {
-	db *sql.DB
-	mu sync.Mutex // serializes write transactions
+	db       *sql.DB
+	mu       sync.Mutex // serializes write transactions
+	waitOnce sync.Once
+	wait     *jobWaiters
 }
 
 // Open returns a Store backed by the given DSN. Use ":memory:" for an
@@ -98,21 +105,33 @@ func (s *Store) Close() error {
 }
 
 // migrate runs the schema SQL idempotently and records the version.
-// Subsequent versions append additional execs guarded by a `version <` check.
+// Each numbered version's DDL is applied if the recorded version is < target.
+// Idempotent on re-runs because every CREATE uses IF NOT EXISTS.
 func (s *Store) migrate() error {
+	// v1: runs/tasks/events/schema_versions
 	if _, err := s.db.Exec(schemaSQL); err != nil {
-		return fmt.Errorf("state.migrate: %w", err)
+		return fmt.Errorf("state.migrate v1: %w", err)
 	}
 	var current int
 	row := s.db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_versions`)
 	if err := row.Scan(&current); err != nil {
 		return fmt.Errorf("state.migrate: read version: %w", err)
 	}
+	// v2: jobs (queue table)
+	if current < 2 {
+		if _, err := s.db.Exec(schemaSQL_v2); err != nil {
+			return fmt.Errorf("state.migrate v2: %w", err)
+		}
+	}
 	if current >= targetSchemaVersion {
 		return nil
 	}
-	_, err := s.db.Exec(`INSERT INTO schema_versions(version) VALUES (?)`, targetSchemaVersion)
-	return err
+	for v := current + 1; v <= targetSchemaVersion; v++ {
+		if _, err := s.db.Exec(`INSERT INTO schema_versions(version) VALUES (?)`, v); err != nil {
+			return fmt.Errorf("state.migrate: record version %d: %w", v, err)
+		}
+	}
+	return nil
 }
 
 // Apply folds an event into the projection. Idempotent on event re-delivery
