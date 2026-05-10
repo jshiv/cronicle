@@ -16,6 +16,7 @@ limitations under the License.
 package cmd
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -45,8 +46,21 @@ The run command will log schedule information to stdout including git commit inf
 		cron, _ := cmd.Flags().GetString("cron")
 		command, _ := cmd.Flags().GetString("command")
 		logToFile, _ := cmd.Flags().GetBool("log-to-file")
+		listenAddr, _ := cmd.Flags().GetString("listen")
+		listenToken, _ := cmd.Flags().GetString("listen-token")
+		if listenToken == "" {
+			listenToken = os.Getenv("CRONICLE_LISTEN_TOKEN")
+		}
 
-		runOptions := cronicle.RunOptions{RunWorker: runWorker, QueueType: queueType, QueueName: queueName, Addr: addr, LogToFile: logToFile}
+		runOptions := cronicle.RunOptions{
+			RunWorker:   runWorker,
+			QueueType:   queueType,
+			QueueName:   queueName,
+			Addr:        addr,
+			LogToFile:   logToFile,
+			ListenAddr:  listenAddr,
+			ListenToken: listenToken,
+		}
 
 		if cron != "" && command != "" {
 			conf := cronicle.Default()
@@ -87,6 +101,8 @@ func init() {
 	runCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
 	runCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")
 	runCmd.Flags().Bool("log-to-file", false, "mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); stdout is unaffected and remains controlled by --log-format")
+	runCmd.Flags().String("listen", "", "host:port to expose the remote-trigger HTTP API (e.g. :8765). Empty disables. Requires --listen-token.")
+	runCmd.Flags().String("listen-token", "", "bearer token for the remote-trigger HTTP API (or env CRONICLE_LISTEN_TOKEN). Required when --listen is set.")
 
 	// Here you will define your flags and configuration settings.
 

@@ -436,6 +436,47 @@ cronicle worker --queue redis
 
 ---
 
+## Remote triggers (HTTP)
+
+`cronicle run` can expose a small REST API for firing schedules and tasks
+on demand — useful for control-plane proxies, alert webhooks, or "rerun
+this now" buttons in a UI. Triggered runs use the same queue path as
+cron-fired runs, so they produce identical logs and DAG semantics.
+
+```bash
+cronicle run \
+  --path cronicle.hcl \
+  --listen :8765 \
+  --listen-token "$CRONICLE_LISTEN_TOKEN"
+```
+
+The listener refuses to bind without a token (an open trigger endpoint
+on an unattended cron service is a foot-cannon). Pass it via the flag or
+set `CRONICLE_LISTEN_TOKEN` in the environment.
+
+| Method | Path                                                   | Purpose                              |
+|--------|--------------------------------------------------------|--------------------------------------|
+| GET    | `/healthz`                                             | Liveness (no auth)                   |
+| GET    | `/v1/schedules`                                        | List configured schedules + tasks    |
+| POST   | `/v1/schedules/{name}/trigger`                         | Fire the whole schedule (full DAG)   |
+| POST   | `/v1/schedules/{name}/tasks/{task}/trigger`            | Fire one task (depends stripped)     |
+
+Auth is bearer-token (`Authorization: Bearer <token>`). Rotate by
+restarting the process.
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $CRONICLE_LISTEN_TOKEN" \
+  http://localhost:8765/v1/schedules/daily-report/trigger
+# -> 202 Accepted {"queued":"daily-report","schedule":"daily-report"}
+```
+
+In distributed mode (`--queue redis|nsq`) the listener pushes to the
+broker, so any worker consuming the queue picks the trigger up — same
+as a cron tick.
+
+---
+
 ## Command Templates
 The cronicle command string accepts the following template argumets
 ```
