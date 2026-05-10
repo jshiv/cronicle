@@ -247,7 +247,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		slog.Int("output_tokens", res.OutputTokens),
 		slog.Int("cache_read", res.CacheReadIn),
 		slog.Int("cache_write", res.CacheWriteIn),
-		slog.String("cost_usd", fmt.Sprintf("%.6f", res.CostUSD)),
+		slog.Float64("cost_usd", res.CostUSD),
 		slog.Int64("duration_ms", durationMs),
 		slog.String("stop_reason", res.StopReason),
 		slog.String("response", res.Stdout),
