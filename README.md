@@ -192,25 +192,109 @@ retry {
 ```
 
 ### `agent` (optional)
-Run a Claude agent invocation in place of a shell command. A task may have an
-`agent` block or a `command`, but not both. `${date}`, `${datetime}`, and
-`${timestamp}` are substituted into `prompt` and `system` at execution time.
-With `--log-to-file`, each run writes a JSONL transcript (request, response,
-token usage, cost) to `.cronicle/runs/` next to the cronicle root. Requires
-`ANTHROPIC_API_KEY` in the environment.
+Run a Claude agent in place of a shell command. A task has an `agent` block
+*or* a `command`, never both. `${date}`, `${datetime}`, `${timestamp}`, and
+`${path}` are substituted into `prompt` and `system` at execution time. The
+agent runs as a multi-turn loop: it can think, call tools, observe results,
+and continue until it stops calling tools, hits `max_turns`, or the
+`wallclock` deadline fires. With `--log-to-file`, each run writes a JSONL
+transcript (request, response per turn, tool results, accounting) to
+`.cronicle/runs/`. Requires `ANTHROPIC_API_KEY` in the environment.
 
 ```hcl
-task "summarize" {
+task "morning_brief" {
   agent {
-    prompt     = "Summarize what changed today: ${date}"
+    prompt     = "Compose today's morning brief for ${date}."
     model      = "claude-opus-4-7"
-    system     = "You are a concise release-notes writer."
-    max_tokens = 2048
-    // abort the run if its actual cost exceeds this; 0 disables
-    budget_usd = 0.50
+    system     = "You are a concise operational assistant."
+
+    // Tools available to the agent. Omit to default to all natives.
+    //   bash         — run shell commands in the task workspace
+    //   text_editor  — view/create/edit files (workspace-confined)
+    //   web_search   — server-side web search (billed per call)
+    //   web_fetch    — server-side URL fetch  (billed per call)
+    tools = ["bash", "text_editor"]
+
+    // Anthropic Agent Skills (progressive disclosure). Each entry is a
+    // SKILL.md (workspace-relative); only frontmatter name+description
+    // is injected into the system prompt. The agent calls load_skill to
+    // fetch the body on demand. Skills ship bundled scripts/templates
+    // alongside SKILL.md.
+    skills = [
+      "skills/morning-brief/SKILL.md",
+      "skills/report-writer/SKILL.md",
+    ]
+
+    max_turns  = 12       // hard cap on loop iterations
+    wallclock  = "2m"     // duration; aborts the run when fired
+    max_tokens = 2000     // per-turn output cap
+    budget_usd = 0.10     // abort if cumulative cost exceeds this; 0 disables
   }
 }
 ```
+
+`prompt` is optional when `skills` is non-empty — the loaded skill drives
+the run on its own. Skill paths must resolve under the task workspace; `..`
+traversal and absolute paths are rejected at config load.
+
+#### Skill layout
+
+Skills follow the [Anthropic Agent Skills standard](https://docs.claude.com/en/docs/agents-and-tools/agent-skills):
+
+```
+skills/
+└── morning-brief/
+    ├── SKILL.md         # YAML frontmatter + markdown body
+    └── scripts/
+        └── today.sh     # bundled executable the body references
+```
+
+```markdown
+---
+name: morning-brief
+description: Compose a 3-bullet morning brief for today's date.
+allowed-tools:
+  - bash
+  - text_editor
+---
+
+# Morning Brief
+
+Use `scripts/today.sh` to get today's date, then list exactly three bullets
+and reply with `BRIEF COMPLETE`.
+```
+
+When the agent calls `load_skill` with `"morning-brief"`, the response
+carries a `DIRECTORY:` header (`skills/morning-brief/`) so the agent
+composes paths to bundled scripts correctly across multi-skill runs.
+
+#### Run shape
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+agent run · schedule=daily · task=morning_brief · model=claude-haiku-4-5 · skills=[morning-brief]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+I'll load the morning-brief skill and follow its instructions.
+→ skill: morning-brief
+← exit=0 0ms
+
+— turn 2 —
+→ bash: skills/morning-brief/scripts/today.sh
+2026-05-10
+← exit=0 20ms
+
+— turn 3 —
+- On 2026-05-10, ...
+- ...
+BRIEF COMPLETE
+
+[5742 in / 247 out tokens · $0.006977 · 3705ms · stop=end_turn]
+```
+
+The `agent_run` slog event carries `skills_available` (the catalog the agent
+saw) and `skills_loaded` (the subset whose bodies it actually fetched), so
+unattended runs are auditable: *did the 3am job actually use what it had?*
 
 ### `timezone` (optional)
 ```hcl

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -74,8 +75,10 @@ type Task struct {
 // to pkg/agent rather than exec'd as a shell process.
 type Agent struct {
 	// Prompt is the user message sent to the model. ${date}/${datetime}/
-	// ${timestamp}/${path} are substituted at execution time.
-	Prompt string `hcl:"prompt"`
+	// ${timestamp}/${path} are substituted at execution time. Optional when
+	// Skills is non-empty (the skill metadata can stand in for a literal
+	// prompt by describing the work).
+	Prompt string `hcl:"prompt,optional"`
 	// Model selects the Claude model id, e.g. "claude-opus-4-7". Empty uses
 	// the pkg/agent default.
 	Model string `hcl:"model,optional"`
@@ -87,9 +90,16 @@ type Agent struct {
 	// Checked after each turn for mid-run abort. 0 disables.
 	BudgetUSD float64 `hcl:"budget_usd,optional"`
 	// Tools is the allowlist of Anthropic-defined tools the agent can
-	// invoke. Empty means single-turn agent (current behavior). Known
-	// values: "bash". Unknown names cause Validate to fail.
+	// invoke. When empty/omitted, defaults to all native tools (bash,
+	// text_editor, web_search, web_fetch). Set explicitly to narrow the
+	// universe. Unknown names cause Validate to fail.
 	Tools []string `hcl:"tools,optional"`
+	// Skills lists paths to SKILL.md files (relative to task.Path) that
+	// describe Anthropic Agent Skills available for this run. Frontmatter
+	// (name+description) of each skill is injected into the system prompt;
+	// the body loads on demand via the load_skill tool (progressive
+	// disclosure, per the standard).
+	Skills []string `hcl:"skills,optional"`
 	// MaxTurns is the hard cap on agent loop iterations. 0 means default
 	// (1 if no tools, 30 otherwise).
 	MaxTurns int `hcl:"max_turns,optional"`
@@ -150,8 +160,10 @@ var (
 	//ErrCommandAndAgentBothGiven is thrown when a task has both a command and an agent block.
 	//A task is exec'd as one or the other, not both.
 	ErrCommandAndAgentBothGiven = errors.New("task can not have both command and agent")
-	//ErrAgentPromptEmpty is thrown when an agent block is present but its prompt is empty.
-	ErrAgentPromptEmpty = errors.New("agent block requires a non-empty prompt")
+	//ErrAgentNeedsPromptOrSkills is thrown when an agent block has neither a
+	//prompt nor any skills configured. At least one is required so the agent
+	//has direction.
+	ErrAgentNeedsPromptOrSkills = errors.New("agent block requires prompt or skills")
 )
 
 // Validate validates the fields and sets the default values.
@@ -178,12 +190,27 @@ func (task *Task) Validate() error {
 		if len(task.Command) > 0 {
 			return ErrCommandAndAgentBothGiven
 		}
-		if task.Agent.Prompt == "" {
-			return ErrAgentPromptEmpty
+		if task.Agent.Prompt == "" && len(task.Agent.Skills) == 0 {
+			return ErrAgentNeedsPromptOrSkills
 		}
 		for _, name := range task.Agent.Tools {
 			if !knownAgentTool(name) {
-				return fmt.Errorf("unknown agent tool %q (known: bash)", name)
+				return fmt.Errorf("unknown agent tool %q (known: bash, text_editor, web_search, web_fetch)", name)
+			}
+		}
+		// Skill paths are workspace-relative; reject absolute paths and
+		// `..` traversal at config time so a misconfigured task fails
+		// before any API calls are made.
+		for _, sp := range task.Agent.Skills {
+			if sp == "" {
+				return errors.New("agent skill path must not be empty")
+			}
+			if filepath.IsAbs(sp) {
+				return fmt.Errorf("agent skill path %q must be relative to task workspace", sp)
+			}
+			cleaned := filepath.Clean(sp)
+			if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("agent skill path %q escapes task workspace", sp)
 			}
 		}
 		if task.Agent.MaxTurns < 0 {
