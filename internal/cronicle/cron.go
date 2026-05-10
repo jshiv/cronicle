@@ -173,7 +173,22 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 	slog.Info("Loading config...", "cronicle", "heartbeat", "path", cronicleFile)
 	conf, err := GetConfig(cronicleFile)
 	if err != nil {
-		slog.Error("config load failed", "error", err.Error())
+		// HCL parse / decode failed. ParseFile returns (nil, diags) on
+		// hard parse errors, so falling through to conf.Hcl() below
+		// would deref a nil pointer and crash the producer. Keep the
+		// previous good config in place; operator can fix the file and
+		// the next heartbeat picks up the change.
+		slog.Error("config reload failed; keeping previous schedules in place",
+			"path", cronicleFile, "error", err.Error())
+		return
+	}
+	if conf == nil {
+		// Defensive: GetConfig contract is (nil, err) on failure, but
+		// some future change might return (nil, nil). Treat that the
+		// same way as an explicit error.
+		slog.Error("config reload returned nil config; keeping previous schedules in place",
+			"path", cronicleFile)
+		return
 	}
 
 	if string(confPriorGlobal.Hcl().Bytes) != string(conf.Hcl().Bytes) || force {
