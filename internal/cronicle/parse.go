@@ -35,6 +35,10 @@ var (
 			"date":      cty.StringVal("${date}"),
 			"datetime":  cty.StringVal("${datetime}"),
 			"timestamp": cty.StringVal("${timestamp}"),
+			// scratch survives HCL parse as the literal "${scratch}"
+			// token, then exec.go substitutes the schedule-scoped
+			// scratch dir path at run time.
+			"scratch": cty.StringVal("${scratch}"),
 		},
 	}
 

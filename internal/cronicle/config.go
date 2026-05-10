@@ -81,6 +81,11 @@ type Task struct {
 	lastTranscript string
 	lastDurationMs int64
 	shellStreamed  bool
+	// ScratchDir is the schedule-scoped shared dir all tasks in one
+	// schedule run can read/write. Set by Schedule.ExecuteTasks before
+	// walking the DAG; substituted into prompts/commands as `${scratch}`.
+	// Survives the run for transcript/audit access.
+	ScratchDir string
 }
 
 // Agent is the configuration structure that defines an LLM agent invocation.

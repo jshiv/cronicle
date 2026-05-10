@@ -134,6 +134,13 @@ func truncateOutput(s string, max int) string {
 // the next turn's context.
 type TextEditorTool struct {
 	Workspace string
+	// AllowedRoots is the set of additional dirs (besides Workspace) that
+	// text_editor will accept paths under. Used to grant access to the
+	// schedule-scoped scratch dir when the task's main workspace is a
+	// cloned repo — the cross-task context pattern (${scratch}) needs the
+	// composer to read crawler outputs that live outside the workspace.
+	// Empty means "workspace only" (the historical behavior).
+	AllowedRoots []string
 }
 
 func (t *TextEditorTool) Name() string { return "str_replace_based_edit_tool" }
@@ -157,7 +164,7 @@ func (t *TextEditorTool) Execute(ctx context.Context, input json.RawMessage) (st
 	if err := json.Unmarshal(input, &args); err != nil {
 		return fmt.Sprintf("Error: invalid editor input: %v", err), true
 	}
-	abs, err := resolveInWorkspace(t.Workspace, args.Path)
+	abs, err := t.resolvePath(args.Path)
 	if err != nil {
 		return fmt.Sprintf("Error: %v", err), true
 	}
@@ -282,6 +289,30 @@ func (t *TextEditorTool) insert(absPath string, insertLine int, newStr string) (
 	return fmt.Sprintf("Inserted at line %d in %s", insertLine, filepath.Base(absPath)), false
 }
 
+// resolvePath gates each text_editor operation. It accepts paths under the
+// primary workspace OR any of the additional AllowedRoots (scratch dir is
+// the canonical extra). The first root that contains the resolved path
+// wins; rejection means no root matched. Path-traversal `..` is checked
+// against each root, so the agent can't break out via the additional
+// roots either.
+func (t *TextEditorTool) resolvePath(p string) (string, error) {
+	if t == nil || t.Workspace == "" {
+		return resolveInWorkspace(t.Workspace, p)
+	}
+	if abs, err := resolveInWorkspace(t.Workspace, p); err == nil {
+		return abs, nil
+	}
+	for _, root := range t.AllowedRoots {
+		if root == "" {
+			continue
+		}
+		if abs, err := resolveInWorkspace(root, p); err == nil {
+			return abs, nil
+		}
+	}
+	return "", fmt.Errorf("path %s outside workspace and allowed roots", p)
+}
+
 // resolveInWorkspace turns a model-supplied path (relative or absolute) into
 // an absolute path *guaranteed* to live under workspace, or an error. Used
 // by every text_editor operation as the workspace-containment gate.
@@ -393,9 +424,13 @@ func defaultAgentToolNames() []string {
 // pretty streaming mode). Empty/nil names defaults to the full native
 // toolkit (defaultAgentToolNames). Unknown names are filtered out (Validate
 // has already rejected them at parse time, so this is defensive).
-func buildAgentTools(names []string, workspace string, env []string, gitAuth transport.AuthMethod, w io.Writer) []agent.Tool {
+func buildAgentTools(names []string, workspace string, env []string, gitAuth transport.AuthMethod, scratchDir string, w io.Writer) []agent.Tool {
 	if len(names) == 0 {
 		names = defaultAgentToolNames()
+	}
+	var editorAllowed []string
+	if scratchDir != "" {
+		editorAllowed = append(editorAllowed, scratchDir)
 	}
 	out := make([]agent.Tool, 0, len(names))
 	for _, name := range names {
@@ -409,7 +444,8 @@ func buildAgentTools(names []string, workspace string, env []string, gitAuth tra
 			})
 		case "text_editor":
 			out = append(out, &TextEditorTool{
-				Workspace: workspace,
+				Workspace:    workspace,
+				AllowedRoots: editorAllowed,
 			})
 		case "git":
 			out = append(out, &GitTool{

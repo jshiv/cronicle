@@ -104,15 +104,15 @@ func TestDefaultAgentToolNamesContents(t *testing.T) {
 // buildAgentTools defaults to the native universe when names is empty.
 // Empty list and nil should both expand. Explicit list narrows.
 func TestBuildAgentTools(t *testing.T) {
-	tools := buildAgentTools(nil, t.TempDir(), nil, nil, nil)
+	tools := buildAgentTools(nil, t.TempDir(), nil, nil, "", nil)
 	if len(tools) != len(defaultAgentToolNames()) {
 		t.Fatalf("nil tools: got %d, want %d", len(tools), len(defaultAgentToolNames()))
 	}
-	tools = buildAgentTools([]string{}, t.TempDir(), nil, nil, nil)
+	tools = buildAgentTools([]string{}, t.TempDir(), nil, nil, "", nil)
 	if len(tools) != len(defaultAgentToolNames()) {
 		t.Fatalf("empty slice tools: got %d, want %d", len(tools), len(defaultAgentToolNames()))
 	}
-	tools = buildAgentTools([]string{"bash"}, t.TempDir(), nil, nil, nil)
+	tools = buildAgentTools([]string{"bash"}, t.TempDir(), nil, nil, "", nil)
 	if len(tools) != 1 {
 		t.Fatalf("explicit narrow: got %d tools, want 1", len(tools))
 	}
