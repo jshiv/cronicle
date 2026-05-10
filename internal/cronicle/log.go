@@ -704,18 +704,43 @@ func formatToolInput(toolName, raw string) string {
 			return n
 		}
 	}
+	// MCP tools (server__tool) — show the args as compact JSON, but trim
+	// to keep the line readable. Generic since tool schemas vary widely.
+	if strings.Contains(toolName, MCPNameSep) {
+		return truncate(compactJSON(raw), 80)
+	}
 	return raw
+}
+
+// compactJSON rewraps a JSON blob to its compact form. Returns the original
+// string on any parse error so we don't lose information when the model
+// emits unusual content.
+func compactJSON(s string) string {
+	var v any
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return s
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return s
+	}
+	return string(b)
 }
 
 // displayToolName maps the API tool name to a friendlier label for pretty
 // rendering. The model invokes tools by their API name (e.g.
 // "str_replace_based_edit_tool"); the user just wants to see "editor".
+// MCP tools come in as `<server>__<tool>` and render as `<server>.<tool>`
+// so the server boundary is obvious in the stream.
 func displayToolName(name string) string {
 	switch name {
 	case "str_replace_based_edit_tool":
 		return "editor"
 	case "load_skill":
 		return "skill"
+	}
+	if i := strings.Index(name, MCPNameSep); i > 0 {
+		return name[:i] + "." + name[i+len(MCPNameSep):]
 	}
 	return name
 }

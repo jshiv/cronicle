@@ -191,6 +191,26 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	runCtx, cancel := context.WithTimeout(context.Background(), wallclock)
 	defer cancel()
 
+	// MCP servers: launch under runCtx so wallclock cancellation also tears
+	// them down. Failures here abort the run before any API call. We close
+	// handles in the deferred path below regardless of how the run exits,
+	// so a panic or budget abort still cleans up subprocesses.
+	mcpHandles, mcpTools, mcpErr := LaunchMCPServers(runCtx, task.Agent.MCPs, task.Env, toolWriter)
+	if mcpErr != nil {
+		return exec.Result{
+			Command:    []string{"agent", task.Agent.Model},
+			Error:      mcpErr,
+			Stderr:     mcpErr.Error(),
+			ExitStatus: 1,
+		}
+	}
+	defer func() {
+		for _, h := range mcpHandles {
+			_ = h.Close()
+		}
+	}()
+	cfg.Tools = append(cfg.Tools, mcpTools...)
+
 	startedAt := time.Now()
 	res, err := agent.Run(runCtx, cfg)
 	durationMs := time.Since(startedAt).Milliseconds()
@@ -230,6 +250,9 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		attrs = append(attrs,
 			slog.Any("skills_available", skillsAvailable),
 			slog.Any("skills_loaded", skillTool.Loaded()))
+	}
+	if names := MCPServerNames(mcpHandles); len(names) > 0 {
+		attrs = append(attrs, slog.Any("mcp_servers", names))
 	}
 	if res.TranscriptPath != "" {
 		attrs = append(attrs, slog.String("transcript", res.TranscriptPath))
