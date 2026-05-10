@@ -31,6 +31,14 @@ The slog `schedule_start` event records the scratch path for audit:
 schedule started ... scratch=/.../scratch/daily_report/20260510T160000Z
 ```
 
+### Distributed mode (workers consuming over Redis/NSQ)
+
+`${scratch}` works in distributed mode without any extra config. Cronicle's queue model is *one schedule message → one worker → all tasks in that DAG*: when a worker pulls a schedule off the queue it runs `ExecuteTasks` locally, computing one scratch dir under that worker's own `--path`. All tasks in the run share that path because they all run in the same worker process.
+
+Different cron firings of the same schedule may land on different workers (each picks up the next message off the queue). Each firing gets its own scratch dir on whichever worker handled it — different runs don't share state, which is the right semantics for cron. If you want state to persist across invocations, use durable storage (an MCP-served KV store, a database, etc.) rather than `${scratch}`.
+
+Verified end-to-end: producer pushes to Redis, worker pulls, both `produce` and `consume` tasks read/write the same `<worker-path>/.cronicle/scratch/<schedule>/<run-id>/` dir, the consumer's `HANDOFF: ...` line round-trips the file the producer wrote.
+
 ## Run it
 
 This demo's crawlers produce mock data (so it runs without real Slack/Discord/Gmail credentials) but `crawl_code` exercises the built-in git tool against the real cronicle repo:
