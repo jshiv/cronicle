@@ -224,6 +224,85 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8765/v1/runs/$RUN_ID/retry" | jq .
 ```
 
+### 8. Cancel scope (or: "does cancel stop everything?")
+
+No — cancel is scoped to one `run_id`. Each fire of each schedule gets
+its own run_id, its own queue row, its own per-run context on the
+worker, its own SSE message routed by run_id. Other schedules in the
+same HCL file keep running.
+
+To see this concretely: while the ETLs are firing every 30s, fire
+`report_pipeline` and cancel it mid-`transform`. The next ETL tick
+arrives normally; workers claim and execute it untouched.
+
+```bash
+# fire report_pipeline
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/schedules/report_pipeline/trigger > /dev/null
+sleep 2
+RID=$(curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8765/v1/runs?schedule=report_pipeline&limit=1" \
+  | jq -r '.[0].run_id')
+
+# cancel just that run_id
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8765/v1/runs/$RID/cancel" > /dev/null
+
+# wait one tick, check that ETLs are still firing
+sleep 35
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8765/v1/runs?status=succeeded&limit=5" \
+  | jq -r '.[] | "\(.schedule)  \(.status)  \(.run_id)"'
+```
+
+You'll see the canceled `report_pipeline` next to fresh `etl_*`
+successes — the ETLs were never touched.
+
+The same scoping applies in reverse: a worker can hold multiple
+in-flight runs simultaneously (one per claimed job, each with its own
+`context.CancelFunc` keyed by `run_id`), and canceling one cancels
+exactly one.
+
+### 9. Inspecting state directly
+
+The producer's state lives in a single SQLite file. `sqlite3` works
+on it without locking the producer (WAL mode, concurrent readers
+are fine):
+
+```bash
+DB=.cronicle/state.db
+
+# tables
+sqlite3 "$DB" '.tables'
+#   events  jobs  runs  schema_versions  tasks  workers
+
+# recent runs by status
+sqlite3 -header -column "$DB" "
+  SELECT schedule, status, COUNT(*) AS n
+  FROM runs
+  WHERE started_at > datetime('now', '-1 hour')
+  GROUP BY schedule, status
+  ORDER BY schedule, status;
+"
+
+# what's pending in the queue right now
+sqlite3 -header "$DB" "
+  SELECT run_id, schedule, status, claimed_by, attempt
+  FROM jobs WHERE status IN ('pending', 'claimed')
+  ORDER BY enqueued_at;
+"
+
+# worker registry
+sqlite3 -header "$DB" "
+  SELECT worker_id, current_run, runs_total, runs_failed, last_seen
+  FROM workers ORDER BY last_seen DESC;
+"
+```
+
+Useful when you want a quick local query without going through the
+HTTP API, or when the listener is intentionally off and you still
+want a postmortem.
+
 ## Operational notes
 
 - **Worker liveness**: a worker that disappears (process killed,
