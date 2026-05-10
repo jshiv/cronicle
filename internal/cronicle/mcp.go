@@ -42,7 +42,7 @@ const MCPNameSep = "__"
 // name and a semver-ish version.
 const (
 	mcpClientName    = "cronicle"
-	mcpClientVersion = "0.4.0"
+	mcpClientVersion = "0.5.0"
 )
 
 // MCPHandle is the live state of a launched MCP server: the SDK session

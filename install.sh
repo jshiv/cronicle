@@ -3,7 +3,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/jshiv/cronicle/master/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/jshiv/cronicle/master/install.sh | CRONICLE_VERSION=v0.4.0 sh
+#   curl -fsSL https://raw.githubusercontent.com/jshiv/cronicle/master/install.sh | CRONICLE_VERSION=v0.5.0 sh
 #   curl -fsSL https://raw.githubusercontent.com/jshiv/cronicle/master/install.sh | CRONICLE_INSTALL_DIR=$HOME/.local/bin sh
 #
 # Environment:
