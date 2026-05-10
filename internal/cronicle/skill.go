@@ -267,12 +267,24 @@ func (s *SkillTool) format(sk *Skill) string {
 	return b.String()
 }
 
-// LoadSkillsForTask resolves and loads each path in agent.Skills against
-// taskRoot, returning the parsed skills. Path traversal is re-checked here
-// (defense in depth — Validate already rejected `..`/abs paths at config
-// time, but task.Path can change between Validate and Execute if a repo is
-// cloned, so we verify containment again with the live taskRoot).
-func LoadSkillsForTask(taskRoot string, paths []string) ([]*Skill, error) {
+// LoadSkillsForTask resolves and loads each path in agent.Skills.
+// Resolution order, first-hit wins:
+//
+//  1. taskRoot/<path> — co-located with the task workspace (typical when
+//     no `repo` block is set, so taskRoot == configRoot).
+//  2. configRoot/<path> — alongside cronicle.hcl. Lets skills be operational
+//     config that doesn't live inside a cloned repo.
+//
+// The skill's Dir is computed relative to whichever root resolved it. If the
+// resolution root differs from taskRoot, Dir is recorded as an absolute path
+// — the agent's bash tool can use it directly; text_editor stays workspace-
+// confined to taskRoot, so bundled-file editing requires the skill to live
+// inside the workspace.
+//
+// Path traversal is re-checked here as defense in depth (Validate rejected
+// `..`/abs paths at config time, but the resolution root may have changed
+// between Validate and Execute if a repo was cloned).
+func LoadSkillsForTask(taskRoot, configRoot string, paths []string) ([]*Skill, error) {
 	if len(paths) == 0 {
 		return nil, nil
 	}
@@ -280,20 +292,58 @@ func LoadSkillsForTask(taskRoot string, paths []string) ([]*Skill, error) {
 	if err != nil {
 		return nil, fmt.Errorf("task root abs: %w", err)
 	}
+	cfgAbs := wsAbs
+	if configRoot != "" {
+		cfgAbs, err = filepath.Abs(configRoot)
+		if err != nil {
+			return nil, fmt.Errorf("config root abs: %w", err)
+		}
+	}
+
 	out := make([]*Skill, 0, len(paths))
 	for _, p := range paths {
-		abs := filepath.Clean(filepath.Join(wsAbs, p))
-		rel, err := filepath.Rel(wsAbs, abs)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil, fmt.Errorf("skill path %q escapes task workspace", p)
-		}
-		sk, err := LoadSkill(abs, wsAbs)
+		abs, root, err := resolveSkillPath(wsAbs, cfgAbs, p)
 		if err != nil {
 			return nil, err
+		}
+		sk, err := LoadSkill(abs, root)
+		if err != nil {
+			return nil, err
+		}
+		// When the skill lives outside the task workspace, the relative
+		// Dir computed in LoadSkill (from `root`) makes sense only if the
+		// agent knows that root. Easier: switch Dir to absolute so the
+		// agent always has a usable path for bash invocations of bundled
+		// scripts.
+		if root != wsAbs {
+			sk.Dir = filepath.Dir(abs)
 		}
 		out = append(out, sk)
 	}
 	return out, nil
+}
+
+// resolveSkillPath tries taskRoot first, then configRoot. Either root can
+// reject paths that try to `..` out of it — a skill must end up under one
+// of the two registered roots.
+func resolveSkillPath(taskRoot, configRoot, p string) (abs, root string, err error) {
+	for _, candidate := range []string{taskRoot, configRoot} {
+		if candidate == "" {
+			continue
+		}
+		full := filepath.Clean(filepath.Join(candidate, p))
+		rel, relErr := filepath.Rel(candidate, full)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if _, statErr := os.Stat(full); statErr == nil {
+			return full, candidate, nil
+		}
+	}
+	if taskRoot == configRoot || configRoot == "" {
+		return "", "", fmt.Errorf("skill path %q not found under task workspace %s", p, taskRoot)
+	}
+	return "", "", fmt.Errorf("skill path %q not found under task workspace (%s) or config dir (%s)", p, taskRoot, configRoot)
 }
 
 // FormatAvailableSkillsSection returns the Available Skills block to append

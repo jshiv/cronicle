@@ -107,7 +107,7 @@ func TestLoadSkillsForTask(t *testing.T) {
 	body := []byte("---\nname: x\ndescription: x desc\n---\nbody\n")
 	_ = os.WriteFile(filepath.Join(dir, "SKILL.md"), body, 0o644)
 
-	skills, err := LoadSkillsForTask(root, []string{"skills/x/SKILL.md"})
+	skills, err := LoadSkillsForTask(root, root, []string{"skills/x/SKILL.md"})
 	if err != nil {
 		t.Fatalf("LoadSkillsForTask: %v", err)
 	}
@@ -116,8 +116,39 @@ func TestLoadSkillsForTask(t *testing.T) {
 	}
 
 	// `..` traversal blocked.
-	if _, err := LoadSkillsForTask(root, []string{"../escape/SKILL.md"}); err == nil {
+	if _, err := LoadSkillsForTask(root, root, []string{"../escape/SKILL.md"}); err == nil {
 		t.Fatalf("`..` traversal allowed")
+	}
+}
+
+// LoadSkillsForTask falls back to configRoot when the skill isn't co-located
+// with the task workspace. This is the typical case when a `repo` block
+// makes task.Path the cloned repo dir and the skill lives alongside
+// cronicle.hcl instead.
+func TestLoadSkillsForTaskFallbackToConfigRoot(t *testing.T) {
+	cfg := t.TempDir()
+	taskWS := t.TempDir() // separate workspace, like a cloned-repo dir
+
+	// Skill lives under cfg, not under the task workspace.
+	dir := filepath.Join(cfg, "skills", "report")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("---\nname: report\ndescription: a report skill\n---\nbody\n")
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	skills, err := LoadSkillsForTask(taskWS, cfg, []string{"skills/report/SKILL.md"})
+	if err != nil {
+		t.Fatalf("LoadSkillsForTask fallback: %v", err)
+	}
+	if len(skills) != 1 || skills[0].Name != "report" {
+		t.Fatalf("expected report skill, got %+v", skills)
+	}
+	// Skill is outside the workspace, so Dir should be absolute.
+	if !filepath.IsAbs(skills[0].Dir) {
+		t.Fatalf("expected absolute Dir for skill outside workspace, got %q", skills[0].Dir)
 	}
 }
 
