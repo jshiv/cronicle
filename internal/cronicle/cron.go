@@ -9,12 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis"
-	"github.com/matryer/vice"
-	nsqvice "github.com/matryer/vice/queues/nsq"
-	redisvice "github.com/matryer/vice/queues/redis"
-	"github.com/nsqio/go-nsq"
-
 	cron "github.com/robfig/cron/v3"
 )
 
@@ -79,6 +73,11 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	var triggerQueue chan<- []byte
 	switch runOptions.QueueType {
 	case "":
+		// Single-process default: cron + trigger push to an in-memory
+		// channel that the in-process consumer drains. Cheap, simple,
+		// no disk write per fire. The right shape for foreground demos
+		// and `cronicle exec`-style usage where the producer and worker
+		// are the same process anyway.
 		queue := make(chan []byte)
 		triggerQueue = queue
 		go StartCron(cronicleFileAbs, queue)
@@ -87,7 +86,8 @@ func Run(cronicleFile string, runOptions RunOptions) {
 		// Producer-served queue. cron tick + listener trigger write
 		// through to the SQLite jobs table; the in-process self-worker
 		// claims them. External workers (cronicle worker --producer URL)
-		// can claim from the same store via long-poll over HTTP.
+		// can claim from the same store via long-poll over HTTP — the
+		// distributed-mode replacement for Redis/NSQ.
 		if stateStore == nil {
 			Fatal("--queue self requires the state store; check that .cronicle/ is writable")
 		}
@@ -100,12 +100,7 @@ func Run(cronicleFile string, runOptions RunOptions) {
 		}
 		go reaperLoop(stateStore)
 	default:
-		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
-		triggerQueue = transport.Send(runOptions.QueueName)
-		go StartCron(cronicleFileAbs, triggerQueue)
-		if runOptions.RunWorker {
-			go ConsumeSchedule(transport.Receive(runOptions.QueueName), croniclePath, &wg)
-		}
+		Fatal(fmt.Sprintf("unsupported --queue %q (only 'self' or empty are supported; redis/nsq were removed in v0.5)", runOptions.QueueType))
 	}
 
 	startListener(runOptions.ListenAddr, runOptions.ListenToken, triggerQueue)
@@ -114,90 +109,24 @@ func Run(cronicleFile string, runOptions RunOptions) {
 
 }
 
-// RunOptions enables the runtime configuration of the distributed message queue
+// RunOptions controls cronicle run's process-level behavior.
 type RunOptions struct {
+	// RunWorker controls whether the in-process consumer runs alongside
+	// the producer. With --queue self this is the self-worker; with the
+	// default (empty) queue it's the chan-based ConsumeSchedule. Set to
+	// false on dedicated producers so external workers do all execution.
 	RunWorker bool
+	// QueueType selects the dispatch shape: "" (in-memory) or "self"
+	// (SQLite-backed; supports remote workers over HTTP).
 	QueueType string
-	QueueName string
-	Addr      string
+	// LogToFile mirrors structured logs to .cronicle/log/cronicle.jsonl
+	// rotated by lumberjack. Independent of stdout.
 	LogToFile bool
 	// ListenAddr / ListenToken expose the remote-trigger HTTP API. Empty
 	// addr disables the listener entirely; non-empty addr REQUIRES a token
 	// (the listener refuses to bind otherwise — see internal/cronicle/listen.go).
 	ListenAddr  string
 	ListenToken string
-}
-
-// StartWorker listens to a vice transport queue for schedules
-// produced by cronicle run.
-//
-// File logging is honored on workers too — they're exactly where you want
-// per-run agent transcripts and the rotated cronicle.jsonl, since the work
-// happens here, not on the producer. Without this, distributed runs leave
-// no audit trail on disk.
-func StartWorker(path string, runOptions RunOptions) {
-
-	pathAbs, err := filepath.Abs(path)
-	if err != nil {
-		Fatal(err)
-	}
-
-	if runOptions.QueueType == "" {
-		slog.Error("--queue must be specified in distributed mode. [Options: redis, nsq]")
-	}
-
-	if runOptions.LogToFile {
-		if err := EnableFileLog(pathAbs); err != nil {
-			Fatal(err)
-		}
-	}
-
-	transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
-	schedules := transport.Receive(runOptions.QueueName)
-	var wg sync.WaitGroup
-	wg.Add(1) //Ensure WaitGroup counter > 0
-	go ConsumeSchedule(schedules, pathAbs, &wg)
-
-	wg.Wait()
-
-}
-
-//MakeViceTransport creates a vice.Transport interface from the given
-//queue field in the config
-func MakeViceTransport(queueType string, addr string) vice.Transport {
-	// var transport *nsqvice.Transport
-
-	switch queueType {
-	case "redis":
-		if addr == "" {
-			addr = "127.0.0.1:6379"
-		}
-		opts := &redis.Options{
-			Network:    "tcp",
-			Addr:       addr,
-			Password:   "",
-			DB:         0,
-			MaxRetries: 0,
-		}
-		client := redis.NewClient(opts)
-		opt := redisvice.WithClient(client)
-		transport := redisvice.New(opt)
-		return transport
-	case "nsq":
-		transport := nsqvice.New()
-		transport.ConnectConsumer = func(consumer *nsq.Consumer) error {
-			if addr == "" {
-				return consumer.ConnectToNSQD(nsqvice.DefaultTCPAddr)
-			}
-			return consumer.ConnectToNSQLookupd(addr)
-
-		}
-		return transport
-	}
-
-	// return transpor
-	return nsqvice.New()
-
 }
 
 //StartCron pushes all schedules in the given config to the cron scheduler

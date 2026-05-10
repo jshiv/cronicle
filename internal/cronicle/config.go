@@ -178,14 +178,18 @@ type Retry struct {
 	Hours int `hcl:"hours,optional"`
 }
 
-// Queue is the metadata associated to the message queue for distributed operation.
-// Cronicle uses vice to communicate with queues via channels.
-// https://github.com/matryer/vice
+// Queue declares the dispatch mode for distributed operation. Set
+// type = "self" to enable the producer-served queue (SQLite-backed
+// jobs table, workers consume via HTTP long-poll).
+//
+// As of v0.5 the only supported type is "self"; "redis" and "nsq" were
+// removed when the vice broker dependency was dropped. Empty type
+// defaults to in-process (single-binary, no remote workers).
+//
+// Addr is preserved as a no-op field for backwards-compatible HCL
+// parsing; it is unused.
 type Queue struct {
-	//Type names the message queue technology to be used
-	//options are nsq and redis
 	Type string `hcl:"type,optional"`
-	//host:port of nsqd/nsqlookupd/redis queue service
 	Addr string `hcl:"addr,optional"`
 }
 

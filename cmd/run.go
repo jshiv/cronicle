@@ -41,8 +41,6 @@ The run command will log schedule information to stdout including git commit inf
 
 		runWorker, _ := cmd.Flags().GetBool("worker")
 		queueType, _ := cmd.Flags().GetString("queue")
-		queueName, _ := cmd.Flags().GetString("queue-name")
-		addr, _ := cmd.Flags().GetString("addr")
 		cron, _ := cmd.Flags().GetString("cron")
 		command, _ := cmd.Flags().GetString("command")
 		logToFile, _ := cmd.Flags().GetBool("log-to-file")
@@ -55,8 +53,6 @@ The run command will log schedule information to stdout including git commit inf
 		runOptions := cronicle.RunOptions{
 			RunWorker:   runWorker,
 			QueueType:   queueType,
-			QueueName:   queueName,
-			Addr:        addr,
 			LogToFile:   logToFile,
 			ListenAddr:  listenAddr,
 			ListenToken: listenToken,
@@ -81,25 +77,12 @@ func init() {
 	runCmd.Flags().String("path", "./cronicle.hcl", "Path to a cronicle.hcl file")
 	runCmd.Flags().Bool("worker", true, "start a worker thread to consume tasks in distributed mode")
 	queueDesc := `
-	message broker technology for distributed schedule execution,
+	queue mode for schedule dispatch.
 	Options:
-		self  [producer-served queue; workers long-poll /v1/jobs over HTTP]
-		redis [distributed on localhost:6379]
-		nsq [run on cluster with nsqd:4150]
-	Configurable via the queue.type field in cronicle.hcl.
-	"self" is the recommended path going forward — Redis/NSQ will be removed in a future release.
+		(empty) — single-process: in-memory channel, in-process consumer (default)
+		self    — SQLite-backed queue; supports remote workers over HTTP long-poll
 	`
 	runCmd.Flags().String("queue", "", queueDesc)
-	runCmd.Flags().String("queue-name", "cronicle", "Name of the queue to message schedules over.")
-
-	addrDesc := `
-	host:port of the queue service leader, 
-	Options: 
-		redis server[default: 127.0.0.1:6379]
-		nsq   NSQLookupd service [default: localhost:4150 nsqd dameon]
-	Configurable via the queue.addr field in cronicle.hcl
-	`
-	runCmd.Flags().String("addr", "", addrDesc)
 	runCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
 	runCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")
 	runCmd.Flags().Bool("log-to-file", false, "mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); stdout is unaffected and remains controlled by --log-format")
