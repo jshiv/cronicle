@@ -1,17 +1,66 @@
-version: "3"
+# Local log pipeline for cronicle: Vector tails .cronicle/log/cronicle.jsonl
+# (cronicle's structured-JSON log when --log-to-file is set), parses each
+# line, and ships to Loki. Grafana reads Loki and ships pre-provisioned
+# with a Loki datasource and a "Cronicle runs" dashboard so there's no
+# manual click-through after `docker compose up`.
+#
+# CRONICLE_PATH (defaults to ../../) is mounted read-only into Vector so
+# the tailing path is the same on host and container. Override per-deploy
+# via:
+#   CRONICLE_PATH=/abs/path/to/your/repo docker compose up
+#
+# Why Vector and not Promtail: cronicle.jsonl already has structured fields
+# (entry_type, schedule, task, model, cost_usd, mcp_servers, ...). Vector's
+# VRL lets us promote a stable subset to Loki labels (low cardinality) and
+# leave the rest in the log line for query-time access. Promtail can do
+# similar but Vector's transform language is what we use elsewhere too.
 networks:
-  loki:
+  cronicle:
 services:
   loki:
-    image: grafana/loki:1.6.0
+    image: grafana/loki:3.2.0
+    container_name: cronicle-loki
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
     networks:
+      - cronicle
+    restart: unless-stopped
+
+  vector:
+    image: timberio/vector:0.40.0-debian
+    container_name: cronicle-vector
+    depends_on:
       - loki
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
+    # The base image ships a demo vector.yaml at /etc/vector/. Pointing
+    # `--config` at our toml explicitly stops Vector from auto-loading
+    # it alongside ours.
+    command: ["--config", "/etc/vector/cronicle.toml"]
+    volumes:
+      - ./vector.toml:/etc/vector/cronicle.toml:ro
+      # The cronicle log dir gets mounted read-only. Default path is the
+      # repo root two levels up (where cronicle.hcl typically lives) — set
+      # CRONICLE_PATH to point at any cronicle-managed dir.
+      - ${CRONICLE_PATH:-../..}/.cronicle:/cronicle/.cronicle:ro
     networks:
+      - cronicle
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: cronicle-grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_FEATURE_TOGGLES_ENABLE: panelTitleSearch
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
       - loki
+    networks:
+      - cronicle
+    restart: unless-stopped

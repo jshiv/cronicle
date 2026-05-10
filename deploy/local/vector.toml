@@ -1,38 +1,48 @@
-[sources.croncile]
-  type = "stdin"
+# Vector pipeline: tail cronicle's structured-JSON log file, parse, ship
+# to Loki. The path comes from cronicle's --log-to-file mode which writes
+# to <croniclePath>/.cronicle/log/cronicle.jsonl (rotated by lumberjack).
+#
+# Why tail the file vs read stdout: stdout pipes break on TTY semantics
+# (we want pretty stdout for humans AND structured logs to disk). Vector's
+# file source is also restartable — it tracks position and resumes after
+# Vector or cronicle restarts, with a checkpoint file in /var/lib/vector.
 
-[transforms.cronicle_log]
-  inputs = ["croncile"]
-  type = "logfmt_parser"
-  field = "message"
-  drop_field=true
-  types.exit = "int" # example
-  types.email = "string" # example
-  types.commit = "string" # example
-  types.success = "bool" # example
-  types.task = "string"
-  types.schedule = "string"
-  types.time = "timestamp" # example
-  types.msg = "string"
-  types.level = "string"
-  types.cronicle = "string"
+[sources.cronicle]
+type = "file"
+include = ["/cronicle/.cronicle/log/cronicle.jsonl"]
+read_from = "beginning"
 
-[sinks.console]
-  inputs = ["cronicle_log"]
-  type = "console"
-  encoding.codec = "json"
+[transforms.parse]
+type = "remap"
+inputs = ["cronicle"]
+# Each line is JSON. Parse it and merge into the event so Loki sees fields
+# (entry_type, schedule, task, model, cost_usd, mcp_servers, …) at top
+# level — gives us per-field queries and labelable shapes.
+source = '''
+parsed, err = parse_json(.message)
+if err == null {
+  . = merge(., object!(parsed))
+}
+del(.message)
+del(.file)
+del(.host)
+del(.source_type)
+'''
 
 [sinks.loki]
-  # General
-  type = "loki" # required
-  inputs = ["cronicle_log"] # required
-  endpoint = "http://localhost:3100" # required
-  healthcheck = true # optional, default
-  remove_label_fields = true # optional, don't duplicate labels
-  # Encoding
-  encoding.codec = "json" # optional, default
-  labels.key = "cronicle"
-  labels.task = "{{ task }}"
-  labels.schedule = "{{ schedule }}"
-  labels.success = "{{ success }}"
-  labels.cronicle = "{{ cronicle }}"
+type = "loki"
+inputs = ["parse"]
+endpoint = "http://loki:3100"
+healthcheck = true
+remove_label_fields = true
+encoding.codec = "json"
+
+# Keep the label set small. Loki's cost model penalizes high cardinality;
+# entry_type/schedule/task/success are stable categories. Everything else
+# (cost_usd, model, transcript path, etc.) lives in the log line and is
+# queried at query-time via JSON parsers in LogQL.
+labels.app          = "cronicle"
+labels.entry_type   = "{{ entry_type }}"
+labels.schedule     = "{{ schedule }}"
+labels.task         = "{{ task }}"
+labels.success      = "{{ success }}"

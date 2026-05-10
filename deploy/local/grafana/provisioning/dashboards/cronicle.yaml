@@ -1,0 +1,11 @@
+# Auto-load any dashboard JSON dropped into /var/lib/grafana/dashboards.
+apiVersion: 1
+providers:
+  - name: Cronicle
+    orgId: 1
+    folder: ""
+    type: file
+    allowUiUpdates: false
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards
