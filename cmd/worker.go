@@ -16,7 +16,11 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
 	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/jshiv/cronicle/internal/cronicle"
 	"github.com/spf13/cobra"
@@ -53,6 +57,33 @@ Multipule workers can be started, they will take turns consuming from the queue.
 		queueName, _ := cmd.Flags().GetString("queue-name")
 		addr, _ := cmd.Flags().GetString("addr")
 		logToFile, _ := cmd.Flags().GetBool("log-to-file")
+		producerURL, _ := cmd.Flags().GetString("producer")
+		producerToken, _ := cmd.Flags().GetString("producer-token")
+		workerID, _ := cmd.Flags().GetString("worker-id")
+
+		// HTTP-mode worker: long-polls a cronicle run --queue self
+		// process. Replaces vice transport entirely once Phase 2c
+		// removes Redis/NSQ.
+		if producerURL != "" {
+			if producerToken == "" {
+				producerToken = os.Getenv("CRONICLE_LISTEN_TOKEN")
+			}
+			ctx, cancel := signal.NotifyContext(context.Background(),
+				syscall.SIGINT, syscall.SIGTERM)
+			defer cancel()
+			err := cronicle.StartHTTPWorker(ctx, cronicle.HTTPWorkerOptions{
+				ProducerURL: producerURL,
+				Token:       producerToken,
+				WorkerID:    workerID,
+				Path:        path,
+				LogToFile:   logToFile,
+			})
+			if err != nil && err != context.Canceled {
+				slog.Error("worker exited", "error", err.Error())
+				os.Exit(1)
+			}
+			return
+		}
 
 		slog.Info("Starting Worker from: " + path)
 		runOptions := cronicle.RunOptions{
@@ -77,7 +108,10 @@ func init() {
 	Configurable via the queue.type field in cronicle.hcl
 	`
 	workerCmd.Flags().String("queue", "", queueDesc)
-	cobra.MarkFlagRequired(workerCmd.Flags(), "queue")
+	// Note: --queue is required for vice modes (redis|nsq) but not when
+	// --producer is set (HTTP long-poll path). We validate at runtime
+	// rather than via MarkFlagRequired so both modes coexist on the
+	// same command.
 	workerCmd.Flags().String("queue-name", "cronicle", "Name of the queue to message schedules over.")
 
 	addrDesc := `
@@ -89,6 +123,9 @@ func init() {
 	`
 	workerCmd.Flags().String("addr", "", addrDesc)
 	workerCmd.Flags().Bool("log-to-file", false, "mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); per-run agent transcripts go to path/.cronicle/runs/")
+	workerCmd.Flags().String("producer", "", "URL of a cronicle run --queue self producer (e.g. http://producer:8765). When set, the worker long-polls /v1/jobs over HTTP instead of using a vice broker.")
+	workerCmd.Flags().String("producer-token", "", "bearer token for the producer's HTTP API. Falls back to $CRONICLE_LISTEN_TOKEN.")
+	workerCmd.Flags().String("worker-id", "", "stable identifier for this worker in the producer's claim/ack records. Default: <hostname>-<pid>.")
 
 	// Here you will define your flags and configuration settings.
 

@@ -79,12 +79,21 @@ func startListener(addr, token string, queue chan<- []byte) {
 	mux.HandleFunc("/v1/runs", s.handleListRuns)
 	mux.HandleFunc("/v1/runs/", s.handleGetRun)
 	mux.HandleFunc("/v1/events", s.handleIngestEvents)
+	mux.HandleFunc("/v1/jobs", s.handleClaimJob)
+	mux.HandleFunc("/v1/jobs/", s.handleJobControl)
 
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		// WriteTimeout has to outlast the longest long-poll block. We
+		// cap GET /v1/jobs at 60s, so 90s here gives the handler room
+		// to finish writing the response after the wait returns.
+		WriteTimeout: 90 * time.Second,
+		// IdleTimeout closes connections that have been idle in the
+		// keep-alive pool — independent of WriteTimeout, but a sensible
+		// match for the long-poll cadence.
+		IdleTimeout: 120 * time.Second,
 	}
 	go func() {
 		slog.Info("Trigger listener up", "addr", addr)
@@ -515,5 +524,170 @@ func (s *listenServer) handleIngestEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, ingestResponse{Accepted: accepted, Dropped: dropped})
+}
+
+// ---- /v1/jobs (queue dispatch) ---------------------------------------------
+
+// maxLongPollBlock caps the duration we hold a /v1/jobs request open
+// waiting for a job. Has to be < the http.Server WriteTimeout (90s) by
+// a safety margin. Also: keeping it short bounds the worst-case latency
+// for graceful shutdown.
+const maxLongPollBlock = 60 * time.Second
+
+// defaultClaimVisibility is how long a worker has to ack a claimed job
+// before the reaper takes it back. 5 minutes covers slow agent runs;
+// long-running tasks must heartbeat.
+const defaultClaimVisibility = 5 * time.Minute
+
+// handleClaimJob is GET /v1/jobs?worker=W1&block=30s
+//
+// Atomically claims one pending job and returns it. If none are
+// available, blocks up to `block` seconds (default 30s, max 60s) and
+// retries; returns 204 No Content if still empty after the wait.
+//
+// Query params:
+//
+//	worker=<id>      required, identifies the claimant for ack/heartbeat
+//	block=<duration> Go duration syntax: "30s", "1m". Default 30s, max 60s.
+func (s *listenServer) handleClaimJob(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authed(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	store := s.currentStore()
+	if store == nil {
+		http.Error(w, "state store not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	workerID := q.Get("worker")
+	if workerID == "" {
+		http.Error(w, "worker query param required", http.StatusBadRequest)
+		return
+	}
+	block := 30 * time.Second
+	if v := q.Get("block"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			http.Error(w, "invalid block duration", http.StatusBadRequest)
+			return
+		}
+		if d > maxLongPollBlock {
+			d = maxLongPollBlock
+		}
+		block = d
+	}
+
+	deadline := time.Now().Add(block)
+	for {
+		job, err := store.Claim(workerID, defaultClaimVisibility)
+		if err == nil {
+			writeJSON(w, http.StatusOK, job)
+			return
+		}
+		if !errors.Is(err, state.ErrNoJobs) {
+			slog.Error("claim failed", "worker", workerID, "error", err.Error())
+			http.Error(w, "claim failed", http.StatusInternalServerError)
+			return
+		}
+		// No jobs right now. Wait for a wakeup or until the deadline.
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		store.WaitForJob(r.Context(), remaining)
+		// Loop and try Claim again. If the wait was a spurious wakeup
+		// or the request context died, the next Claim returns ErrNoJobs
+		// and the deadline-elapsed branch above closes the response.
+		select {
+		case <-r.Context().Done():
+			// Client disconnected — don't try to write to a dead conn.
+			return
+		default:
+		}
+	}
+}
+
+// handleJobControl dispatches POSTs under /v1/jobs/. Two shapes:
+//
+//	POST /v1/jobs/{run_id}/ack
+//	POST /v1/jobs/{run_id}/heartbeat
+//
+// JSON body for ack: {"worker": "W1", "success": true|false, "error": "..."}.
+// JSON body for heartbeat: {"worker": "W1"}.
+func (s *listenServer) handleJobControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authed(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	store := s.currentStore()
+	if store == nil {
+		http.Error(w, "state store not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/jobs/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	runID := parts[0]
+	verb := parts[1]
+	if runID == "" {
+		http.Error(w, "missing run_id", http.StatusBadRequest)
+		return
+	}
+	switch verb {
+	case "ack":
+		var body struct {
+			Worker  string `json:"worker"`
+			Success bool   `json:"success"`
+			Error   string `json:"error,omitempty"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+			http.Error(w, "invalid json body", http.StatusBadRequest)
+			return
+		}
+		if body.Worker == "" {
+			http.Error(w, "worker required in body", http.StatusBadRequest)
+			return
+		}
+		if err := store.Ack(runID, body.Worker, body.Success, body.Error); err != nil {
+			slog.Error("ack failed", "run_id", runID, "error", err.Error())
+			http.Error(w, "ack failed", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"acked": runID})
+	case "heartbeat":
+		var body struct {
+			Worker string `json:"worker"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+			http.Error(w, "invalid json body", http.StatusBadRequest)
+			return
+		}
+		if body.Worker == "" {
+			http.Error(w, "worker required in body", http.StatusBadRequest)
+			return
+		}
+		if err := store.Heartbeat(runID, body.Worker, defaultClaimVisibility); err != nil {
+			// Lost-ownership is a 409, not 500 — the worker can stop
+			// heartbeating and exit cleanly without escalating to oncall.
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"heartbeat": runID})
+	default:
+		http.Error(w, "not found", http.StatusNotFound)
+	}
 }
 

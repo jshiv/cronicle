@@ -73,4 +73,37 @@ CREATE INDEX IF NOT EXISTS idx_events_run        ON events(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_events_ts         ON events(ts);
 `
 
-const targetSchemaVersion = 1
+// schemaSQL_v2 adds the producer-served queue. Jobs persist as rows
+// transitioning pending → claimed → done|failed. The single-writer SQLite
+// txn that flips status='pending' → 'claimed' on a worker's long-poll IS
+// the claim primitive — no race window between "delivered" and "ack",
+// because the row's claimed_by column is the authoritative single owner.
+//
+// Visibility timeout: claim_expires_at is set on claim; a janitor sweeps
+// rows with status='claimed' AND claim_expires_at < now back to
+// status='pending' so a dead worker's job is re-dispatched.
+//
+// payload column carries the serialized Schedule JSON the producer
+// pushed at enqueue time. Workers decode it identically to how the
+// in-process consumer does today.
+const schemaSQL_v2 = `
+CREATE TABLE IF NOT EXISTS jobs (
+    run_id            TEXT PRIMARY KEY,
+    schedule          TEXT NOT NULL,
+    payload           TEXT NOT NULL,
+    status            TEXT NOT NULL,        -- pending | claimed | done | failed
+    enqueued_at       TEXT NOT NULL,
+    claimed_at        TEXT,
+    claimed_by        TEXT NOT NULL DEFAULT '',
+    claim_expires_at  TEXT,
+    attempt           INTEGER NOT NULL DEFAULT 0,
+    last_error        TEXT NOT NULL DEFAULT '',
+    completed_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status_enqueued ON jobs(status, enqueued_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_claim_expires   ON jobs(claim_expires_at)
+  WHERE status = 'claimed';
+`
+
+const targetSchemaVersion = 2

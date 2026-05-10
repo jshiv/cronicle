@@ -81,11 +81,13 @@ func init() {
 	runCmd.Flags().String("path", "./cronicle.hcl", "Path to a cronicle.hcl file")
 	runCmd.Flags().Bool("worker", true, "start a worker thread to consume tasks in distributed mode")
 	queueDesc := `
-	message broker technology for distributed schedule execution, 
-	Options: 
+	message broker technology for distributed schedule execution,
+	Options:
+		self  [producer-served queue; workers long-poll /v1/jobs over HTTP]
 		redis [distributed on localhost:6379]
 		nsq [run on cluster with nsqd:4150]
-	Configurable via the queue.type field in cronicle.hcl
+	Configurable via the queue.type field in cronicle.hcl.
+	"self" is the recommended path going forward — Redis/NSQ will be removed in a future release.
 	`
 	runCmd.Flags().String("queue", "", queueDesc)
 	runCmd.Flags().String("queue-name", "cronicle", "Name of the queue to message schedules over.")
