@@ -68,11 +68,19 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			stderrW = sw
 		}
 
+		// Honor the per-run cancel context when one is plumbed in
+		// (HTTP-worker mode, /v1/runs/{id}/cancel preempt). Falls
+		// through to context.Background() in default in-process mode
+		// where the run is foreground and cancel isn't applicable.
+		runCtx := task.RunCtx
+		if runCtx == nil {
+			runCtx = context.Background()
+		}
 		startedAt := time.Now()
 		if streaming {
-			result = exec.ExecuteWithStream(cmd, task.Path, task.Env, stdoutW, stderrW)
+			result = exec.ExecuteWithStreamContext(runCtx, cmd, task.Path, task.Env, stdoutW, stderrW)
 		} else {
-			result = exec.Execute(cmd, task.Path, task.Env)
+			result = exec.ExecuteContext(runCtx, cmd, task.Path, task.Env)
 		}
 		finishedAt := time.Now()
 		task.lastDurationMs = finishedAt.Sub(startedAt).Milliseconds()

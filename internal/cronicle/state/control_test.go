@@ -204,6 +204,38 @@ func TestListWorkers_StatusDerivation(t *testing.T) {
 	}
 }
 
+// TestCancel_StickyAgainstLateTerminalEvent: when Cancel wins the
+// race against a post-SIGTERM shell_run event, the projection must
+// not flip back to 'failed'. The operator's intent — "this run was
+// canceled" — is what surfaces in /v1/runs.
+func TestCancel_StickyAgainstLateTerminalEvent(t *testing.T) {
+	s := newQueueTestStore(t)
+	_ = s.Enqueue("R1", "x", []byte(`{}`))
+	_, _ = s.Claim("W_A", time.Minute)
+
+	// Seed a runs+task row in 'running' via the projection.
+	applyLine(t, s, `{"time":"2026-05-10T12:00:00Z","entry_type":"schedule_start","run_id":"R1","schedule":"x","tasks":["only"]}`)
+	applyLine(t, s, `{"time":"2026-05-10T12:00:01Z","entry_type":"task_start","run_id":"R1","schedule":"x","task":"only","attempt":1}`)
+
+	// Operator cancels.
+	if _, err := s.Cancel("R1"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	// Worker's SIGTERM'd shell now reports back. Status should NOT
+	// flip from canceled to failed.
+	applyLine(t, s, `{"time":"2026-05-10T12:00:02Z","entry_type":"shell_run","run_id":"R1","schedule":"x","task":"only","exit":-1,"duration_ms":50,"success":false,"error":"signal: terminated"}`)
+	applyLine(t, s, `{"time":"2026-05-10T12:00:02Z","entry_type":"schedule_complete","run_id":"R1","schedule":"x","task_count":1,"duration_ms":80,"success":false,"error":"signal: terminated"}`)
+
+	r, _ := s.GetRun("R1")
+	if r.Status != StatusCanceled {
+		t.Fatalf("run status: got %s, want canceled (sticky)", r.Status)
+	}
+	if r.Tasks[0].Status != StatusCanceled {
+		t.Fatalf("task status: got %s, want canceled (sticky)", r.Tasks[0].Status)
+	}
+}
+
 // TestUpsertWorker_PreservesHostOnEmpty: an empty host arg doesn't
 // blow away an existing populated host.
 func TestUpsertWorker_PreservesHostOnEmpty(t *testing.T) {
