@@ -140,8 +140,12 @@ type Repo struct {
 	// DeployKey is the path to the rsa private key that enables pull access to a
 	// private remote repository.
 	DeployKey string `hcl:"key,optional"`
-	Commit    string `hcl:"branch,optional"`
-	Branch    string `hcl:"commit,optional"`
+	// Branch and Commit are mutually exclusive. ErrBranchAndCommitGiven
+	// rejects HCL that sets both. Historical bug: these fields had their
+	// HCL tags crossed (`branch` populated Commit and vice versa) — fixed
+	// here so the struct field name matches the HCL key.
+	Branch string `hcl:"branch,optional"`
+	Commit string `hcl:"commit,optional"`
 }
 
 //Retry defines the retry count and delay in number and seconds.

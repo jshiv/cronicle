@@ -52,9 +52,16 @@ Multipule workers can be started, they will take turns consuming from the queue.
 		queueType, _ := cmd.Flags().GetString("queue")
 		queueName, _ := cmd.Flags().GetString("queue-name")
 		addr, _ := cmd.Flags().GetString("addr")
+		logToFile, _ := cmd.Flags().GetBool("log-to-file")
 
 		slog.Info("Starting Worker from: " + path)
-		runOptions := cronicle.RunOptions{RunWorker: true, QueueType: queueType, QueueName: queueName, Addr: addr}
+		runOptions := cronicle.RunOptions{
+			RunWorker: true,
+			QueueType: queueType,
+			QueueName: queueName,
+			Addr:      addr,
+			LogToFile: logToFile,
+		}
 		cronicle.StartWorker(path, runOptions)
 	},
 }
@@ -81,6 +88,7 @@ func init() {
 	Configurable via the queue.addr field in cronicle.hcl
 	`
 	workerCmd.Flags().String("addr", "", addrDesc)
+	workerCmd.Flags().Bool("log-to-file", false, "mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); per-run agent transcripts go to path/.cronicle/runs/")
 
 	// Here you will define your flags and configuration settings.
 

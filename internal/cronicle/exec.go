@@ -18,6 +18,15 @@ import (
 //with time t given in the bash command. If task.Agent is set, the task is
 //dispatched to pkg/agent instead.
 func (task *Task) Exec(t time.Time) exec.Result {
+	// Reset per-attempt state. Execute() loops on retry by re-calling Exec
+	// on the same *Task, so without this any field that an early-return
+	// path leaves unset would carry forward from the previous attempt
+	// (e.g. a transcript path from a successful first run leaking into a
+	// failing-then-skipped retry's log).
+	task.lastTranscript = ""
+	task.lastDurationMs = 0
+	task.shellStreamed = false
+
 	r := strings.NewReplacer(
 		"${date}", t.Format(TimeArgumentFormatMap["${date}"]),
 		"${datetime}", t.Format(TimeArgumentFormatMap["${datetime}"]),
