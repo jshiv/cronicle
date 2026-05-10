@@ -1,0 +1,11 @@
+# Pre-provisioned Loki datasource so Grafana works on first start without
+# manual setup. The endpoint matches the loki service name in the
+# docker-compose network.
+apiVersion: 1
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
+    editable: false

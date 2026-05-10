@@ -1,27 +1,52 @@
-Send cronicle logs to graphana
----
-This deployment setup describes how to standup a cronicle log server locally on top of the graphana/loki/vector stack
-## Setup a cronicle repo
-_Build the cronicle binary via `go build -o deploy/local/`_
-```
+# Cronicle on Loki + Grafana
+
+Stand up a local log dashboard for cronicle: Vector tails the structured-JSON log file, ships to Loki, Grafana shows a pre-provisioned dashboard.
+
+## Why this stack
+
+- **Vector** parses each line of `cronicle.jsonl` and forwards to Loki. We tail the file (not stdout) so cronicle's pretty stdout for humans coexists with structured logs to disk; Vector also checkpoints its position so a restart doesn't lose lines.
+- **Loki** is the log store. Stable fields (`entry_type`, `schedule`, `task`, `success`) become labels; everything else (`cost_usd`, `model`, `mcp_servers`, `skills_loaded`, `transcript`, …) lives in the log line and is queryable via LogQL JSON parsing.
+- **Grafana** comes pre-provisioned with the Loki datasource and a "Cronicle Runs" dashboard. No click-through after `docker compose up`.
+
+## Run cronicle with file logging
+
+```bash
+# From the repo root, init a demo config (creates ./demo/cronicle.hcl).
 ./cronicle init --path demo
-./cronicle run --path demo/cronicle.hcl
+
+# Run with --log-to-file so cronicle writes .cronicle/log/cronicle.jsonl
+# and per-run agent transcripts under .cronicle/runs/.
+./cronicle run --path demo/cronicle.hcl --log-to-file
 ```
-## Install [vector](https://vector.dev/):
-_Vector is the router that ships the cronicle logs to loki._
+
+Cronicle's `--log-to-file` is independent of stdout — pretty stdout for humans + tail-able JSON file at the same time is the intended composition.
+
+## Bring up the dashboard
+
+```bash
+# CRONICLE_PATH points at the cronicle-managed dir (the one with
+# .cronicle/log inside). Defaults to ../.. which is the repo root.
+CRONICLE_PATH=$(pwd) docker compose -f deploy/local/docker-compose.yaml up -d
 ```
-curl --proto '=https' --tlsv1.2 -sSf https://sh.vector.dev | sh
+
+Then open <http://localhost:3000> — anonymous access is enabled, you land directly on the Cronicle Runs dashboard.
+
+## What the dashboard shows
+
+| Panel | LogQL |
+|---|---|
+| Recent runs | `{app="cronicle", entry_type=~"shell_run.*|agent_run.*"}` |
+| Runs per minute (by schedule) | `sum by (schedule) (count_over_time({app="cronicle", entry_type=~"shell_run.*|agent_run.*"}[1m]))` |
+| Failures | `sum(count_over_time({app="cronicle", success="false"}[$__range]))` |
+| Agent cost (USD, sum) | `sum by (schedule) (sum_over_time({app="cronicle", entry_type=~"agent_run.*"} \| json \| unwrap cost_usd [5m]))` |
+| Agent duration p95 (ms) | `quantile_over_time(0.95, ... \| unwrap duration_ms [5m])` |
+
+The dashboard is the starting point. From the Explore tab you can pivot on any field cronicle emits — token counts, MCP server names, skills loaded, etc. Set up alerts on failure rate or cost ceiling thresholds from there.
+
+## Tear down
+
+```bash
+docker compose -f deploy/local/docker-compose.yaml down
 ```
-## Pipe the cronicle logs from stdout to vector
-```
-./cronicle run --path demo/cronicle.hcl | vector --config ./vector.toml
-```
-## Run [graphana](https://grafana.com/) and [loki](https://grafana.com/docs/loki/latest/overview/) with [docker](https://docs.docker.com/desktop/).
-```
-docker-compose up
-```
-## Open http://localhost:3000/, username/password is admin/admin
-Follow the [getting started instructions](https://grafana.com/docs/loki/latest/getting-started/grafana/) to explore the logs in graphana.
-_Note: the loki server is http://loki:3100_
-Try this sample query in the log explorer: `{key="cronicle", task="hello"}`
-From here you can set up monitoring slack alerts in graphana for your specific workflows running in cronicle.
+
+Volumes are not persisted — Loki's data is gone after `down`. If you want history across restarts, add a named volume on the `loki` service.
