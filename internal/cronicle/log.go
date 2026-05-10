@@ -469,6 +469,7 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 		stop, transcript, errMsg                  string
 		durationMs, in, out                       int64
 		success                                   bool
+		skills                                    []string
 	)
 	r.Attrs(func(a slog.Attr) bool {
 		switch a.Key {
@@ -496,12 +497,16 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 			errMsg = a.Value.String()
 		case "success":
 			success = a.Value.Bool()
+		case "skills_available":
+			if v, ok := a.Value.Any().([]string); ok {
+				skills = v
+			}
 		}
 		return true
 	})
 
 	var b bytes.Buffer
-	WriteAgentRunHeader(&b, schedule, task, model)
+	WriteAgentRunHeader(&b, schedule, task, model, skills)
 	b.WriteByte('\n')
 
 	footerColor := color.New(color.Faint).SprintFunc()
@@ -527,12 +532,17 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 
 // WriteAgentRunHeader writes the bordered header for an agent run block.
 // Shared by the slog renderAgentRun path and the streaming dispatch path.
-func WriteAgentRunHeader(w io.Writer, schedule, task, model string) {
+// `skills` is the available-skills list to surface in the header (empty/nil
+// omits the segment).
+func WriteAgentRunHeader(w io.Writer, schedule, task, model string, skills []string) {
 	header := color.New(color.FgCyan, color.Bold).SprintFunc()
 	rule := color.New(color.FgCyan).SprintFunc()
 
 	headerLine := fmt.Sprintf("agent run · schedule=%s · task=%s · model=%s",
 		schedule, task, model)
+	if len(skills) > 0 {
+		headerLine += " · skills=[" + strings.Join(skills, ",") + "]"
+	}
 	bar := strings.Repeat("━", len(headerLine)+8)
 
 	fmt.Fprintln(w, rule(bar))
@@ -680,6 +690,10 @@ func formatToolInput(toolName, raw string) string {
 		if u, ok := args["url"].(string); ok {
 			return u
 		}
+	case "load_skill":
+		if n, ok := args["name"].(string); ok {
+			return n
+		}
 	}
 	return raw
 }
@@ -691,6 +705,8 @@ func displayToolName(name string) string {
 	switch name {
 	case "str_replace_based_edit_tool":
 		return "editor"
+	case "load_skill":
+		return "skill"
 	}
 	return name
 }

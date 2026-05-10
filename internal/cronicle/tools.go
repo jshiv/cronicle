@@ -368,13 +368,23 @@ func (WebFetchTool) Execute(_ context.Context, _ json.RawMessage) (string, bool)
 	return "Error: web_fetch is a server-side tool; should not be dispatched client-side", true
 }
 
+// defaultAgentToolNames is the tool universe an agent gets when the HCL
+// `tools` field is omitted. Matches the user expectation that an agent task
+// "just runs" with the full native toolkit. Note that web_search and
+// web_fetch are server-side and bill on Anthropic's side per call — set
+// `tools = ["bash", "text_editor"]` explicitly to opt out.
+func defaultAgentToolNames() []string {
+	return []string{"bash", "text_editor", "web_search", "web_fetch"}
+}
+
 // buildAgentTools converts the HCL `tools` field into a slice of agent.Tool
 // implementations bound to the given workspace and stream writer (when in
-// pretty streaming mode). Unknown tools are filtered out (Validate has
-// already rejected them at parse time, so this is defensive).
+// pretty streaming mode). Empty/nil names defaults to the full native
+// toolkit (defaultAgentToolNames). Unknown names are filtered out (Validate
+// has already rejected them at parse time, so this is defensive).
 func buildAgentTools(names []string, workspace string, env []string, w io.Writer) []agent.Tool {
 	if len(names) == 0 {
-		return nil
+		names = defaultAgentToolNames()
 	}
 	out := make([]agent.Tool, 0, len(names))
 	for _, name := range names {

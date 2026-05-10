@@ -98,9 +98,45 @@ func (task *Task) gitMeta() (commit, email string) {
 func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	runID := fmt.Sprintf("%s-%s-%s", t.UTC().Format("20060102T150405Z"), task.ScheduleName, task.Name)
 
+	// Skills: load all listed SKILL.md files up-front so a misconfigured
+	// skill (missing file, bad frontmatter) fails the run before any API
+	// call. The frontmatter (name+description) builds the available-skills
+	// catalog appended to the system prompt; bodies stay out until the
+	// agent calls load_skill (progressive disclosure, per Anthropic's
+	// Skills standard).
+	skills, skillErr := LoadSkillsForTask(task.Path, task.Agent.Skills)
+	if skillErr != nil {
+		return exec.Result{
+			Command:    []string{"agent", task.Agent.Model},
+			Error:      skillErr,
+			Stderr:     skillErr.Error(),
+			ExitStatus: 1,
+		}
+	}
+	var skillTool *SkillTool
+	if len(skills) > 0 {
+		skillTool, skillErr = NewSkillTool(skills)
+		if skillErr != nil {
+			return exec.Result{
+				Command:    []string{"agent", task.Agent.Model},
+				Error:      skillErr,
+				Stderr:     skillErr.Error(),
+				ExitStatus: 1,
+			}
+		}
+	}
+
+	system := r.Replace(task.Agent.System)
+	if section := FormatAvailableSkillsSection(skills); section != "" {
+		if system != "" {
+			system += "\n\n"
+		}
+		system += section
+	}
+
 	cfg := agent.Config{
 		Prompt:        r.Replace(task.Agent.Prompt),
-		System:        r.Replace(task.Agent.System),
+		System:        system,
 		Model:         task.Agent.Model,
 		MaxTokens:     task.Agent.MaxTokens,
 		BudgetUSD:     task.Agent.BudgetUSD,
@@ -114,6 +150,10 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	if effectiveModel == "" {
 		effectiveModel = agent.DefaultModel
 	}
+	var skillsAvailable []string
+	if skillTool != nil {
+		skillsAvailable = skillTool.Available()
+	}
 	var sw *StreamingWriter
 	if streaming {
 		// Per-task writer: the leader streams live to stdout; followers
@@ -122,7 +162,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		// concurrently.
 		sw = NewStreamingWriter()
 		defer sw.Close()
-		WriteAgentRunHeader(sw, task.ScheduleName, task.Name, effectiveModel)
+		WriteAgentRunHeader(sw, task.ScheduleName, task.Name, effectiveModel, skillsAvailable)
 		fmt.Fprintln(sw)
 		cfg.StreamHandler = NewAgentStreamRenderer(sw)
 	}
@@ -135,6 +175,9 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		toolWriter = sw
 	}
 	cfg.Tools = buildAgentTools(task.Agent.Tools, task.Path, task.Env, toolWriter)
+	if skillTool != nil {
+		cfg.Tools = append(cfg.Tools, skillTool)
+	}
 
 	// Wallclock bound: derive a context deadline from the HCL string. Default
 	// 10m if unset. Wallclock is enforced via context cancellation; the agent
@@ -179,6 +222,14 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		slog.Int64("duration_ms", durationMs),
 		slog.String("stop_reason", res.StopReason),
 		slog.String("response", res.Stdout),
+	}
+	if skillTool != nil {
+		// skills_available: the catalog the agent saw.
+		// skills_loaded:    the subset whose bodies it actually fetched.
+		// Diff of the two answers "did the run use what it had?".
+		attrs = append(attrs,
+			slog.Any("skills_available", skillsAvailable),
+			slog.Any("skills_loaded", skillTool.Loaded()))
 	}
 	if res.TranscriptPath != "" {
 		attrs = append(attrs, slog.String("transcript", res.TranscriptPath))

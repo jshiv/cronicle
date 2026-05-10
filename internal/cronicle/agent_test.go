@@ -36,12 +36,12 @@ var _ = Describe("Agent", func() {
 		Expect(task.Validate()).To(Equal(cronicle.ErrCommandAndAgentBothGiven))
 	})
 
-	It("Validate rejects an agent with an empty prompt", func() {
+	It("Validate rejects an agent with neither prompt nor skills", func() {
 		task := cronicle.Task{
 			Name:  "blank",
 			Agent: &cronicle.Agent{},
 		}
-		Expect(task.Validate()).To(Equal(cronicle.ErrAgentPromptEmpty))
+		Expect(task.Validate()).To(Equal(cronicle.ErrAgentNeedsPromptOrSkills))
 	})
 
 	It("Validate accepts an agent-only task", func() {
@@ -50,5 +50,26 @@ var _ = Describe("Agent", func() {
 			Agent: &cronicle.Agent{Prompt: "hello"},
 		}
 		Expect(task.Validate()).To(BeNil())
+	})
+
+	It("Validate accepts a skills-only agent task (no prompt)", func() {
+		task := cronicle.Task{
+			Name:  "skill-only",
+			Agent: &cronicle.Agent{Skills: []string{"skills/x/SKILL.md"}},
+		}
+		Expect(task.Validate()).To(BeNil())
+	})
+
+	It("Validate rejects skill paths that escape the workspace", func() {
+		task := cronicle.Task{
+			Name: "bad-skill",
+			Agent: &cronicle.Agent{
+				Prompt: "x",
+				Skills: []string{"../escape/SKILL.md"},
+			},
+		}
+		err := task.Validate()
+		Expect(err).NotTo(BeNil())
+		Expect(err.Error()).To(ContainSubstring("escapes task workspace"))
 	})
 })
