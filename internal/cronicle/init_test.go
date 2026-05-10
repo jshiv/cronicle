@@ -1,6 +1,7 @@
 package cronicle_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -55,9 +56,10 @@ var _ = Describe("Init", func() {
 
 			})
 
-			It("conf.Init should authenticate, clone and checkout from git@github.com:jshiv/cronicle-sample.git", func() {
+			It("conf.Init should authenticate, clone and checkout from a deploy-key SSH remote", func() {
 				conf := cronicle.Default()
-				conf.Repo = &cronicle.Repo{URL: "git@github.com:jshiv/cronicle-sample.git", DeployKey: "./test/test_deploy_key", Branch: "feature/test-branch"}
+				sshURL := fmt.Sprintf("ssh://git@%s/test_repo", testSSHAddr)
+				conf.Repo = &cronicle.Repo{URL: sshURL, DeployKey: "./test/test_deploy_key", Branch: "test/checkout_specific_branch"}
 				path, _ := filepath.Abs("./test_conf_init_ssh_auth")
 
 				err := conf.Init(path)
@@ -72,7 +74,7 @@ var _ = Describe("Init", func() {
 				Expect(task.Path).To(Equal(path))
 				// Expect(task.CroniclePath).To(Equal(path))
 				Expect(task.Repo).To(BeNil())
-				Expect(g.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("feature/test-branch")))
+				Expect(g.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("test/checkout_specific_branch")))
 				Expect(cronicle.DirExists(path + "/.git")).To(Equal(true))
 				os.RemoveAll(path)
 			})
