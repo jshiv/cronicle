@@ -6,6 +6,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.41.0
 	github.com/fatih/color v1.19.0
 	github.com/gernest/kemi v0.0.0-20160708162426-04d6c23628c2
+	github.com/gliderlabs/ssh v0.3.8
 	github.com/go-git/go-git/v5 v5.19.0
 	github.com/go-redis/redis v6.15.9+incompatible
 	github.com/hashicorp/hcl/v2 v2.24.0
@@ -32,6 +33,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/agext/levenshtein v1.2.3 // indirect
+	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect

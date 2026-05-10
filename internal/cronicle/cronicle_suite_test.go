@@ -21,6 +21,8 @@ func TestConfig(t *testing.T) {
 var croniclePath string
 var taskPath string
 var testRepoPath string
+var testSSHAddr string
+var testSSHStop func()
 
 var _ = BeforeSuite(func() {
 	croniclePath, _ = filepath.Abs("./testconfig/")
@@ -31,9 +33,18 @@ var _ = BeforeSuite(func() {
 	testRepoPath = filepath.Join(p, ".git")
 	kemi.Unpack("test_repo.tar.gz", "./")
 
+	serveRoot, _ := filepath.Abs("./")
+	keyPath, _ := filepath.Abs("./test/test_deploy_key.pub")
+	addr, stop, err := startTestSSHServer(serveRoot, keyPath)
+	Expect(err).To(BeNil())
+	testSSHAddr = addr
+	testSSHStop = stop
 })
 
 var _ = AfterSuite(func() {
+	if testSSHStop != nil {
+		testSSHStop()
+	}
 	os.RemoveAll("./testconfig")
 	os.RemoveAll("./test_repo/")
 	os.RemoveAll("./test_task/")
