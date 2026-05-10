@@ -1,6 +1,7 @@
 package cronicle
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -55,6 +56,13 @@ type Schedule struct {
 	//is included in schedule_start so the projection can populate
 	//runs.source. Default empty (back-compat); ProduceSchedule fills it.
 	Source string
+	// RunCtx is the per-run cancel context used to preempt in-flight
+	// task execution when a /v1/runs/{id}/cancel signal arrives. Set
+	// by the HTTP worker before calling ExecuteTasks; nil in default
+	// in-process mode (where cancellation isn't supported because the
+	// run is foreground anyway). Excluded from JSON so the wire
+	// payload stays clean.
+	RunCtx context.Context `json:"-"`
 }
 
 // Task is the configuration structure that defines a task (i.e., a command)
@@ -75,6 +83,11 @@ type Task struct {
 	// (set in dag.go's ExecuteTasks). Threaded into per-task events so
 	// the projection groups them under the right run.
 	RunID string
+	// RunCtx is the per-run cancel context propagated from
+	// Schedule.RunCtx. The agent dispatch path uses it as parent so a
+	// /v1/runs/{id}/cancel signal preempts long multi-turn runs at the
+	// next ctx.Done() check between turns.
+	RunCtx context.Context `json:"-"`
 
 	// per-run state populated by Exec, read by Log. Unexported so they don't
 	// pollute JSON marshaling or HCL encoding.

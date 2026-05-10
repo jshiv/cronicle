@@ -151,7 +151,7 @@ func TestRuns_GetRun(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs/X1", nil)
 	req.Header.Set("Authorization", "Bearer secret")
-	srv.handleGetRun(rr, req)
+	srv.handleRunRoute(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
@@ -166,7 +166,7 @@ func TestRuns_GetRun(t *testing.T) {
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v1/runs/nope", nil)
 	req.Header.Set("Authorization", "Bearer secret")
-	srv.handleGetRun(rr, req)
+	srv.handleRunRoute(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown id, got %d", rr.Code)
 	}

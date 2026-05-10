@@ -2,6 +2,7 @@ package state
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -161,6 +162,87 @@ func (s *Store) GetRun(runID string) (Run, error) {
 		r.Tasks = append(r.Tasks, t)
 	}
 	return r, rows.Err()
+}
+
+// Worker is the API-facing shape of a row in the workers table. Status
+// is computed at read time from last_seen — workers don't run a janitor
+// to flip the column; "stale" means "last_seen older than the staleness
+// threshold." Threshold defaults to 2 minutes (worker default heartbeat
+// is ~100s; one missed cycle is fine, two is concerning).
+type Worker struct {
+	WorkerID    string    `json:"worker_id"`
+	Host        string    `json:"host,omitempty"`
+	Status      string    `json:"status"` // active | idle | stale
+	LastSeen    time.Time `json:"last_seen,omitzero"`
+	CurrentRun  string    `json:"current_run,omitempty"`
+	ClaimedAt   time.Time `json:"claimed_at,omitzero"`
+	RunsTotal   int       `json:"runs_total"`
+	RunsFailed  int       `json:"runs_failed"`
+}
+
+// ListWorkers returns the worker registry sorted by last_seen DESC.
+// Status is derived: a worker with current_run set AND last_seen within
+// 2 minutes is "active"; current_run empty is "idle"; last_seen older
+// than 2 minutes is "stale" regardless of current_run.
+func (s *Store) ListWorkers() ([]Worker, error) {
+	rows, err := s.db.Query(`
+		SELECT worker_id, host, last_seen, current_run,
+		       COALESCE(claimed_at, ''), runs_total, runs_failed
+		FROM workers
+		ORDER BY last_seen DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("ListWorkers: %w", err)
+	}
+	defer rows.Close()
+
+	staleAfter := 2 * time.Minute
+	now := time.Now()
+	var out []Worker
+	for rows.Next() {
+		var (
+			w           Worker
+			lastSeenStr string
+			claimedStr  string
+		)
+		if err := rows.Scan(&w.WorkerID, &w.Host, &lastSeenStr, &w.CurrentRun,
+			&claimedStr, &w.RunsTotal, &w.RunsFailed); err != nil {
+			return nil, err
+		}
+		w.LastSeen = parseTime(lastSeenStr)
+		w.ClaimedAt = parseTime(claimedStr)
+		switch {
+		case !w.LastSeen.IsZero() && now.Sub(w.LastSeen) > staleAfter:
+			w.Status = "stale"
+		case w.CurrentRun != "":
+			w.Status = "active"
+		default:
+			w.Status = "idle"
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// UpsertWorker is called by the SSE control-channel handler when a
+// worker connects. Records the host (the SSE conn knows the worker_id
+// and we let the worker self-declare host via the registration body).
+// Without this, workers that long-poll only (don't subscribe to control)
+// still register via Claim, but workers running in idle mode never
+// would.
+func (s *Store) UpsertWorker(workerID, host string) error {
+	if workerID == "" {
+		return errors.New("UpsertWorker: empty worker_id")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.Exec(`
+		INSERT INTO workers(worker_id, host, last_seen)
+		VALUES (?, ?, ?)
+		ON CONFLICT(worker_id) DO UPDATE SET
+		    host = CASE WHEN excluded.host != '' THEN excluded.host ELSE workers.host END,
+		    last_seen = excluded.last_seen`,
+		workerID, host, now,
+	)
+	return err
 }
 
 // CountRuns is a small helper used in tests / smoke checks.

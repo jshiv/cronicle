@@ -24,7 +24,6 @@ package cronicle
 
 import (
 	"bufio"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,10 +76,12 @@ func startListener(addr, token string, queue chan<- []byte) {
 	mux.HandleFunc("/v1/schedules", s.handleListSchedules)
 	mux.HandleFunc("/v1/schedules/", s.handleScheduleRoute)
 	mux.HandleFunc("/v1/runs", s.handleListRuns)
-	mux.HandleFunc("/v1/runs/", s.handleGetRun)
 	mux.HandleFunc("/v1/events", s.handleIngestEvents)
 	mux.HandleFunc("/v1/jobs", s.handleClaimJob)
 	mux.HandleFunc("/v1/jobs/", s.handleJobControl)
+	mux.HandleFunc("/v1/workers", s.handleListWorkers)
+	mux.HandleFunc("/v1/workers/", s.handleWorkerRoute)
+	mux.HandleFunc("/v1/runs/", s.handleRunRoute)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -391,41 +392,8 @@ func (s *listenServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, runs)
 }
 
-// handleGetRun answers GET /v1/runs/{run_id} with the run plus its
-// per-task detail. 404 when the run id isn't in the projection (it may
-// still be in the JSONL log if it predates the retention window —
-// callers needing deep history grep the file).
-func (s *listenServer) handleGetRun(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !s.authed(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	store := s.currentStore()
-	if store == nil {
-		http.Error(w, "state store not enabled", http.StatusServiceUnavailable)
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/v1/runs/")
-	if id == "" || strings.Contains(id, "/") {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	run, err := store.GetRun(id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, fmt.Sprintf("run %q not found", id), http.StatusNotFound)
-			return
-		}
-		slog.Error("get run failed", "run_id", id, "error", err.Error())
-		http.Error(w, "get run failed", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, run)
-}
+// handleGetRun is now folded into handleRunRoute (see listen_control.go).
+// Kept here as a stub-removed marker for any callers that drift in.
 
 // currentStore is a small indirection to handle the test path where
 // stateSrc may be nil and the global StateStore is what we want.

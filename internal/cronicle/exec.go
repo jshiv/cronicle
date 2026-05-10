@@ -213,7 +213,11 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 			wallclock = d
 		}
 	}
-	runCtx, cancel := context.WithTimeout(context.Background(), wallclock)
+	parentCtx := task.RunCtx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	runCtx, cancel := context.WithTimeout(parentCtx, wallclock)
 	defer cancel()
 
 	// MCP servers: launch under runCtx so wallclock cancellation also tears

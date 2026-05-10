@@ -467,6 +467,10 @@ set `CRONICLE_LISTEN_TOKEN` in the environment.
 | GET    | `/v1/jobs?worker=&block=`                              | Long-poll job claim                  |
 | POST   | `/v1/jobs/{run_id}/ack`                                | Worker reports completion            |
 | POST   | `/v1/jobs/{run_id}/heartbeat`                          | Visibility-timeout renewal           |
+| GET    | `/v1/workers`                                          | Registry: who's connected, what they ran |
+| GET    | `/v1/workers/{id}/control`                             | SSE; producer pushes cancel signals  |
+| POST   | `/v1/runs/{run_id}/cancel`                             | Stop a pending or in-flight run      |
+| POST   | `/v1/runs/{run_id}/retry`                              | Re-enqueue a terminal run with a new id |
 
 Auth is bearer-token (`Authorization: Bearer <token>`). Rotate by
 restarting the process.
@@ -595,7 +599,58 @@ How it works:
 - **Atomic claim**: `BEGIN IMMEDIATE; UPDATE jobs SET status='claimed', claimed_by=? WHERE id=? AND status='pending'`. SQLite WAL serializes writers, so two concurrent workers cannot both acquire the same row. The losing worker's long-poll sees no row and reconnects.
 - **Visibility timeout**: claimed jobs expire after 5 minutes. A janitor goroutine sweeps every 10 seconds, moving expired claims back to `pending`. A worker dies → its job is re-dispatched. Long agent runs `POST /v1/jobs/{id}/heartbeat` to extend the deadline.
 - **Event shipping**: workers tee their slog event stream to the producer via `POST /v1/events` (JSONL, batched every 500ms or 64 events). Producer's projection reflects what the worker actually did. Events also write to the worker's local `cronicle.jsonl` for on-host audit.
-- **Two persistent connections per worker**: the rolling `GET /v1/jobs` long-poll and the slog→events shipper. Plus short-lived `POST /v1/jobs/{id}/ack` and `/heartbeat`. No SSE control channel yet (that's Phase 3, for cancel signals).
+- **Three persistent connections per worker**: the rolling `GET /v1/jobs` long-poll, the slog→events shipper, and the `GET /v1/workers/{id}/control` SSE channel for cancel signals. Plus short-lived `POST /v1/jobs/{id}/ack` and `/heartbeat`.
+
+### Cancel and retry
+
+```bash
+# Stop a pending or in-flight run. If a worker holds the claim, the
+# producer pushes "cancel run_id=X" over its SSE control channel; the
+# worker's per-run context is canceled and the agent loop exits at the
+# next ctx.Done() check between turns.
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/runs/$RUN_ID/cancel
+# -> {"run_id":"...","worker_id":"ext-1","was_claimed":true,"status":"canceled"}
+
+# Re-enqueue a terminal run (succeeded or failed) with a fresh run_id.
+# Original run row stays in the projection as audit trail.
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/runs/$RUN_ID/retry
+# -> {"original_run_id":"...","new_run_id":"...","schedule":"daily"}
+```
+
+Cancel honors are best-effort for tool calls already in flight (a bash
+command in progress runs to completion before the agent's between-turn
+check sees the cancel). For shell tasks, the per-run context is
+plumbed in but `pkg/exec.Execute`'s no-context path still finishes the
+process — preempting mid-shell needs `--log-format=pretty` streaming
+mode which uses `ExecuteWithStreamContext`. Future work.
+
+### Worker registry
+
+`GET /v1/workers` returns the connected workers with derived status:
+
+```json
+[
+  {
+    "worker_id": "ext-1",
+    "host": "ec2-east-1",
+    "status": "active",
+    "last_seen": "2026-05-10T19:06:16Z",
+    "current_run": "20260510T190616Z-...",
+    "claimed_at": "2026-05-10T19:06:16Z",
+    "runs_total": 42,
+    "runs_failed": 1
+  }
+]
+```
+
+`status` is one of `active` (current_run set, last_seen recent), `idle`
+(no current_run, last_seen recent), `stale` (last_seen older than
+2 minutes — likely network partition or worker hung). Workers register
+on first claim AND on SSE control-channel connect; a `stale` worker
+might have hard-died, in which case the visibility-timeout reaper
+recovers their in-flight job within 5 minutes.
 
 As of v0.5, Redis and NSQ broker support has been removed. The vice transport, the
 `--queue redis|nsq` flags, and the `deploy/redis` / `deploy/nsq` docker-compose

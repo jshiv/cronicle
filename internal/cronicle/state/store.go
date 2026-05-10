@@ -44,11 +44,17 @@ const (
 // share the same mutex. wait/waitOnce gate the lazy initialization of
 // the long-poll wakeup primitive so single-node mode (no queue methods
 // ever called) doesn't pay for it.
+//
+// Phase 3 adds controlOnce/controlReg2 for the SSE worker control
+// channel — workers subscribe and receive cancel signals from the
+// producer. Lazy-init keeps single-node mode free of the cost.
 type Store struct {
-	db       *sql.DB
-	mu       sync.Mutex // serializes write transactions
-	waitOnce sync.Once
-	wait     *jobWaiters
+	db          *sql.DB
+	mu          sync.Mutex // serializes write transactions
+	waitOnce    sync.Once
+	wait        *jobWaiters
+	controlOnce sync.Once
+	controlReg2 *controlRegistry
 }
 
 // Open returns a Store backed by the given DSN. Use ":memory:" for an
@@ -121,6 +127,12 @@ func (s *Store) migrate() error {
 	if current < 2 {
 		if _, err := s.db.Exec(schemaSQL_v2); err != nil {
 			return fmt.Errorf("state.migrate v2: %w", err)
+		}
+	}
+	// v3: workers (registry)
+	if current < 3 {
+		if _, err := s.db.Exec(schemaSQL_v3); err != nil {
+			return fmt.Errorf("state.migrate v3: %w", err)
 		}
 	}
 	if current >= targetSchemaVersion {
