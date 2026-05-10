@@ -23,6 +23,7 @@
 package cronicle
 
 import (
+	"bufio"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -77,6 +78,7 @@ func startListener(addr, token string, queue chan<- []byte) {
 	mux.HandleFunc("/v1/schedules/", s.handleScheduleRoute)
 	mux.HandleFunc("/v1/runs", s.handleListRuns)
 	mux.HandleFunc("/v1/runs/", s.handleGetRun)
+	mux.HandleFunc("/v1/events", s.handleIngestEvents)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -426,5 +428,92 @@ func (s *listenServer) currentStore() *state.Store {
 		return s.stateSrc()
 	}
 	return StateStore()
+}
+
+// ---- /v1/events -------------------------------------------------------------
+
+// maxEventBatchBytes caps a single ingest body so a misbehaving worker
+// can't OOM the producer with one giant POST. 16 MiB is generous: a typical
+// event is ~500 bytes, so 16 MiB is ~30k events — far more than any real
+// batch should carry.
+const maxEventBatchBytes = 16 << 20
+
+// ingestResponse is the shape returned by POST /v1/events. Callers can
+// reconcile partial-success cases: a worker that POSTs 100 events and
+// gets accepted=98, dropped=2 has enough info to retry the dropped ones
+// (we don't echo which ones failed; simplest API is "retry the whole
+// batch" since Apply is idempotent at the projection level).
+type ingestResponse struct {
+	Accepted int `json:"accepted"`
+	Dropped  int `json:"dropped"`
+}
+
+// handleIngestEvents receives a JSONL body and folds each event into the
+// projection. One event per line — same shape as cronicle.jsonl on disk,
+// so workers can literally POST tail bytes with no transformation.
+//
+// Auth: bearer token, same as other endpoints. Workers will use the same
+// CRONICLE_LISTEN_TOKEN we already use for triggers; tighter per-worker
+// scoping can land later if it ever matters.
+//
+// Body limit: 16 MiB. Empty body → 200 with accepted=0. Lines that don't
+// parse or that DecodeEvent rejects (no entry_type, no run_id) are
+// counted as dropped — they're benign for the projection but the count
+// surfaces malformed shippers.
+func (s *listenServer) handleIngestEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authed(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	store := s.currentStore()
+	if store == nil {
+		http.Error(w, "state store not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, maxEventBatchBytes)
+	defer body.Close()
+
+	var (
+		accepted int
+		dropped  int
+	)
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxEventBatchBytes)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 || line[0] == '\n' {
+			continue
+		}
+		ev, ok := state.DecodeEvent(line)
+		if !ok {
+			dropped++
+			continue
+		}
+		if err := store.Apply(ev); err != nil {
+			slog.Warn("event apply failed", "run_id", ev.RunID, "entry_type", ev.EntryType, "error", err.Error())
+			dropped++
+			continue
+		}
+		accepted++
+	}
+	if err := scanner.Err(); err != nil {
+		// MaxBytesReader returns http.MaxBytesError when over the limit.
+		// bufio.ErrTooLong fires when a single line exceeds our scanner
+		// buffer — same end-user fault (oversized payload), so map both
+		// to 413 rather than spraying internal-error statuses.
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) || errors.Is(err, bufio.ErrTooLong) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		slog.Error("events ingest read failed", "error", err.Error())
+		http.Error(w, "ingest read failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, ingestResponse{Accepted: accepted, Dropped: dropped})
 }
 
