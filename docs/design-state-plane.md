@@ -178,6 +178,160 @@ A reaper goroutine moves expired claims back to `pending` so a dead
 worker's job is re-dispatched. Same semantics as SQS or Redis
 BLPOP+keepalive, but in-process.
 
+#### Wire pattern
+
+Workers don't subscribe to a server-push stream for jobs. They
+**long-poll**, which behaves like a subscription but inverts who
+holds the open connection:
+
+```
+worker loop:
+  GET /v1/jobs?worker=W1&block=30s
+      ├─ server holds the request up to 30s
+      ├─ if a job is available now (or arrives during the wait):
+      │     atomically: UPDATE jobs SET claimed_by='W1',
+      │                   claim_expires=NOW+5min
+      │                   WHERE id=(next pending) AND status='pending'
+      │     return 200 + the schedule JSON
+      └─ if timeout fires with nothing pending: return 204
+  on 200: execute, then POST /v1/jobs/{run_id}/ack
+  on 204 or transient error: reconnect immediately
+```
+
+Each worker holds two long-lived connections plus short-lived
+request/response endpoints:
+
+| connection                       | direction | shape          | purpose |
+|----------------------------------|-----------|----------------|---------|
+| `GET /v1/jobs` (rolling 30s)     | pull      | long-poll      | job dispatch w/ atomic claim |
+| `GET /v1/workers/W1/control`     | push      | SSE            | cancel signals from operator |
+| `POST /v1/events`                | pull      | short request  | ship events back |
+| `POST /v1/jobs/{id}/ack`         | pull      | short request  | report completion |
+| `POST /v1/jobs/{id}/heartbeat`   | pull      | short request  | visibility renewal (long agent runs) |
+
+Why long-poll instead of pure SSE/WebSocket push for jobs:
+
+- **Claim and delivery are one DB transaction.** With a push model,
+  the server picks a worker and pushes; the worker may die or drop
+  the message before processing. You then need a separate ack timer
+  + redispatch logic on the server. With long-poll, the SQL `UPDATE`
+  that marks the job claimed AND the HTTP body that carries it are
+  atomic. Worker dies → never acks → `claim_expires` lapses → janitor
+  moves it back to `pending` → next worker's long-poll picks it up.
+- **No "is worker X alive?" tracking.** The long-poll roundtrip is
+  the heartbeat. Server holds zero per-worker connection state for
+  the dispatch path.
+- **HTTP semantics carry through.** Auth headers, proxies, load
+  balancers, mTLS — all work without special handling.
+
+Cancel signals DO use SSE because they're sparse, server-initiated,
+and target a specific worker by ID. Right tool for each job.
+
+#### How does worker B know worker A took the task?
+
+The atomic SQL `UPDATE` is the answer. Two workers' long-polls fire
+at the same instant:
+
+```sql
+-- both workers run this in their own transaction:
+BEGIN IMMEDIATE;  -- acquire write lock at txn start
+SELECT id, payload FROM jobs
+  WHERE status='pending'
+     OR (status='claimed' AND claim_expires < datetime('now'))
+  ORDER BY enqueued_at LIMIT 1;
+-- worker A reads id=42 here
+UPDATE jobs
+  SET status='claimed',
+      claimed_by='W_A',
+      claim_expires=datetime('now', '+5 minutes')
+  WHERE id=42 AND status='pending';   -- WHERE prevents double-claim
+COMMIT;
+```
+
+SQLite WAL serializes writers — two concurrent `BEGIN IMMEDIATE`
+transactions go through one at a time. Worker A wins the lock,
+claims id=42, releases. Worker B then runs the same statement; the
+`WHERE id=42 AND status='pending'` returns zero rows because A
+already moved it to `claimed`. Worker B's `SELECT` returns the
+*next* pending job, or no row at all. Server returns 204 to B; B
+reconnects.
+
+Even without the `WHERE` guard, the `claimed_by` column is the
+authoritative single owner. Two workers can never both believe they
+own the same job — the row's `claimed_by` is whichever transaction
+committed first.
+
+#### Concurrency and locking
+
+SQLite WAL mode gives us:
+
+- **One writer at a time across the whole DB**, transactions
+  serialized by an OS file lock acquired at `BEGIN IMMEDIATE`.
+- **Many concurrent readers**, no blocking against the writer
+  (readers see the pre-writer snapshot).
+- **Durability to fsync**: on `COMMIT`, the WAL is fsynced before
+  return; a kernel panic between transactions does not lose
+  committed work.
+
+Single-writer sounds restrictive but isn't, because:
+
+- A typical claim transaction is ~0.1–1 ms. 50 workers all waking
+  at the same cron-tick instant serialize through in <50 ms total.
+- Event POSTs (the other writer path) are equally fast — single-row
+  `INSERT INTO events` plus `UPDATE runs/tasks` in one transaction.
+- Readers (`GET /v1/runs?status=...`) do not contend with writers
+  in WAL mode. The status API never blocks the queue.
+
+Things to actually get right in the implementation:
+
+- **`BEGIN IMMEDIATE`, not `BEGIN DEFERRED`.** Acquire the write
+  lock at transaction start. Otherwise SQLite upgrades the lock
+  mid-transaction and can return `SQLITE_BUSY`, requiring retry.
+- **`busy_timeout` set to ~5s.** If a writer briefly holds the
+  lock during a checkpoint, other writers wait rather than fail.
+- **WAL checkpoint policy.** Default auto-checkpoint at 1000 pages
+  (~4MB) is fine. We can tune if WAL growth becomes an issue.
+- **Thundering herd on enqueue.** When a new job is inserted, all N
+  blocked long-polls need to wake. Cheapest correct implementation:
+  a single `sync.Cond` (or buffered chan) the producer broadcasts
+  on; all waiters wake, race for the SQL claim, losers reblock.
+  At our scale (typically ≤10 workers) the wasted wakeups are
+  negligible. If we ever scale past 100 workers, switch to a FIFO
+  of waiting worker IDs and dispatch to the head.
+- **Janitor cadence.** A goroutine sweeps `WHERE status='claimed'
+  AND claim_expires < datetime('now')` every 10s, sets back to
+  `pending`. Cheap, indexed, runs in microseconds.
+
+#### Same as Redis vice, or better?
+
+Semantically equivalent for cronicle's use case. Practically a win:
+
+| dimension                     | Redis vice (today)             | producer queue (proposed)             |
+|-------------------------------|--------------------------------|---------------------------------------|
+| **delivery semantics**        | at-least-once + visibility    | at-least-once + visibility            |
+| **atomic claim primitive**    | `BRPOP`/`BRPOPLPUSH` on Redis | `BEGIN IMMEDIATE; UPDATE; COMMIT`     |
+| **operational footprint**     | 2 daemons (cronicle + Redis)  | 1 daemon                              |
+| **persistence guarantees**    | depends on AOF/RDB config     | WAL fsync on commit, durable by default |
+| **claim atomicity guarantees**| Redis is single-threaded      | SQLite serializes writers via WAL     |
+| **wire hops**                 | producer → Redis → worker     | producer → worker (direct)            |
+| **claim latency**             | sub-ms (BRPOP wakes instantly) | 1–5 ms (HTTP + tiny SQL txn)          |
+| **throughput ceiling**        | millions ops/sec              | ~1k writes/sec sustained (WAL)        |
+| **at our actual load**        | both 100k× over budget        | both 60× over budget — same answer    |
+
+The throughput-ceiling row is the only column where Redis wins, and
+the win is irrelevant: cronicle's actual peak load is roughly 100
+events per minute, and SQLite WAL handles that with three orders of
+magnitude of headroom. The argument for Redis was always
+"distributed-systems scale" — and for the deployments cronicle
+actually serves (sub-100 schedules, sub-50 workers), the producer
+queue is strictly better: fewer moving parts, durable by default,
+no Sentinel/cluster setup to learn.
+
+Where Redis would still be the right choice: cross-cluster
+queueing, multi-DC fan-out, or scenarios where the queue needs to
+outlive any single producer. Those are option C territory and out
+of scope for v0.5.
+
 #### Scale check
 
 A typical cronicle deployment fires far less than people assume:
