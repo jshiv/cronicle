@@ -199,7 +199,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		fmt.Fprintln(sw)
 		fmt.Fprintln(sw)
 		WriteAgentRunFooter(sw,
-			int64(res.InputTokens), int64(res.OutputTokens),
+			int64(res.InputTokens), int64(res.OutputTokens), int64(res.CacheReadIn),
 			fmt.Sprintf("%.6f", res.CostUSD), durationMs,
 			res.StopReason, res.TranscriptPath)
 	}

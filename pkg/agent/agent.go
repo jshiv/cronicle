@@ -211,13 +211,32 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		if len(toolDefs) > 0 {
 			params.Tools = toolDefs
 		}
+		// Prompt caching: place a single ephemeral breakpoint at the end of
+		// the static request prefix. Multi-turn runs re-send identical
+		// tools+system every turn; a breakpoint here makes turn 2+ read the
+		// prefix at 0.1× input cost instead of paying full price each turn.
+		// One breakpoint at the end of system also caches the tools above it
+		// (the prefix extends from request start to each breakpoint). When
+		// system is empty but tools exist, fall back to a breakpoint on the
+		// last tool. Below the per-model minimum-cacheable threshold the
+		// API silently no-ops the breakpoint, so this is safe to leave on.
+		applyCacheBreakpoint(&params)
 
 		msg := anthropic.Message{}
+		// SDK's Message.Accumulate only forwards OutputTokens from
+		// MessageDeltaEvent and drops the cache fields. Anthropic returns
+		// cache_creation/read on the FINAL message_delta, so we capture
+		// them ourselves while iterating events.
+		var deltaUsage anthropic.MessageDeltaUsage
 
 		stream := client.Messages.NewStreaming(ctx, params)
 		for stream.Next() {
 			event := stream.Current()
 			_ = msg.Accumulate(event)
+
+			if delta, ok := event.AsAny().(anthropic.MessageDeltaEvent); ok {
+				deltaUsage = delta.Usage
+			}
 
 			// During the stream we only fire text / thinking deltas. Tool
 			// events fire later from the dispatch loop with the fully
@@ -252,10 +271,29 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		turnsRun = turn + 1
 		finalStop = msg.StopReason
 
-		cumUsage.InputTokens += msg.Usage.InputTokens
-		cumUsage.OutputTokens += msg.Usage.OutputTokens
-		cumUsage.CacheCreationInputTokens += msg.Usage.CacheCreationInputTokens
-		cumUsage.CacheReadInputTokens += msg.Usage.CacheReadInputTokens
+		// Prefer the final message_delta usage (it has cache fields and the
+		// authoritative final cumulative output_tokens for this turn). Fall
+		// back to msg.Usage from message_start when no delta arrived.
+		turnIn := msg.Usage.InputTokens
+		turnOut := msg.Usage.OutputTokens
+		turnCacheW := msg.Usage.CacheCreationInputTokens
+		turnCacheR := msg.Usage.CacheReadInputTokens
+		if deltaUsage.InputTokens > 0 {
+			turnIn = deltaUsage.InputTokens
+		}
+		if deltaUsage.OutputTokens > 0 {
+			turnOut = deltaUsage.OutputTokens
+		}
+		if deltaUsage.CacheCreationInputTokens > 0 {
+			turnCacheW = deltaUsage.CacheCreationInputTokens
+		}
+		if deltaUsage.CacheReadInputTokens > 0 {
+			turnCacheR = deltaUsage.CacheReadInputTokens
+		}
+		cumUsage.InputTokens += turnIn
+		cumUsage.OutputTokens += turnOut
+		cumUsage.CacheCreationInputTokens += turnCacheW
+		cumUsage.CacheReadInputTokens += turnCacheR
 
 		if tw != nil {
 			tw.writeResponse(turn, &msg, time.Now().UTC())
@@ -361,6 +399,25 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return res, runErr
 	}
 	return res, nil
+}
+
+// applyCacheBreakpoint sets a single ephemeral cache_control on the last
+// stable element of the request prefix. Caching is per-block but the cache
+// PREFIX extends from request start through the marked block, so a
+// breakpoint at end-of-system caches tools+system together. We mark exactly
+// one breakpoint to stay well under Anthropic's 4-per-request limit and
+// leave headroom for future per-message breakpoints.
+func applyCacheBreakpoint(params *anthropic.MessageNewParams) {
+	cc := anthropic.NewCacheControlEphemeralParam()
+	if n := len(params.System); n > 0 {
+		params.System[n-1].CacheControl = cc
+		return
+	}
+	if n := len(params.Tools); n > 0 {
+		if p := params.Tools[n-1].GetCacheControl(); p != nil {
+			*p = cc
+		}
+	}
 }
 
 func computeCost(model string, in, out, cacheWrite, cacheRead int) float64 {
