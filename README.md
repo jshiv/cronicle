@@ -213,12 +213,13 @@ task "morning_brief" {
     model      = "claude-opus-4-7"
     system     = "You are a concise operational assistant."
 
-    // Tools available to the agent. Omit to default to all natives.
+    // Tools available to the agent. Omit to default to local-only:
     //   bash         — run shell commands in the task workspace
     //   text_editor  — view/create/edit files (workspace-confined)
-    //   web_search   — server-side web search (billed per call)
-    //   web_fetch    — server-side URL fetch  (billed per call)
-    tools = ["bash", "text_editor"]
+    // Opt-in (server-side, billed per call on Anthropic):
+    //   web_search   — server-side web search
+    //   web_fetch    — server-side URL fetch
+    tools = ["bash", "text_editor", "web_search"]
 
     // Anthropic Agent Skills (progressive disclosure). Each entry is a
     // SKILL.md (workspace-relative); only frontmatter name+description

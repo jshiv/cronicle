@@ -369,12 +369,17 @@ func (WebFetchTool) Execute(_ context.Context, _ json.RawMessage) (string, bool)
 }
 
 // defaultAgentToolNames is the tool universe an agent gets when the HCL
-// `tools` field is omitted. Matches the user expectation that an agent task
-// "just runs" with the full native toolkit. Note that web_search and
-// web_fetch are server-side and bill on Anthropic's side per call — set
-// `tools = ["bash", "text_editor"]` explicitly to opt out.
+// `tools` field is omitted. Local-only tools by default — bash and
+// text_editor run inside the task workspace and don't add per-call cost
+// beyond the model itself.
+//
+// web_search and web_fetch are deliberately excluded: they bill on
+// Anthropic's side per call, which is surprising for an unattended cron
+// job that "just runs" with the default toolkit. Add them explicitly:
+//
+//	tools = ["bash", "text_editor", "web_search", "web_fetch"]
 func defaultAgentToolNames() []string {
-	return []string{"bash", "text_editor", "web_search", "web_fetch"}
+	return []string{"bash", "text_editor"}
 }
 
 // buildAgentTools converts the HCL `tools` field into a slice of agent.Tool

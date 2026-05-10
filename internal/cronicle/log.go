@@ -482,7 +482,9 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 		case "response":
 			response = a.Value.String()
 		case "cost_usd":
-			costStr = a.Value.String()
+			// cost_usd is a Float64 attr (slog.Float64 in execAgent);
+			// fmt to a 6-decimal string for the pretty footer.
+			costStr = fmt.Sprintf("%.6f", a.Value.Float64())
 		case "duration_ms":
 			durationMs = a.Value.Int64()
 		case "input_tokens":

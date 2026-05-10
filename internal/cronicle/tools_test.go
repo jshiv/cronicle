@@ -85,17 +85,18 @@ func TestResolveInWorkspace(t *testing.T) {
 	}
 }
 
-// defaultAgentToolNames returns all four natives. Build the corresponding
-// agent.Tool slice and confirm names round-trip.
+// defaultAgentToolNames is local-only by default (bash + text_editor).
+// web_search / web_fetch bill per call and are opt-in — adding them by
+// default would surprise unattended cron jobs.
 func TestDefaultAgentToolNamesContents(t *testing.T) {
 	names := defaultAgentToolNames()
-	want := map[string]bool{"bash": true, "text_editor": true, "web_search": true, "web_fetch": true}
+	want := map[string]bool{"bash": true, "text_editor": true}
 	if len(names) != len(want) {
-		t.Fatalf("default tools count: got %d, want %d", len(names), len(want))
+		t.Fatalf("default tools count: got %d, want %d (%v)", len(names), len(want), names)
 	}
 	for _, n := range names {
 		if !want[n] {
-			t.Fatalf("unexpected default tool %q", n)
+			t.Fatalf("unexpected default tool %q (web_search and web_fetch should be opt-in)", n)
 		}
 	}
 }

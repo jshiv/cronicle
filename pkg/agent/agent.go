@@ -421,7 +421,7 @@ func applyCacheBreakpoint(params *anthropic.MessageNewParams) {
 }
 
 func computeCost(model string, in, out, cacheWrite, cacheRead int) float64 {
-	p, ok := pricing[model]
+	p, ok := pricing[priceKey(model)]
 	if !ok {
 		return 0
 	}
@@ -429,6 +429,33 @@ func computeCost(model string, in, out, cacheWrite, cacheRead int) float64 {
 		float64(out)*p.out +
 		float64(cacheWrite)*p.cacheWrite +
 		float64(cacheRead)*p.cacheRead) / 1_000_000
+}
+
+// priceKey resolves an Anthropic model id to its alias entry in the pricing
+// table. Dated ids like "claude-opus-4-7-20251022" are stripped of the
+// trailing -YYYYMMDD so they resolve to the alias's price. Without this,
+// any time the API rolls a new dated revision the run would be costed at
+// $0 silently — a big problem for unattended cron jobs with cost ceilings.
+func priceKey(model string) string {
+	if _, ok := pricing[model]; ok {
+		return model
+	}
+	// Strip a trailing -YYYYMMDD (8 digits) if present.
+	if len(model) > 9 && model[len(model)-9] == '-' {
+		stem := model[:len(model)-9]
+		date := model[len(model)-8:]
+		allDigits := true
+		for _, r := range date {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return stem
+		}
+	}
+	return model
 }
 
 func transcriptPath(cfg Config) (string, error) {

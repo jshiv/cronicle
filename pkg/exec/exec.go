@@ -40,24 +40,31 @@ func Execute(command []string, dir string, env []string) Result {
 	for _, e := range env {
 		cmd.Env = append(cmd.Env, e)
 	}
-	// cmd := goexec.Command("/bin/bash", "-c", command)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		result.Error = err
 		return result
 	}
 	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		result.Error = err
+		return result
+	}
 	if err := cmd.Start(); err != nil {
 		result.Error = err
 		return result
 	}
 
 	bb := bytes.NewBuffer([]byte{})
-	_, err = bb.ReadFrom(stdout)
+	if _, err := bb.ReadFrom(stdout); err != nil {
+		result.Error = err
+	}
 	result.Stdout = bb.String()
 
 	be := bytes.NewBuffer([]byte{})
-	_, err = be.ReadFrom(stderr)
+	if _, err := be.ReadFrom(stderr); err != nil && result.Error == nil {
+		result.Error = err
+	}
 	result.Stderr = be.String()
 
 	var waitStatus syscall.WaitStatus
