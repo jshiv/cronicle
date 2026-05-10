@@ -61,17 +61,26 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	//TODO: WaitGroup is currently only used for testing, could be used in Producer
 	var wg sync.WaitGroup
 	wg.Add(1) //Ensure WaitGroup counter > 0
+	// triggerQueue is the same send-side queue StartCron pushes to on each
+	// cron tick. The listener (if enabled) writes to it for remote-trigger
+	// fires, so triggered and cron-fired runs are identical from the
+	// consumer's perspective — same JSON, same DAG walk, same logs.
+	var triggerQueue chan<- []byte
 	if runOptions.QueueType == "" {
 		queue := make(chan []byte)
+		triggerQueue = queue
 		go StartCron(cronicleFileAbs, queue)
 		go ConsumeSchedule(queue, croniclePath, &wg)
 	} else {
 		transport := MakeViceTransport(runOptions.QueueType, runOptions.Addr)
-		go StartCron(cronicleFileAbs, transport.Send(runOptions.QueueName))
+		triggerQueue = transport.Send(runOptions.QueueName)
+		go StartCron(cronicleFileAbs, triggerQueue)
 		if runOptions.RunWorker {
 			go ConsumeSchedule(transport.Receive(runOptions.QueueName), croniclePath, &wg)
 		}
 	}
+
+	startListener(runOptions.ListenAddr, runOptions.ListenToken, triggerQueue)
 
 	wg.Wait() //Wait forever
 
@@ -84,6 +93,11 @@ type RunOptions struct {
 	QueueName string
 	Addr      string
 	LogToFile bool
+	// ListenAddr / ListenToken expose the remote-trigger HTTP API. Empty
+	// addr disables the listener entirely; non-empty addr REQUIRES a token
+	// (the listener refuses to bind otherwise — see internal/cronicle/listen.go).
+	ListenAddr  string
+	ListenToken string
 }
 
 // StartWorker listens to a vice transport queue for schedules
