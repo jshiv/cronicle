@@ -1,6 +1,8 @@
 Cronicle
 ---
-git integrated distributed workflow scheduler that provides a pull model for CI/CD and versioning on job execution.
+Production-grade scheduling for AI agents. Cron triggers, git versioning, HCL config, slog audit trails, per-run cost ceilings — plus native [Anthropic Agent Skills](https://docs.claude.com/en/docs/agents-and-tools/agent-skills) and [Model Context Protocol](https://modelcontextprotocol.io) server support.
+
+Shell tasks still work the way they always did. Agent tasks share the same scheduler, the same git/HCL config, the same audit trail — composed from one declarative runtime.
 
 ---
 
@@ -225,6 +227,13 @@ task "morning_brief" {
       "skills/report-writer/SKILL.md",
     ]
 
+    // Model Context Protocol servers — launched as subprocesses for
+    // the lifetime of this run, with their tools auto-registered as
+    // `<server>__<tool>`. See "MCP servers" below.
+    mcp "fs" {
+      command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"]
+    }
+
     max_turns  = 12       // hard cap on loop iterations
     wallclock  = "2m"     // duration; aborts the run when fired
     max_tokens = 2000     // per-turn output cap
@@ -295,6 +304,51 @@ BRIEF COMPLETE
 The `agent_run` slog event carries `skills_available` (the catalog the agent
 saw) and `skills_loaded` (the subset whose bodies it actually fetched), so
 unattended runs are auditable: *did the 3am job actually use what it had?*
+
+#### MCP servers
+
+[Model Context Protocol](https://modelcontextprotocol.io) servers are launched
+as subprocesses for the lifetime of an agent run. Cronicle speaks JSON-RPC
+over their stdin/stdout via the [official Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk),
+lists the tools each server advertises, and registers them with the agent
+namespaced as `<server-name>__<tool-name>` so multiple servers compose
+without name collisions.
+
+```hcl
+agent {
+  prompt = "Triage open issues; close stale ones older than 90 days."
+
+  mcp "github" {
+    command = ["npx", "-y", "@modelcontextprotocol/server-github"]
+    env     = ["GITHUB_TOKEN"]   // forward only what the server needs
+  }
+
+  mcp "fs" {
+    command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"]
+  }
+}
+```
+
+Lifecycle and isolation:
+
+- **Per-run subprocess** — each server starts when the agent run begins and shuts down when it ends. The SDK's `CommandTransport` closes stdin then SIGTERMs after a 5s grace period.
+- **Cancellation cascade** — servers run under the same context as the agent loop, so `wallclock` cancellation tears them down.
+- **Fail loudly** — if any server fails to start or fails to list its tools, already-running peers are closed and the run aborts before any API call. There is no partial-MCP state where the agent sees half a tool surface.
+- **Env opt-in** — only env-var names listed in `mcp.env` are forwarded from cronicle's environment, plus `PATH` so the binary resolves. The task's HCL `env` is also passed through. Wholesale env forwarding would leak secrets into untrusted server processes.
+
+In the pretty stream, MCP tool calls render with `<server>.<tool>`:
+
+```
+→ fs.list_directory: {"path":"/data"}
+← exit=0 3ms
+
+→ github.create_issue: {"title":"...","body":"..."}
+← exit=0 412ms
+```
+
+The `agent_run` slog event carries `mcp_servers=[fs,github]` so an audit
+can answer *which servers the 3am job had available* — independent of
+whether the agent actually invoked any of their tools.
 
 ### `timezone` (optional)
 ```hcl
