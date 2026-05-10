@@ -39,6 +39,11 @@ var (
 			// token, then exec.go substitutes the schedule-scoped
 			// scratch dir path at run time.
 			"scratch": cty.StringVal("${scratch}"),
+			// path is the task working directory (typically the
+			// schedule's repo clone or the cronicle config dir).
+			// Used in mcp { command = ["...", "${path}/data"] }
+			// patterns where the server needs a real filesystem path.
+			"path": cty.StringVal("${path}"),
 		},
 	}
 

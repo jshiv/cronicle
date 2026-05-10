@@ -94,8 +94,9 @@ When `--log-to-file` is on, each task execution also writes a per-run JSONL tran
 ## Example Deployments
 
 * [Distributed mode walkthrough — multi-worker fan-out + cancel/retry/resume](deploy/distributed/README.md)
-* [Centralize cronicle logs on a local loki/graphana log aggregator](deploy/local/README.md)
+* [MCP + skills + scratch in one task — minimal live demo](deploy/mcp-demo/README.md)
 * [Daily-report agent fan-out + composer demo](deploy/daily-report/README.md)
+* [Centralize cronicle logs on a local loki/graphana log aggregator](deploy/local/README.md)
 
 
 ---

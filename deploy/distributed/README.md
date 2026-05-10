@@ -13,6 +13,16 @@ No Redis. No NSQ. No docker-compose for the queue. The producer
 serves its own queue out of an embedded SQLite file at
 `.cronicle/state.db`; workers consume via HTTP long-poll.
 
+**Scope of this demo**: pure shell tasks, focused on the runtime
+control surface (queue, workers, cancel/retry/resume). For the agent
+side of cronicle:
+
+- [`deploy/mcp-demo/`](../mcp-demo/README.md) — smallest live demo
+  combining `mcp` + `skills` + `${scratch}` in one task.
+- [`deploy/daily-report/`](../daily-report/README.md) — multi-agent
+  fan-out + composer using `${scratch}` and `skills`; MCP server
+  blocks shown as commented templates (slack/gmail need credentials).
+
 ## Layout
 
 - `cronicle.hcl` — three `etl_*` schedules on `@every 30s` cadence and

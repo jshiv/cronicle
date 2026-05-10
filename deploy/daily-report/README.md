@@ -2,6 +2,14 @@
 
 A canonical multi-agent workflow: 4 crawlers fan out to read team state from different sources, a composer fans in to merge them into a unified daily report.
 
+**On MCP in this example**: the `slack`/`discord`/`email` blocks
+are shown commented out because those MCP servers need credentials
+(`SLACK_BOT_TOKEN`, etc.) and we can't ship working examples without
+real accounts. For a **live MCP demo that runs without credentials**,
+see [`deploy/mcp-demo/`](../mcp-demo/README.md) — it uses
+`@modelcontextprotocol/server-filesystem` (no auth, scoped to a
+directory passed as an arg).
+
 ## Shape
 
 ```
