@@ -113,7 +113,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// catalog appended to the system prompt; bodies stay out until the
 	// agent calls load_skill (progressive disclosure, per Anthropic's
 	// Skills standard).
-	skills, skillErr := LoadSkillsForTask(task.Path, task.Agent.Skills)
+	skills, skillErr := LoadSkillsForTask(task.Path, task.CroniclePath, task.Agent.Skills)
 	if skillErr != nil {
 		return exec.Result{
 			Command:    []string{"agent", task.Agent.Model},
