@@ -460,6 +460,8 @@ set `CRONICLE_LISTEN_TOKEN` in the environment.
 | GET    | `/v1/schedules`                                        | List configured schedules + tasks    |
 | POST   | `/v1/schedules/{name}/trigger`                         | Fire the whole schedule (full DAG)   |
 | POST   | `/v1/schedules/{name}/tasks/{task}/trigger`            | Fire one task (depends stripped)     |
+| GET    | `/v1/runs`                                             | List recent runs (filterable)        |
+| GET    | `/v1/runs/{run_id}`                                    | Single run + per-task detail         |
 
 Auth is bearer-token (`Authorization: Bearer <token>`). Rotate by
 restarting the process.
@@ -474,6 +476,58 @@ curl -X POST \
 In distributed mode (`--queue redis|nsq`) the listener pushes to the
 broker, so any worker consuming the queue picks the trigger up — same
 as a cron tick.
+
+---
+
+## Run state (HTTP)
+
+Every fire of a schedule — cron tick, HTTP trigger, or `cronicle exec`
+— gets a `run_id` and is folded into a SQLite-backed projection at
+`<cronicle-path>/.cronicle/state.db`. The projection is a derived view
+of the slog event stream (`task_start`, `shell_run`, `agent_run`,
+`schedule_complete`); the JSONL log on disk remains authoritative for
+what happened, and the state DB is rebuildable from incoming events.
+
+Query via the HTTP listener (auth same as triggers):
+
+```bash
+# all recent runs, newest first
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8765/v1/runs
+
+# filter
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8765/v1/runs?status=failed&schedule=daily&limit=20"
+
+# one run with per-task detail
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/runs/$RUN_ID
+```
+
+Response shape (list):
+
+```json
+[
+  {
+    "run_id": "20260510T182254Z-29c5ba99",
+    "schedule": "daily-report",
+    "status": "succeeded",
+    "source": "http",
+    "started_at": "2026-05-10T18:22:54.212857Z",
+    "ended_at":   "2026-05-10T18:22:54.216826Z",
+    "duration_ms": 3,
+    "cost_usd": 0.001050,
+    "task_count": 5
+  }
+]
+```
+
+`status` is one of `queued | running | succeeded | failed | canceled`.
+`source` is `cron | http | exec | once`. Filters: `status=`,
+`schedule=`, `since=<RFC3339>`, `limit=<n>` (default 50, max 500).
+
+`cronicle exec` uses an in-memory projection (the run is foreground, you
+are watching it; nothing later queries the DB). `cronicle run` opens
+`.cronicle/state.db` in WAL mode and persists across restarts.
 
 ---
 

@@ -23,22 +23,33 @@
 package cronicle
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jshiv/cronicle/internal/cronicle/state"
 )
 
 // listenServer is bound to the producer's send queue plus a thread-safe
 // snapshot of the most recently loaded Config (the heartbeat hot-reloads
 // it via confPriorGlobal). The token is captured at construction; rotate
 // by restarting the process.
+//
+// stateSrc returns the current state.Store (or nil) so /v1/runs handlers
+// can answer queries against the projection. Indirected through a
+// function so tests can inject a store without exporting a setter on
+// the listener.
 type listenServer struct {
-	queue   chan<- []byte
-	token   string
-	confSrc func() *Config
+	queue    chan<- []byte
+	token    string
+	confSrc  func() *Config
+	stateSrc func() *state.Store
 }
 
 // startListener brings up the HTTP server in a background goroutine.
@@ -55,14 +66,17 @@ func startListener(addr, token string, queue chan<- []byte) {
 		return
 	}
 	s := &listenServer{
-		queue:   queue,
-		token:   token,
-		confSrc: func() *Config { return confPriorGlobal },
+		queue:    queue,
+		token:    token,
+		confSrc:  func() *Config { return confPriorGlobal },
+		stateSrc: StateStore,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/schedules", s.handleListSchedules)
 	mux.HandleFunc("/v1/schedules/", s.handleScheduleRoute)
+	mux.HandleFunc("/v1/runs", s.handleListRuns)
+	mux.HandleFunc("/v1/runs/", s.handleGetRun)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -231,6 +245,8 @@ func hasTask(sch Schedule, name string) bool {
 // Returns false when the queue is full / blocked / unavailable.
 func (s *listenServer) triggerSchedule(sch Schedule) bool {
 	sch.Now = nowInScheduleZone(sch)
+	sch.RunID = newRunID()
+	sch.Source = "http"
 	return s.send(sch.JSON(), sch.Name, "")
 }
 
@@ -249,6 +265,8 @@ func (s *listenServer) triggerTask(sch Schedule, taskName string) bool {
 		}
 	}
 	sub.Now = nowInScheduleZone(sub)
+	sub.RunID = newRunID()
+	sub.Source = "http"
 	return s.send(sub.JSON(), sch.Name, taskName)
 }
 
@@ -299,5 +317,114 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// ---- /v1/runs ---------------------------------------------------------------
+
+// handleListRuns answers GET /v1/runs with the most recent runs from the
+// projection, filterable by status, schedule, since, and limit. When the
+// state store is disabled the endpoint returns 503 — the API surface is
+// honest about whether the projection is available rather than silently
+// returning empty arrays.
+//
+// Query params:
+//
+//	status=succeeded|failed|queued|running|canceled
+//	schedule=<name>
+//	since=<RFC3339 timestamp>     (started_at >= since)
+//	limit=<n>                     (1..500, default 50)
+func (s *listenServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authed(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	store := s.currentStore()
+	if store == nil {
+		http.Error(w, "state store not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	f := state.ListFilter{
+		Status:   q.Get("status"),
+		Schedule: q.Get("schedule"),
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			http.Error(w, "invalid limit", http.StatusBadRequest)
+			return
+		}
+		f.Limit = n
+	}
+	if v := q.Get("since"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			http.Error(w, "invalid since (need RFC3339)", http.StatusBadRequest)
+			return
+		}
+		f.Since = t
+	}
+	runs, err := store.ListRuns(f)
+	if err != nil {
+		slog.Error("list runs failed", "error", err.Error())
+		http.Error(w, "list runs failed", http.StatusInternalServerError)
+		return
+	}
+	if runs == nil {
+		runs = []state.Run{}
+	}
+	writeJSON(w, http.StatusOK, runs)
+}
+
+// handleGetRun answers GET /v1/runs/{run_id} with the run plus its
+// per-task detail. 404 when the run id isn't in the projection (it may
+// still be in the JSONL log if it predates the retention window —
+// callers needing deep history grep the file).
+func (s *listenServer) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authed(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	store := s.currentStore()
+	if store == nil {
+		http.Error(w, "state store not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/runs/")
+	if id == "" || strings.Contains(id, "/") {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	run, err := store.GetRun(id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, fmt.Sprintf("run %q not found", id), http.StatusNotFound)
+			return
+		}
+		slog.Error("get run failed", "run_id", id, "error", err.Error())
+		http.Error(w, "get run failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+// currentStore is a small indirection to handle the test path where
+// stateSrc may be nil and the global StateStore is what we want.
+func (s *listenServer) currentStore() *state.Store {
+	if s == nil {
+		return nil
+	}
+	if s.stateSrc != nil {
+		return s.stateSrc()
+	}
+	return StateStore()
 }
 

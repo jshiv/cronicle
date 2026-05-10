@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -12,8 +14,6 @@ import (
 	nsqvice "github.com/matryer/vice/queues/nsq"
 	redisvice "github.com/matryer/vice/queues/redis"
 	"github.com/nsqio/go-nsq"
-
-	"path/filepath"
 
 	cron "github.com/robfig/cron/v3"
 )
@@ -51,6 +51,17 @@ func Run(cronicleFile string, runOptions RunOptions) {
 		if err := EnableFileLog(croniclePath); err != nil {
 			Fatal(err)
 		}
+	}
+
+	// State plane: SQLite-backed projection of slog events. Lives at
+	// .cronicle/state.db so the lifetime matches the schedule directory.
+	// Currently the store is built into the producer; once Phase 2 lands
+	// the listener and the API will share this same handle.
+	stateDir := filepath.Join(croniclePath, ".cronicle")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		slog.Warn("state dir mkdir failed; projection disabled", "error", err.Error())
+	} else if err := EnableStateStore(filepath.Join(stateDir, "state.db")); err != nil {
+		slog.Warn("state store open failed; projection disabled", "error", err.Error())
 	}
 
 	if runOptions.QueueType == "" {
@@ -299,6 +310,10 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 		}
 
 		schedule.Now = time.Now().In(loc)
+		schedule.RunID = newRunID()
+		if schedule.Source == "" {
+			schedule.Source = "cron"
+		}
 
 		var endDate time.Time
 		if schedule.EndDate == "" {
@@ -326,6 +341,13 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
 		Fatal(err)
+	}
+	// Foreground one-shot: ephemeral in-memory projection. The user is
+	// watching the run; nothing later will query the projection. Keeps
+	// disk untouched so `cronicle exec` stays write-free where the user
+	// hasn't asked for --log-to-file.
+	if err := EnableStateStore(":memory:"); err != nil {
+		slog.Warn("state store open failed; projection disabled", "error", err.Error())
 	}
 	slog.Info("Loading " + cronicleFileAbs)
 	if !fileExists(cronicleFileAbs) {
@@ -366,6 +388,8 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 			}
 		} else {
 			schedule.Now = nowInLoc
+		schedule.RunID = newRunID()
+		schedule.Source = "exec"
 			schedule.ExecuteTasks()
 		}
 	}
