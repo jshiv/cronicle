@@ -109,17 +109,11 @@ func ExecuteWithStreamContext(ctx context.Context, command []string, dir string,
 	for _, e := range env {
 		cmd.Env = append(cmd.Env, e)
 	}
-	// Run the child in its own process group so we can signal the whole
-	// group on cancellation instead of just the immediate child.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Override the default Cancel (which is cmd.Process.Kill on the leader)
-	// to signal the entire group, then let WaitDelay escalate to SIGKILL.
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-	}
+	// Process-group handling is platform-specific. On unix, the child runs in
+	// its own pgid so cancellation signals the whole group (catches `bash -c
+	// "sleep 30 | cat"` style sub-fans). On windows, the goexec default
+	// (cmd.Process.Kill) is the best we have without spawning a Job Object.
+	configureProcessGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 
 	var stdoutBuf, stderrBuf bytes.Buffer

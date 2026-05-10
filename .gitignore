@@ -2,3 +2,5 @@
 /workspace.xml
 .idea/
 .vscode/
+# Test artifacts that the SSH-auth ginkgo tests leave behind
+internal/cronicle/test_clone_branch/
