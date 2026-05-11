@@ -232,7 +232,20 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// them down. Failures here abort the run before any API call. We close
 	// handles in the deferred path below regardless of how the run exits,
 	// so a panic or budget abort still cleans up subprocesses.
-	mcpHandles, mcpTools, mcpErr := LaunchMCPServers(runCtx, task.Agent.MCPs, task.Env, toolWriter)
+	//
+	// Apply the same template-var substitution shell tasks get to each
+	// MCP server's command args. Lets HCL like
+	//   mcp "fs" { command = ["npx", "...", "${path}/data"] }
+	// resolve to the task's working directory at launch time.
+	mcps := make([]MCP, len(task.Agent.MCPs))
+	for i, m := range task.Agent.MCPs {
+		mcps[i] = m
+		mcps[i].Command = make([]string, len(m.Command))
+		for j, c := range m.Command {
+			mcps[i].Command[j] = r.Replace(c)
+		}
+	}
+	mcpHandles, mcpTools, mcpErr := LaunchMCPServers(runCtx, mcps, task.Env, toolWriter)
 	if mcpErr != nil {
 		return exec.Result{
 			Command:    []string{"agent", task.Agent.Model},

@@ -20,7 +20,7 @@ import (
 
 var _ = Describe("Parse", func() {
 
-	It("cronicle.CommandEvalContext should contain date, datetime, timestamp, and scratch as arguments", func() {
+	It("cronicle.CommandEvalContext should contain date, datetime, timestamp, scratch, and path as arguments", func() {
 
 		expected := hcl.EvalContext{
 			Variables: map[string]cty.Value{
@@ -28,6 +28,7 @@ var _ = Describe("Parse", func() {
 				"datetime":  cty.StringVal("${datetime}"),
 				"timestamp": cty.StringVal("${timestamp}"),
 				"scratch":   cty.StringVal("${scratch}"),
+				"path":      cty.StringVal("${path}"),
 			},
 		}
 		Expect(cronicle.CommandEvalContext).To(Equal(expected))
