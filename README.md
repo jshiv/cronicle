@@ -198,19 +198,26 @@ retry {
 }
 ```
 
-### `agent` (optional)
-Run a Claude agent in place of a shell command. A task has an `agent` block
-*or* a `command`, never both. `${date}`, `${datetime}`, `${timestamp}`, and
-`${path}` are substituted into `prompt` and `system` at execution time. The
-agent runs as a multi-turn loop: it can think, call tools, observe results,
-and continue until it stops calling tools, hits `max_turns`, or the
-`wallclock` deadline fires. With `--log-to-file`, each run writes a JSONL
-transcript (request, response per turn, tool results, accounting) to
-`.cronicle/runs/`. Requires `ANTHROPIC_API_KEY` in the environment.
+### `agent` (first-class)
+Run a Claude agent task. `agent` is a sibling of `task` at the schedule level
+— same DAG, same scheduler, same telemetry — with agent-specific fields
+(`prompt`, `model`, `tools`, `skills`, `mcp`, …) at the top of the block
+instead of buried in a nested `agent { }`. Shell tasks still use `task`;
+agent tasks use `agent`. Pick whichever describes the work.
+
+`${date}`, `${datetime}`, `${timestamp}`, and `${path}` are substituted into
+`prompt` and `system` at execution time. The agent runs as a multi-turn loop:
+it can think, call tools, observe results, and continue until it stops calling
+tools, hits `max_turns`, or the `wallclock` deadline fires. With
+`--log-to-file`, each run writes a JSONL transcript (request, response per
+turn, tool results, accounting) to `.cronicle/runs/`. Requires
+`ANTHROPIC_API_KEY` in the environment.
 
 ```hcl
-task "morning_brief" {
-  agent {
+schedule "morning" {
+  cron = "0 8 * * *"
+
+  agent "brief" {
     prompt     = "Compose today's morning brief for ${date}."
     model      = "claude-opus-4-7"
     system     = "You are a concise operational assistant."
@@ -253,6 +260,27 @@ task "morning_brief" {
 `prompt` is optional when `skills` is non-empty — the loaded skill drives
 the run on its own. Skill paths must resolve under the task workspace; `..`
 traversal and absolute paths are rejected at config load.
+
+#### Legacy nested form
+
+The original shape — `task "name" { agent { ... } }` — still parses for
+backward compatibility. Both forms produce the same internal `Task` with
+`Task.Agent` populated; downstream code (DAG, exec, projection, SSE) is
+unaware which spelling was used. New configs should prefer the first-class
+`agent "name" { }` shape; existing configs need no migration.
+
+```hcl
+// Legacy form, still works.
+schedule "morning" {
+  cron = "0 8 * * *"
+  task "brief" {
+    agent {
+      prompt = "Compose today's morning brief."
+      model  = "claude-opus-4-7"
+    }
+  }
+}
+```
 
 #### Skill layout
 

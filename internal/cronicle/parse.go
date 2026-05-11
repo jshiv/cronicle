@@ -98,6 +98,18 @@ func ParseFile(cronicleFile string, parser *hclparse.Parser) (*Config, hcl.Diagn
 		return &conf, diags
 	}
 
+	// Fold each schedule's first-class `agent "X" { ... }` blocks into its
+	// .Tasks slice. After this step downstream code (DAG, Validate, exec,
+	// projection) sees a uniform list of Tasks regardless of whether the
+	// operator wrote `agent "X"` or `task "X" { agent {} }`.
+	for i := range conf.Schedules {
+		s := &conf.Schedules[i]
+		for _, at := range s.AgentTasks {
+			s.Tasks = append(s.Tasks, at.ToTask())
+		}
+		s.AgentTasks = nil
+	}
+
 	return &conf, nil
 }
 
