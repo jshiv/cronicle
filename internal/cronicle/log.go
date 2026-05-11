@@ -80,13 +80,9 @@ func SetupLogging(format LogFormat) {
 	var handler slog.Handler
 	switch resolved {
 	case LogFormatPretty:
-		handler = &prettyHandler{
+		handler = &stdoutPrettyHandler{
 			fallback: newTintHandler(os.Stdout),
 			out:      os.Stdout,
-			// stdout already gets per-line bytes from StreamingWriter / the
-			// agent renderer; don't double-print when those records also
-			// flow through slog.
-			suppressChunks: true,
 		}
 	case LogFormatJSON:
 		handler = slog.NewJSONHandler(os.Stdout, nil)
@@ -249,7 +245,7 @@ func newLiveEncoder(format LiveFormat) state.Encoder {
 		case LiveFormatText:
 			h = slog.NewTextHandler(&buf, nil)
 		default: // pretty (also the empty-string fallback)
-			h = &prettyHandler{
+			h = &liveSinkPrettyHandler{
 				fallback: newTintHandler(&buf),
 				out:      &buf,
 			}
@@ -482,122 +478,134 @@ func formatValue(v slog.Value) string {
 	return s
 }
 
-// ---- prettyHandler ---------------------------------------------------------
-
-// prettyHandler renders structural records (entry_type=…) as multi-line blocks
-// or compact section headers, and everything else as a dim single line. The
-// fallback handler exists for nested compositions but isn't used for direct
-// rendering — pretty mode always renders something itself.
+// ---- pretty handlers -------------------------------------------------------
 //
-// suppressChunks controls whether the streaming entry_types (stdout_chunk,
-// text_delta, etc.) render at all. On stdout pretty mode it MUST be true:
-// the StreamingWriter and NewAgentStreamRenderer already wrote the bytes
-// directly to stdout, and rendering them again from slog would double-print.
-// For the LiveSink encoder (live SSE wire) it MUST be false — those bytes
-// are exactly what the frontend needs in its live pane.
-type prettyHandler struct {
-	fallback        slog.Handler
-	out             io.Writer
-	suppressChunks  bool
+// Two slog.Handler implementations share the same render helpers but
+// target different destinations:
+//
+//   - stdoutPrettyHandler is wired to os.Stdout by SetupLogging when
+//     --log-format=pretty. In that mode, an in-process StreamingWriter
+//     also writes pretty bytes directly to stdout (bypassing slog) for
+//     leader/follower coordination across concurrent tasks. The handler
+//     therefore SUPPRESSES the streaming entry_types (stdout_chunk,
+//     text_delta, agent_run_start, …) — rendering them too would
+//     double-print every line on the terminal.
+//
+//   - liveSinkPrettyHandler is wired to a per-call bytes.Buffer by
+//     newLiveEncoder when --live-format=pretty (the default). LiveSink
+//     subscribers (the SSE endpoint) never see the StreamingWriter's
+//     bytes, so this handler RENDERS the streaming entry_types — that's
+//     the entire reason the SSE consumer can show live token/line output.
+//
+// The two handlers used to be one type with a `suppressChunks bool`
+// field. Splitting them removes per-call branching and keeps each
+// Handle implementation top-to-bottom unconditional.
+
+// stdoutPrettyHandler renders to os.Stdout. The StreamingWriter wrote
+// streaming-record bytes directly to the same stdout, so this handler
+// renders ONLY the structural / lifecycle records that don't have a
+// pre-emption path. Streaming entry_types are no-ops.
+type stdoutPrettyHandler struct {
+	fallback slog.Handler
+	out      io.Writer // os.Stdout in normal use; an io.Writer in tests
 }
 
-func (p *prettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
+func (p *stdoutPrettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
 	return p.fallback.Enabled(ctx, l)
 }
 
-func (p *prettyHandler) Handle(_ context.Context, r slog.Record) error {
+func (p *stdoutPrettyHandler) Handle(_ context.Context, r slog.Record) error {
 	switch entryType(r) {
 	case "agent_run":
-		// suppressChunks=true (stdout) → full block as before.
-		// suppressChunks=false (LiveSink) → footer only; body was already
-		// streamed via text_delta records that the bridge always emits.
-		if p.suppressChunks {
-			return p.renderAgentRun(r)
-		}
-		return p.renderAgentRunFooter(r)
-	case "agent_run_streamed":
-		// suppressChunks=true → no-op (StreamingWriter wrote the entire
-		// block directly to stdout; the slog event is for file/Loki).
-		// suppressChunks=false → footer only; LiveSink saw the header
-		// via agent_run_start and the body via text_delta records.
-		if p.suppressChunks {
-			return nil
-		}
-		return p.renderAgentRunFooter(r)
-	case "agent_run_start":
-		// Header rule + line + rule. Suppressed on stdout pretty mode
-		// because the StreamingWriter already wrote it via
-		// WriteAgentRunHeader; emitted to LiveSink so SSE consumers
-		// see the model/task/schedule context at the top of the block.
-		if p.suppressChunks {
-			return nil
-		}
-		return p.renderAgentRunStart(r)
+		// Non-streaming agent path (stdout is JSON-mode, no
+		// StreamingWriter for agent text). Render the full block here.
+		return renderAgentRun(p.out, r)
 	case "shell_run":
-		if p.suppressChunks {
-			return p.renderShellRun(r)
-		}
-		return p.renderShellRunFooter(r)
-	case "shell_run_streamed":
-		if p.suppressChunks {
-			return nil
-		}
-		return p.renderShellRunFooter(r)
-	case "shell_run_start":
-		if p.suppressChunks {
-			return nil
-		}
-		return p.renderShellRunStart(r)
+		// Same idea for shell — only fires when the streaming
+		// dispatch didn't claim the bytes.
+		return renderShellRun(p.out, r)
 	case "schedule_start":
-		return p.renderScheduleStart(r)
+		return renderScheduleStart(p.out, r)
 	case "schedule_complete":
-		return p.renderScheduleComplete(r)
-	case "task_start":
-		// Block headers (agent_run_start / shell_run_start) subsume the
-		// start signal, so suppress task_start in pretty mode. The file
-		// mirror still gets the event.
+		return renderScheduleComplete(p.out, r)
+	case "agent_run_start", "shell_run_start",
+		"agent_run_streamed", "shell_run_streamed",
+		"stdout_chunk", "stderr_chunk",
+		"text_delta", "thinking_delta",
+		"tool_use_start", "tool_result",
+		"task_start":
+		// StreamingWriter already wrote these bytes; task_start is
+		// subsumed by block headers in pretty mode.
 		return nil
-	case "stdout_chunk":
-		if p.suppressChunks {
-			return nil
-		}
-		return p.renderStdoutChunk(r, false)
-	case "stderr_chunk":
-		if p.suppressChunks {
-			return nil
-		}
-		return p.renderStdoutChunk(r, true)
-	case "text_delta":
-		if p.suppressChunks {
-			return nil
-		}
-		return p.renderTextDelta(r, false)
-	case "thinking_delta":
-		if p.suppressChunks {
-			return nil
-		}
-		return p.renderTextDelta(r, true)
-	case "tool_use_start":
-		if p.suppressChunks {
-			return nil
-		}
-		return p.renderToolUseStart(r)
-	case "tool_result":
-		if p.suppressChunks {
-			return nil
-		}
-		return p.renderToolResult(r)
 	default:
-		return p.renderDimLine(r)
+		return renderDimLine(p.out, r)
 	}
 }
 
-func (p *prettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &prettyHandler{fallback: p.fallback.WithAttrs(attrs), out: p.out, suppressChunks: p.suppressChunks}
+func (p *stdoutPrettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &stdoutPrettyHandler{fallback: p.fallback.WithAttrs(attrs), out: p.out}
 }
 
-func (p *prettyHandler) WithGroup(name string) slog.Handler {
-	return &prettyHandler{fallback: p.fallback.WithGroup(name), out: p.out, suppressChunks: p.suppressChunks}
+func (p *stdoutPrettyHandler) WithGroup(name string) slog.Handler {
+	return &stdoutPrettyHandler{fallback: p.fallback.WithGroup(name), out: p.out}
+}
+
+// liveSinkPrettyHandler renders to a per-call buffer for the SSE wire.
+// No pre-emption path exists for the SSE consumer, so every record gets
+// turned into visible bytes — header / footer / per-line / per-token.
+type liveSinkPrettyHandler struct {
+	fallback slog.Handler
+	out      io.Writer // the LiveSink encoder's per-Handle bytes.Buffer
+}
+
+func (p *liveSinkPrettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return p.fallback.Enabled(ctx, l)
+}
+
+func (p *liveSinkPrettyHandler) Handle(_ context.Context, r slog.Record) error {
+	switch entryType(r) {
+	case "agent_run_start":
+		return renderAgentRunStart(p.out, r)
+	case "agent_run", "agent_run_streamed":
+		// Body was already streamed via text_delta records; emit just
+		// the metrics footer.
+		return renderAgentRunFooter(p.out, r)
+	case "shell_run_start":
+		return renderShellRunStart(p.out, r)
+	case "shell_run", "shell_run_streamed":
+		return renderShellRunFooter(p.out, r)
+	case "schedule_start":
+		return renderScheduleStart(p.out, r)
+	case "schedule_complete":
+		return renderScheduleComplete(p.out, r)
+	case "stdout_chunk":
+		return renderStdoutChunk(p.out, r, false)
+	case "stderr_chunk":
+		return renderStdoutChunk(p.out, r, true)
+	case "text_delta":
+		return renderTextDelta(p.out, r, false)
+	case "thinking_delta":
+		return renderTextDelta(p.out, r, true)
+	case "tool_use_start":
+		return renderToolUseStart(p.out, r)
+	case "tool_result":
+		return renderToolResult(p.out, r)
+	case "task_start":
+		// Block headers subsume task_start in pretty rendering — the
+		// agent_run_start / shell_run_start records carry the same
+		// signal with richer context.
+		return nil
+	default:
+		return renderDimLine(p.out, r)
+	}
+}
+
+func (p *liveSinkPrettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &liveSinkPrettyHandler{fallback: p.fallback.WithAttrs(attrs), out: p.out}
+}
+
+func (p *liveSinkPrettyHandler) WithGroup(name string) slog.Handler {
+	return &liveSinkPrettyHandler{fallback: p.fallback.WithGroup(name), out: p.out}
 }
 
 // entryType extracts the entry_type attr from a record, returning "" if absent.
@@ -672,7 +680,7 @@ func attrStrings(r slog.Record, key string) []string {
 // to p.out — same shape WriteAgentRunHeader produces for the TTY's
 // StreamingWriter. Used by LiveSink (suppressChunks=false) so SSE
 // consumers see model/task/schedule context BEFORE the deltas stream.
-func (p *prettyHandler) renderAgentRunStart(r slog.Record) error {
+func renderAgentRunStart(out io.Writer, r slog.Record) error {
 	schedule := attrString(r, "schedule")
 	task := attrString(r, "task")
 	model := attrString(r, "model")
@@ -689,7 +697,7 @@ func (p *prettyHandler) renderAgentRunStart(r slog.Record) error {
 	var b bytes.Buffer
 	WriteAgentRunHeader(&b, schedule, task, model, skills)
 	b.WriteByte('\n')
-	_, err := p.out.Write(b.Bytes())
+	_, err := out.Write(b.Bytes())
 	return err
 }
 
@@ -698,11 +706,11 @@ func (p *prettyHandler) renderAgentRunStart(r slog.Record) error {
 // false): the header was already emitted via agent_run_start, the body
 // streamed via text_delta records, so the SSE consumer only needs the
 // terminal metrics line.
-func (p *prettyHandler) renderAgentRunFooter(r slog.Record) error {
+func renderAgentRunFooter(out io.Writer, r slog.Record) error {
 	var (
-		costStr                        string
-		stop, transcript               string
-		durationMs, in, out, cacheRead int64
+		costStr                              string
+		stop, transcript                     string
+		durationMs, in, outTokens, cacheRead int64
 	)
 	r.Attrs(func(a slog.Attr) bool {
 		switch a.Key {
@@ -713,7 +721,7 @@ func (p *prettyHandler) renderAgentRunFooter(r slog.Record) error {
 		case "input_tokens":
 			in = a.Value.Int64()
 		case "output_tokens":
-			out = a.Value.Int64()
+			outTokens = a.Value.Int64()
 		case "cache_read":
 			cacheRead = a.Value.Int64()
 		case "stop_reason":
@@ -724,42 +732,42 @@ func (p *prettyHandler) renderAgentRunFooter(r slog.Record) error {
 		return true
 	})
 	var b bytes.Buffer
-	WriteAgentRunFooter(&b, in, out, cacheRead, costStr, durationMs, stop, transcript)
-	_, err := p.out.Write(b.Bytes())
+	WriteAgentRunFooter(&b, in, outTokens, cacheRead, costStr, durationMs, stop, transcript)
+	_, err := out.Write(b.Bytes())
 	return err
 }
 
 // renderShellRunStart writes the bordered header block for a shell run.
 // Mirrors renderAgentRunStart for the shell-task path.
-func (p *prettyHandler) renderShellRunStart(r slog.Record) error {
+func renderShellRunStart(out io.Writer, r slog.Record) error {
 	schedule := attrString(r, "schedule")
 	task := attrString(r, "task")
 	command := attrString(r, "command")
 	var b bytes.Buffer
 	WriteShellRunHeader(&b, schedule, task, command)
 	b.WriteByte('\n')
-	_, err := p.out.Write(b.Bytes())
+	_, err := out.Write(b.Bytes())
 	return err
 }
 
 // renderShellRunFooter writes the bracketed footer line for a shell run.
-func (p *prettyHandler) renderShellRunFooter(r slog.Record) error {
+func renderShellRunFooter(out io.Writer, r slog.Record) error {
 	exit := attrInt64(r, "exit")
 	durationMs := attrInt64(r, "duration_ms")
 	transcript := attrString(r, "transcript")
 	var b bytes.Buffer
 	WriteShellRunFooter(&b, exit, durationMs, transcript)
-	_, err := p.out.Write(b.Bytes())
+	_, err := out.Write(b.Bytes())
 	return err
 }
 
-func (p *prettyHandler) renderAgentRun(r slog.Record) error {
+func renderAgentRun(out io.Writer, r slog.Record) error {
 	var (
 		schedule, task, model, response, costStr string
-		stop, transcript, errMsg                  string
-		durationMs, in, out, cacheRead            int64
-		success                                   bool
-		skills                                    []string
+		stop, transcript, errMsg                 string
+		durationMs, in, outTokens, cacheRead     int64
+		success                                  bool
+		skills                                   []string
 	)
 	r.Attrs(func(a slog.Attr) bool {
 		switch a.Key {
@@ -780,7 +788,7 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 		case "input_tokens":
 			in = a.Value.Int64()
 		case "output_tokens":
-			out = a.Value.Int64()
+			outTokens = a.Value.Int64()
 		case "cache_read":
 			cacheRead = a.Value.Int64()
 		case "transcript":
@@ -818,9 +826,9 @@ func (p *prettyHandler) renderAgentRun(r slog.Record) error {
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
-	WriteAgentRunFooter(&b, in, out, cacheRead, costStr, durationMs, stop, transcript)
+	WriteAgentRunFooter(&b, in, outTokens, cacheRead, costStr, durationMs, stop, transcript)
 
-	_, err := p.out.Write(b.Bytes())
+	_, err := out.Write(b.Bytes())
 	return err
 }
 
@@ -1076,7 +1084,7 @@ func displayToolName(name string) string {
 
 // renderShellRun renders a shell task as a block with the same shape as
 // agent_run: header rule, header line, body (stdout or stderr), footer.
-func (p *prettyHandler) renderShellRun(r slog.Record) error {
+func renderShellRun(out io.Writer, r slog.Record) error {
 	header := color.New(color.FgCyan, color.Bold).SprintFunc()
 	rule := color.New(color.FgCyan).SprintFunc()
 	footer := color.New(color.Faint).SprintFunc()
@@ -1135,13 +1143,13 @@ func (p *prettyHandler) renderShellRun(r slog.Record) error {
 	b.WriteString(footer("[" + strings.Join(footerParts, " · ") + "]"))
 	b.WriteString("\n\n")
 
-	_, err := p.out.Write(b.Bytes())
+	_, err := out.Write(b.Bytes())
 	return err
 }
 
 // renderScheduleStart renders the section header above a schedule's task
 // blocks: a horizontal rule, the schedule name, and the DAG list.
-func (p *prettyHandler) renderScheduleStart(r slog.Record) error {
+func renderScheduleStart(out io.Writer, r slog.Record) error {
 	rule := color.New(color.FgMagenta).SprintFunc()
 	header := color.New(color.FgMagenta, color.Bold).SprintFunc()
 	dim := color.New(color.Faint).SprintFunc()
@@ -1178,12 +1186,12 @@ func (p *prettyHandler) renderScheduleStart(r slog.Record) error {
 	}
 	b.WriteByte('\n')
 
-	_, err := p.out.Write(b.Bytes())
+	_, err := out.Write(b.Bytes())
 	return err
 }
 
 // renderScheduleComplete renders the summary line at the bottom of a schedule.
-func (p *prettyHandler) renderScheduleComplete(r slog.Record) error {
+func renderScheduleComplete(out io.Writer, r slog.Record) error {
 	ok := color.New(color.FgGreen, color.Bold).SprintFunc()
 	bad := color.New(color.FgRed, color.Bold).SprintFunc()
 	dim := color.New(color.Faint).SprintFunc()
@@ -1212,7 +1220,7 @@ func (p *prettyHandler) renderScheduleComplete(r slog.Record) error {
 	b.WriteString(dim(fmt.Sprintf("· %d %s · %s", taskCount, taskWord, formatDuration(durationMs))))
 	b.WriteString("\n\n")
 
-	_, err := p.out.Write(b.Bytes())
+	_, err := out.Write(b.Bytes())
 	return err
 }
 
@@ -1222,16 +1230,16 @@ func (p *prettyHandler) renderScheduleComplete(r slog.Record) error {
 // renderStdoutChunk writes one line of streaming task output. The slog
 // record carries the line as msg. stderr is rendered in red (matching
 // what a TTY would show); stdout is rendered plain.
-func (p *prettyHandler) renderStdoutChunk(r slog.Record, isStderr bool) error {
+func renderStdoutChunk(out io.Writer, r slog.Record, isStderr bool) error {
 	line := r.Message
 	if isStderr {
 		// Faint red so error output is visible without overpowering normal
 		// stdout. Mirrors what users see when running the command locally.
 		errc := color.New(color.FgRed, color.Faint).SprintFunc()
-		_, err := fmt.Fprintln(p.out, errc(line))
+		_, err := fmt.Fprintln(out, errc(line))
 		return err
 	}
-	_, err := fmt.Fprintln(p.out, line)
+	_, err := fmt.Fprintln(out, line)
 	return err
 }
 
@@ -1240,33 +1248,33 @@ func (p *prettyHandler) renderStdoutChunk(r slog.Record, isStderr bool) error {
 // controls its own newlines). Thinking deltas are dimmed and prefixed
 // once per turn-start, matching the existing NewAgentStreamRenderer
 // behavior so the live SSE pane reads identically to the local TTY.
-func (p *prettyHandler) renderTextDelta(r slog.Record, isThinking bool) error {
+func renderTextDelta(out io.Writer, r slog.Record, isThinking bool) error {
 	if isThinking {
 		dim := color.New(color.Faint).SprintFunc()
-		_, err := fmt.Fprint(p.out, dim(r.Message))
+		_, err := fmt.Fprint(out, dim(r.Message))
 		return err
 	}
-	_, err := fmt.Fprint(p.out, r.Message)
+	_, err := fmt.Fprint(out, r.Message)
 	return err
 }
 
 // renderToolUseStart writes the highlighted "→ tool: <input>" line that
 // the agent stream renderer used to write directly to stdout. Reads
 // the attrs the bridge emits: tool, input.
-func (p *prettyHandler) renderToolUseStart(r slog.Record) error {
+func renderToolUseStart(out io.Writer, r slog.Record) error {
 	toolHi := color.New(color.FgYellow).SprintFunc()
 	tool := attrString(r, "tool")
 	input := attrString(r, "input")
 	display := displayToolName(tool)
 	formatted := formatToolInput(tool, input)
-	_, err := fmt.Fprintf(p.out, "\n%s%s%s %s\n",
+	_, err := fmt.Fprintf(out, "\n%s%s%s %s\n",
 		toolHi("→ "), toolHi(display), toolHi(":"), formatted)
 	return err
 }
 
 // renderToolResult writes the colored result line. Exit / duration come
 // from attrs; is_error flips green→red.
-func (p *prettyHandler) renderToolResult(r slog.Record) error {
+func renderToolResult(out io.Writer, r slog.Record) error {
 	dim := color.New(color.Faint).SprintFunc()
 	ok := color.New(color.FgGreen, color.Faint).SprintFunc()
 	bad := color.New(color.FgRed, color.Faint).SprintFunc()
@@ -1276,11 +1284,11 @@ func (p *prettyHandler) renderToolResult(r slog.Record) error {
 	if isError {
 		marker = bad("← error")
 	}
-	_, err := fmt.Fprintf(p.out, "%s %s\n", marker, dim(formatDuration(duration)))
+	_, err := fmt.Fprintf(out, "%s %s\n", marker, dim(formatDuration(duration)))
 	return err
 }
 
-func (p *prettyHandler) renderDimLine(r slog.Record) error {
+func renderDimLine(out io.Writer, r slog.Record) error {
 	dim := color.New(color.Faint).SprintFunc()
 
 	var b bytes.Buffer
@@ -1296,7 +1304,7 @@ func (p *prettyHandler) renderDimLine(r slog.Record) error {
 	})
 	b.WriteByte('\n')
 
-	_, err := p.out.Write(b.Bytes())
+	_, err := out.Write(b.Bytes())
 	return err
 }
 
