@@ -31,19 +31,24 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 		var cloneOptions git.CloneOptions
 		if deployKey != "" {
 			auth, err := ssh.NewPublicKeysFromFile("git", deployKey, "")
-			auth.HostKeyCallback = gossh.InsecureIgnoreHostKey()
+			// Same defensive ordering as (*Repo).Auth in git.go: check
+			// err BEFORE touching auth, otherwise a missing key file
+			// segfaults the init command.
 			if err != nil {
-				Fatal(err)
+				Fatal(fmt.Errorf("load ssh deploy key %q: %w", deployKey, err))
 			}
+			auth.HostKeyCallback = gossh.InsecureIgnoreHostKey()
 			cloneOptions = git.CloneOptions{URL: cloneRepo, Auth: auth}
 		} else {
 			cloneOptions = git.CloneOptions{URL: cloneRepo}
 		}
 
+		slog.Info("cloning repo", "url", cloneRepo, "path", absCroniclePath)
 		_, err = git.PlainClone(absCroniclePath, false, &cloneOptions)
 		if err != nil {
-			Fatal(err)
+			Fatal(fmt.Errorf("clone %s: %w", cloneRepo, err))
 		}
+		slog.Info("cloned", "url", cloneRepo, "path", absCroniclePath)
 	}
 
 	slantyedCyan := color.New(color.FgCyan, color.Italic).SprintFunc()
@@ -130,14 +135,14 @@ func (conf *Config) Init(croniclePath string) error {
 	if conf.Repo != nil {
 		auth, err := conf.Repo.Auth()
 		if err != nil {
-			return err
+			return fmt.Errorf("config repo auth: %w", err)
 		}
 		g, err := Clone(croniclePath, conf.Repo.URL, &auth)
 		if err != nil {
-			return err
+			return fmt.Errorf("clone config repo %s: %w", conf.Repo.URL, err)
 		}
 		if err := g.Checkout(conf.Repo.Branch, conf.Repo.Commit); err != nil {
-			return err
+			return fmt.Errorf("checkout config repo: %w", err)
 		}
 	}
 
@@ -149,11 +154,12 @@ func (conf *Config) Init(croniclePath string) error {
 			if task.Repo != nil {
 				auth, err := task.Repo.Auth()
 				if err != nil {
-					return err
+					return fmt.Errorf("schedule %q task %q repo auth: %w",
+						schedule.Name, task.Name, err)
 				}
 				if _, err := Clone(task.Path, task.Repo.URL, &auth); err != nil {
-					// if _, err := Clone(task.Path, task.Repo.URL, task.Repo.DeployKey); err != nil {
-					return err
+					return fmt.Errorf("schedule %q task %q clone %s: %w",
+						schedule.Name, task.Name, task.Repo.URL, err)
 				}
 			}
 		}

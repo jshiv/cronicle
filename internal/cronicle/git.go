@@ -2,6 +2,7 @@ package cronicle
 
 import (
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
@@ -42,8 +43,15 @@ func (repo *Repo) Auth() (transport.AuthMethod, error) {
 			return nil, err
 		}
 		auth, err := ssh.NewPublicKeysFromFile("git", keyPath, "")
+		// NewPublicKeysFromFile returns (nil, err) when the key file is
+		// missing or unreadable. Checking err BEFORE touching auth fields
+		// avoids a nil-pointer SIGSEGV — the original bug here let a
+		// missing key path crash the process.
+		if err != nil {
+			return nil, fmt.Errorf("load ssh deploy key %q: %w", keyPath, err)
+		}
 		auth.HostKeyCallback = gossh.InsecureIgnoreHostKey()
-		return auth, err
+		return auth, nil
 	}
 
 	// auth := http.BasicAuth{Username: repo.user, Password: repo.password}
@@ -115,16 +123,25 @@ func Commit(worktreeDir string, msg string) {
 
 //Clone checks for the existance of worktreeDir/.git and clones if it does not exist
 //then executes Git = GetGit(worktreeDir)
+//
+//Logs each step (clone / skip / open) so operators can see git activity
+//in the pretty/json/text stdout streams — previously these operations
+//were silent and the only signal that cloning happened was the
+//directory appearing on disk.
 func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, error) {
 
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
-
+		slog.Info("git clone", "url", url, "path", worktreeDir)
 		cloneOptions := git.CloneOptions{URL: url, Auth: *auth}
 
 		_, err := git.PlainClone(worktreeDir, false, &cloneOptions)
 		if err != nil {
+			slog.Error("git clone failed", "url", url, "path", worktreeDir, "error", err.Error())
 			return Git{}, err
 		}
+		slog.Info("git clone complete", "url", url, "path", worktreeDir)
+	} else {
+		slog.Info("git open", "path", worktreeDir, "note", "worktree already exists, skipping clone")
 	}
 
 	var g Git
@@ -170,29 +187,37 @@ func (g *Git) Checkout(branch string, commit string) error {
 		}
 	}
 
+	slog.Info("git fetch", "refs", "+refs/heads/*:refs/remotes/origin/*")
 	err := g.Repository.Fetch(&fetchOptions)
 	if err != nil {
 		switch err {
 		case git.NoErrAlreadyUpToDate:
+			slog.Info("git fetch: already up to date")
 		default:
+			slog.Error("git fetch failed", "error", err.Error())
 			return err
 		}
 	}
 
 	var checkoutOptions git.CheckoutOptions
+	var checkoutTarget string
 	if commit != "" {
 		h := plumbing.NewHash(commit)
 		checkoutOptions = git.CheckoutOptions{
 			Create: false, Force: true, Hash: h,
 		}
+		checkoutTarget = "commit=" + commit
 	} else {
 		b := plumbing.NewBranchReferenceName(branch)
 		checkoutOptions = git.CheckoutOptions{
 			Create: false, Force: true, Branch: b,
 		}
+		checkoutTarget = "branch=" + branch
 	}
 
+	slog.Info("git checkout", "target", checkoutTarget)
 	if err := g.Worktree.Checkout(&checkoutOptions); err != nil {
+		slog.Error("git checkout failed", "target", checkoutTarget, "error", err.Error())
 		return err
 	}
 
