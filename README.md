@@ -97,6 +97,7 @@ When `--log-to-file` is on, each task execution also writes a per-run JSONL tran
 * [MCP + skills + scratch in one task — minimal live demo](deploy/mcp-demo/README.md)
 * [Daily-report agent fan-out + composer demo](deploy/daily-report/README.md)
 * [Centralize cronicle logs on a local loki/graphana log aggregator](deploy/local/README.md)
+* [SSE live-stream demo — per-run, per-schedule, firehose filters](deploy/sse-demo/README.md)
 
 
 ---
@@ -580,13 +581,104 @@ event: cronicle
 data: step 2
 ```
 
-`--live-format` toggles the wire encoding:
+Multi-line records (a pretty-rendered shell_run header, or an agent text
+delta containing `\n`) become one event with multiple `data:` lines per
+the SSE spec — browser `EventSource` joins them with `\n` automatically.
 
-| flag                  | wire bytes                                                                |
-|-----------------------|---------------------------------------------------------------------------|
-| `--live-format=pretty` | ANSI multi-line — for xterm.js / TTY clients (default)                   |
-| `--live-format=json`   | one JSON object per record — for programmatic consumers                  |
-| `--live-format=text`   | `time=... level=INFO msg=... key=val` — for plain log viewers            |
+#### Filter scope — when to use which endpoint
+
+| You want | Endpoint | Notes |
+|---|---|---|
+| Watch one specific in-flight run (operator clicked it from a list) | `GET /v1/runs/{run_id}/events` | Drill-in. Requires `run_id` to already exist — won't help for the next run. |
+| Watch every run of a schedule, including the next one before it fires | `GET /v1/schedules/{name}/events` | Subscribe BEFORE triggering. The handler routes by schedule name, so a run that doesn't have a `run_id` yet still delivers frames the moment it starts emitting. |
+| Operator dashboard — every run on every schedule | `GET /v1/events/stream` | Firehose. Concurrent runs interleave by event-time. |
+
+All three share the same SSE plumbing — same wire format, same `--live-format` controlling the encoding, same 15s `: ping` heartbeat. Frontend code differs only in the URL.
+
+#### Worked example — multi-schedule walkthrough
+
+Set up a `cronicle.hcl` with three schedules:
+
+```hcl
+schedule "heartbeat" {
+  cron = "@every 10s"
+  task "tick" {
+    command = ["sh", "-c", "echo 'tick'; sleep 1; echo 'second line'"]
+  }
+}
+
+schedule "long-build" {
+  cron = ""  // manual trigger
+  task "compile" {
+    command = ["sh", "-c", "for s in fetching compiling linking testing done; do echo \"[step] $s\"; sleep 1; done"]
+  }
+}
+
+schedule "story" {
+  cron = ""  // manual trigger
+  task "tell" {
+    agent {
+      prompt    = "Tell a two-sentence story about an octopus debugging Go."
+      model     = "claude-haiku-4-5"
+      max_turns = 1
+    }
+  }
+}
+```
+
+```bash
+cronicle run --path cronicle.hcl --listen :7766 --listen-token smoke
+```
+
+**Per-run** — trigger `long-build`, capture its `run_id`, subscribe to just that one:
+
+```bash
+curl -X POST -H "Authorization: Bearer smoke" \
+     http://localhost:7766/v1/schedules/long-build/trigger
+RUN_ID=$(curl -s -H "Authorization: Bearer smoke" \
+     "http://localhost:7766/v1/runs?status=running&limit=1" | jq -r '.[0].run_id')
+curl -N -H "Authorization: Bearer smoke" \
+     "http://localhost:7766/v1/runs/$RUN_ID/events"
+```
+
+Frames you'll see: `shell_run_start` (header rule + command), six `stdout_chunk` lines (`[step] fetching` …), footer `[exit=0 · 6062ms · transcript=…]`, `schedule_complete` ✓.
+
+**Per-schedule** — open SSE first, then trigger twice. Both runs flow through one connection:
+
+```bash
+( curl -N -H "Authorization: Bearer smoke" \
+       http://localhost:7766/v1/schedules/long-build/events ) &
+sleep 0.2
+curl -X POST -H "Authorization: Bearer smoke" \
+     http://localhost:7766/v1/schedules/long-build/trigger
+sleep 7
+curl -X POST -H "Authorization: Bearer smoke" \
+     http://localhost:7766/v1/schedules/long-build/trigger
+```
+
+Two full run sequences come down the same stream — `schedule_start` / `shell_run_start` / chunks / footer / `schedule_complete`, then the second run's identical sequence. No polling for the second run's `run_id`.
+
+**Firehose** — interleave heartbeat (auto-firing every 10s) with a manual `story` trigger:
+
+```bash
+( curl -N -H "Authorization: Bearer smoke" \
+       http://localhost:7766/v1/events/stream ) &
+sleep 0.2
+curl -X POST -H "Authorization: Bearer smoke" \
+     http://localhost:7766/v1/schedules/story/trigger
+```
+
+The stream interleaves `heartbeat`'s shell output with `story`'s agent `text_delta` tokens by event-time — you'll see frames from both runs alternating as they fire. That's the operator-dashboard view.
+
+#### Wire format toggle (`--live-format`)
+
+`--live-format` controls the bytes inside `data:` lines. Set at startup; the same format applies to every SSE consumer regardless of endpoint.
+
+| flag                   | wire bytes                                                       | best for |
+|------------------------|------------------------------------------------------------------|---|
+| `--live-format=pretty` | ANSI multi-line (default)                                        | xterm.js / TTY clients |
+| `--live-format=json`   | one JSON object per record (same shape as `cronicle.jsonl`)       | programmatic consumers, custom UIs |
+| `--live-format=text`   | `time=... level=INFO msg=... key=val`                            | plain log viewers, debugging |
 
 Architecture: cronicle keeps three planes for run telemetry, each tuned
 to a different consumer:
