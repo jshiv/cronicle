@@ -1,12 +1,14 @@
 package cronicle
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jshiv/cronicle/internal/cronicle/state"
 )
@@ -150,6 +152,206 @@ func TestIngest_BodyTooLarge(t *testing.T) {
 	srv.handleIngestEvents(rr, req)
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("got %d, want 413; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestIngest_FanoutsToLiveSink: distributed-mode workers POST their
+// slog records to /v1/events. The runner must republish them to the
+// in-memory LiveSink so SSE subscribers (which only see the runner's
+// own slog chain via Handle) get visibility into worker-executed work.
+//
+// Without this fan-out, /v1/runs/{id}/events on the runner would show
+// runner-locally-executed records only — worker records would persist
+// to SQLite fine but never reach the live stream. That's the visibility
+// gap a frontend operator hits when they trigger a job that lands on a
+// worker node and see an empty SSE pane.
+//
+// This test wires the real ingest endpoint to a real LiveSink, opens
+// a real SSE subscription over httptest, POSTs a JSONL line, and
+// verifies the subscriber receives the event bytes verbatim.
+func TestIngest_FanoutsToLiveSink(t *testing.T) {
+	store, err := state.Open(":memory:")
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer store.Close()
+
+	ls := state.NewLiveSink(newLiveEncoder(LiveFormatPretty))
+	srv := &listenServer{
+		token:       "secret",
+		stateSrc:    func() *state.Store { return store },
+		liveSinkSrc: func() *state.LiveSink { return ls },
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/events", srv.handleIngestEvents)
+	mux.HandleFunc("/v1/runs/", srv.handleRunRoute)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Subscriber side: open an SSE GET on the run_id the worker will
+	// publish under. The subscription must be alive before the POST or
+	// the LiveSink fan-out has no consumer to deliver to (LiveSink is
+	// pub/sub with no replay buffer — the same shape the production code
+	// uses).
+	subReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/runs/WORKER-R1/events", nil)
+	subReq.Header.Set("Authorization", "Bearer secret")
+	subResp, err := http.DefaultClient.Do(subReq)
+	if err != nil {
+		t.Fatalf("subscribe GET: %v", err)
+	}
+	defer subResp.Body.Close()
+	if subResp.StatusCode != 200 {
+		t.Fatalf("subscribe: got %d", subResp.StatusCode)
+	}
+
+	frames := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(subResp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		var cur []string
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				frame := strings.Join(cur, "\n")
+				cur = nil
+				if strings.HasPrefix(frame, ": ping") {
+					continue
+				}
+				frames <- frame
+				return
+			}
+			cur = append(cur, line)
+		}
+		frames <- ""
+	}()
+
+	// Give the SSE handler a beat to Subscribe before the POST fires.
+	time.Sleep(50 * time.Millisecond)
+
+	// Worker-shipper side: POST one JSONL event. Shape matches what
+	// worker_event_ship.go writes — generic JSON with time/level/msg
+	// plus the entry_type/run_id/schedule/task routing attrs.
+	body := `{"time":"2026-05-11T12:00:00Z","level":"INFO","msg":"hello from worker","entry_type":"stdout_chunk","run_id":"WORKER-R1","schedule":"distributed","task":"remote-task","stream":"stdout"}`
+	rr := httptest.NewRecorder()
+	srv.handleIngestEvents(rr, ingestRequest(body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ingest: got %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var resp ingestResponse
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp.Accepted != 1 {
+		t.Fatalf("accepted: got %d, want 1", resp.Accepted)
+	}
+
+	select {
+	case frame := <-frames:
+		if frame == "" {
+			t.Fatal("empty SSE frame — subscriber received nothing")
+		}
+		// After rehydrate + re-encode, the subscriber sees the runner's
+		// pretty form, NOT the worker's raw JSON. renderStdoutChunk
+		// renders only the message line; the run_id stays in the
+		// routing tags (used by fan-out filter) but doesn't appear in
+		// the encoded payload.
+		if !strings.Contains(frame, "data: hello from worker") {
+			t.Fatalf("subscriber missed pretty-rendered chunk; frame=%q", frame)
+		}
+		// JSON wire-shape leakage check: if the run_id key appears in
+		// the frame, we're back to raw-JSON pass-through and the format
+		// unification regressed.
+		if strings.Contains(frame, `"run_id"`) {
+			t.Fatalf("frame leaked raw JSON shape; want pretty encoding only; frame=%q", frame)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out — worker event did not reach SSE subscriber")
+	}
+}
+
+// TestIngest_AgentDeltaRendersPretty: workers run agents in distributed
+// mode (the heavy work). Text deltas (token-by-token model output) MUST
+// reach the SSE pane in the same ANSI-pretty form a runner-local agent
+// would produce — anything else means a frontend operator gets raw JSON
+// when watching a worker-executed agent, while a runner-executed agent
+// shows clean text. The whole point of unifying the wire format on the
+// runner side is that the operator can't tell the difference.
+//
+// Mechanically: rehydrate must reconstruct a slog.Record that
+// renderTextDelta accepts. The renderer reads r.Message directly and
+// writes it without a trailing newline (the model controls its own
+// formatting), so the SSE frame's `data:` line carries the token
+// exactly as the model produced it.
+func TestIngest_AgentDeltaRendersPretty(t *testing.T) {
+	store, err := state.Open(":memory:")
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer store.Close()
+
+	ls := state.NewLiveSink(newLiveEncoder(LiveFormatPretty))
+	srv := &listenServer{
+		token:       "secret",
+		stateSrc:    func() *state.Store { return store },
+		liveSinkSrc: func() *state.LiveSink { return ls },
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/events", srv.handleIngestEvents)
+	mux.HandleFunc("/v1/runs/", srv.handleRunRoute)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	subReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/runs/AGENT-RUN/events", nil)
+	subReq.Header.Set("Authorization", "Bearer secret")
+	subResp, err := http.DefaultClient.Do(subReq)
+	if err != nil {
+		t.Fatalf("subscribe GET: %v", err)
+	}
+	defer subResp.Body.Close()
+
+	frames := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(subResp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		var cur []string
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				frame := strings.Join(cur, "\n")
+				cur = nil
+				if strings.HasPrefix(frame, ": ping") {
+					continue
+				}
+				frames <- frame
+				return
+			}
+			cur = append(cur, line)
+		}
+		frames <- ""
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Worker ships a single agent text_delta carrying the model's token.
+	// Numeric attrs (output_tokens) go through json.Number so the
+	// rehydrate produces Int64Kind — same as a runner-local record.
+	body := `{"time":"2026-05-11T12:00:00Z","level":"INFO","msg":"The quick brown fox","entry_type":"text_delta","run_id":"AGENT-RUN","schedule":"agent-demo","task":"summarize","output_tokens":4}`
+	rr := httptest.NewRecorder()
+	srv.handleIngestEvents(rr, ingestRequest(body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ingest: got %d", rr.Code)
+	}
+
+	select {
+	case frame := <-frames:
+		// renderTextDelta writes just r.Message — no decoration, no
+		// newline added. SSE frame is then `event: cronicle` / `data: The quick brown fox`.
+		if !strings.Contains(frame, "data: The quick brown fox") {
+			t.Fatalf("agent delta did not render as pretty text; frame=%q", frame)
+		}
+		if strings.Contains(frame, `"entry_type"`) {
+			t.Fatalf("frame leaked raw JSON shape from worker; frame=%q", frame)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out — agent delta did not reach SSE subscriber")
 	}
 }
 

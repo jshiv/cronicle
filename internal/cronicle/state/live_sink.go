@@ -174,19 +174,6 @@ func (s *LiveSink) Handle(_ context.Context, r slog.Record) error {
 func (s *LiveSink) WithAttrs(_ []slog.Attr) slog.Handler { return s }
 func (s *LiveSink) WithGroup(_ string) slog.Handler      { return s }
 
-// Inject forwards pre-encoded bytes to subscribers as if they had come
-// through Handle. Used by the distributed-mode ingest path (POST
-// /v1/events) where worker records arrive at the producer as bytes,
-// not through the producer's slog handler chain, so Handle never sees
-// them. Caller passes the routing tags it already decoded from the
-// Event struct.
-func (s *LiveSink) Inject(runID, schedule, task string, line []byte) {
-	if s == nil || runID == "" || len(line) == 0 {
-		return
-	}
-	s.fanout(recordTags{runID: runID, schedule: schedule, task: task}, line)
-}
-
 // fanout walks the subscriber set under the mutex, then sends under no
 // lock. Slow consumers get a non-blocking drop — better to lose a few
 // frames in one tab than stall every other tab watching the same run.

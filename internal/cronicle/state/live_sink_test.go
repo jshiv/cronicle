@@ -339,32 +339,6 @@ func TestLiveSink_DoubleUnsubscribeIsSafe(t *testing.T) {
 	unsub() // would panic if not idempotent
 }
 
-// TestLiveSink_InjectFanout: Inject takes pre-encoded bytes and
-// delivers them as if they came through Handle. Used by the ingest
-// path (POST /v1/events) where worker events arrive as bytes from a
-// remote worker rather than through this process's slog chain.
-func TestLiveSink_InjectFanout(t *testing.T) {
-	ls := NewLiveSink(trivialEncoder)
-	ch, unsub := ls.Subscribe(Filter{RunID: "R"})
-	defer unsub()
-
-	line := []byte("hello from worker\n")
-	ls.Inject("R", "sched", "task1", line)
-
-	select {
-	case got := <-ch:
-		if string(got) != string(line) {
-			t.Fatalf("payload mismatch: got %s", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Inject did not deliver")
-	}
-
-	// Empty runID and empty line are no-ops.
-	ls.Inject("", "sched", "task1", line)
-	ls.Inject("R", "sched", "task1", nil)
-}
-
 // TestLiveSink_ConcurrentSubscribePublish: lots of subscribers, lots
 // of publishes, race detector must be happy.
 func TestLiveSink_ConcurrentSubscribePublish(t *testing.T) {

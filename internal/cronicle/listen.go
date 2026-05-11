@@ -476,6 +476,10 @@ func (s *listenServer) handleIngestEvents(w http.ResponseWriter, r *http.Request
 		http.Error(w, "state store not enabled", http.StatusServiceUnavailable)
 		return
 	}
+	// liveSink may be nil when the state subsystem is wired without a
+	// live plane (older test harnesses). Inject is a no-op on nil, so the
+	// only cost of resolving it here is one accessor call per request.
+	liveSink := s.currentLiveSink()
 	body := http.MaxBytesReader(w, r.Body, maxEventBatchBytes)
 	defer body.Close()
 
@@ -499,6 +503,24 @@ func (s *listenServer) handleIngestEvents(w http.ResponseWriter, r *http.Request
 			slog.Warn("event apply failed", "run_id", ev.RunID, "entry_type", ev.EntryType, "error", err.Error())
 			dropped++
 			continue
+		}
+		// Fan worker-shipped events out to SSE subscribers on the runner.
+		// Without this, /v1/runs/{id}/events and /v1/schedules/{name}/events
+		// only ever see records produced by the runner's own slog chain —
+		// distributed-mode workers stay invisible to the live stream even
+		// though their events are persisted just fine.
+		//
+		// Rehydrate the worker's JSON line back into a slog.Record and
+		// route it through liveSink.Handle. This puts worker records on
+		// the same encode path the runner's own slog chain uses, so SSE
+		// subscribers see ONE wire format (whatever --live-format chose)
+		// regardless of whether the work ran locally or on a worker. The
+		// alternative — Inject with raw bytes — leaks JSON-on-the-wire
+		// into a pretty subscriber's pane, which is jarring for agent
+		// runs where the user expects the same ANSI-rendered output as
+		// a local run.
+		if rec, ok := rehydrateRecord(line); ok {
+			_ = liveSink.Handle(r.Context(), rec)
 		}
 		accepted++
 	}
