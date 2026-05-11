@@ -508,26 +508,54 @@ func (p *prettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
 func (p *prettyHandler) Handle(_ context.Context, r slog.Record) error {
 	switch entryType(r) {
 	case "agent_run":
-		return p.renderAgentRun(r)
+		// suppressChunks=true (stdout) → full block as before.
+		// suppressChunks=false (LiveSink) → footer only; body was already
+		// streamed via text_delta records that the bridge always emits.
+		if p.suppressChunks {
+			return p.renderAgentRun(r)
+		}
+		return p.renderAgentRunFooter(r)
 	case "agent_run_streamed":
-		// The streaming dispatch path already wrote the block to stdout in
-		// real time; the slog event exists only for the file mirror and
-		// non-pretty consumers. Suppress here.
-		return nil
+		// suppressChunks=true → no-op (StreamingWriter wrote the entire
+		// block directly to stdout; the slog event is for file/Loki).
+		// suppressChunks=false → footer only; LiveSink saw the header
+		// via agent_run_start and the body via text_delta records.
+		if p.suppressChunks {
+			return nil
+		}
+		return p.renderAgentRunFooter(r)
+	case "agent_run_start":
+		// Header rule + line + rule. Suppressed on stdout pretty mode
+		// because the StreamingWriter already wrote it via
+		// WriteAgentRunHeader; emitted to LiveSink so SSE consumers
+		// see the model/task/schedule context at the top of the block.
+		if p.suppressChunks {
+			return nil
+		}
+		return p.renderAgentRunStart(r)
 	case "shell_run":
-		return p.renderShellRun(r)
+		if p.suppressChunks {
+			return p.renderShellRun(r)
+		}
+		return p.renderShellRunFooter(r)
 	case "shell_run_streamed":
-		// Already rendered to stdout in real time; the slog event exists
-		// only for the file mirror.
-		return nil
+		if p.suppressChunks {
+			return nil
+		}
+		return p.renderShellRunFooter(r)
+	case "shell_run_start":
+		if p.suppressChunks {
+			return nil
+		}
+		return p.renderShellRunStart(r)
 	case "schedule_start":
 		return p.renderScheduleStart(r)
 	case "schedule_complete":
 		return p.renderScheduleComplete(r)
 	case "task_start":
-		// Block headers (agent_run / shell_run) subsume the start signal,
-		// so suppress task_start in pretty mode. The file mirror still
-		// gets the event.
+		// Block headers (agent_run_start / shell_run_start) subsume the
+		// start signal, so suppress task_start in pretty mode. The file
+		// mirror still gets the event.
 		return nil
 	case "stdout_chunk":
 		if p.suppressChunks {
@@ -638,6 +666,91 @@ func attrStrings(r slog.Record, key string) []string {
 		return false
 	})
 	return out
+}
+
+// renderAgentRunStart writes the bordered header block for an agent run
+// to p.out — same shape WriteAgentRunHeader produces for the TTY's
+// StreamingWriter. Used by LiveSink (suppressChunks=false) so SSE
+// consumers see model/task/schedule context BEFORE the deltas stream.
+func (p *prettyHandler) renderAgentRunStart(r slog.Record) error {
+	schedule := attrString(r, "schedule")
+	task := attrString(r, "task")
+	model := attrString(r, "model")
+	var skills []string
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "skills_available" {
+			if v, ok := a.Value.Any().([]string); ok {
+				skills = v
+			}
+			return false
+		}
+		return true
+	})
+	var b bytes.Buffer
+	WriteAgentRunHeader(&b, schedule, task, model, skills)
+	b.WriteByte('\n')
+	_, err := p.out.Write(b.Bytes())
+	return err
+}
+
+// renderAgentRunFooter writes ONLY the bracketed footer line for an
+// agent run — the metrics summary. Used by LiveSink (suppressChunks=
+// false): the header was already emitted via agent_run_start, the body
+// streamed via text_delta records, so the SSE consumer only needs the
+// terminal metrics line.
+func (p *prettyHandler) renderAgentRunFooter(r slog.Record) error {
+	var (
+		costStr                        string
+		stop, transcript               string
+		durationMs, in, out, cacheRead int64
+	)
+	r.Attrs(func(a slog.Attr) bool {
+		switch a.Key {
+		case "cost_usd":
+			costStr = fmt.Sprintf("%.6f", a.Value.Float64())
+		case "duration_ms":
+			durationMs = a.Value.Int64()
+		case "input_tokens":
+			in = a.Value.Int64()
+		case "output_tokens":
+			out = a.Value.Int64()
+		case "cache_read":
+			cacheRead = a.Value.Int64()
+		case "stop_reason":
+			stop = a.Value.String()
+		case "transcript":
+			transcript = a.Value.String()
+		}
+		return true
+	})
+	var b bytes.Buffer
+	WriteAgentRunFooter(&b, in, out, cacheRead, costStr, durationMs, stop, transcript)
+	_, err := p.out.Write(b.Bytes())
+	return err
+}
+
+// renderShellRunStart writes the bordered header block for a shell run.
+// Mirrors renderAgentRunStart for the shell-task path.
+func (p *prettyHandler) renderShellRunStart(r slog.Record) error {
+	schedule := attrString(r, "schedule")
+	task := attrString(r, "task")
+	command := attrString(r, "command")
+	var b bytes.Buffer
+	WriteShellRunHeader(&b, schedule, task, command)
+	b.WriteByte('\n')
+	_, err := p.out.Write(b.Bytes())
+	return err
+}
+
+// renderShellRunFooter writes the bracketed footer line for a shell run.
+func (p *prettyHandler) renderShellRunFooter(r slog.Record) error {
+	exit := attrInt64(r, "exit")
+	durationMs := attrInt64(r, "duration_ms")
+	transcript := attrString(r, "transcript")
+	var b bytes.Buffer
+	WriteShellRunFooter(&b, exit, durationMs, transcript)
+	_, err := p.out.Write(b.Bytes())
+	return err
 }
 
 func (p *prettyHandler) renderAgentRun(r slog.Record) error {

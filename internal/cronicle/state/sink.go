@@ -42,14 +42,16 @@ func (s *Sink) Enabled(_ context.Context, _ slog.Level) bool { return true }
 // answers "what structural events happened?" and only structural events
 // (schedule_*, task_*, shell_run, agent_run) get rows.
 var skipEntryTypes = map[string]bool{
-	"stdout_chunk":    true,
-	"stderr_chunk":    true,
-	"text_delta":      true,
-	"thinking_delta":  true,
-	"tool_use_start":  true,
-	"tool_use_stop":   true,
-	"tool_result":     true,
-	"turn_start":      true,
+	"stdout_chunk":     true,
+	"stderr_chunk":     true,
+	"text_delta":       true,
+	"thinking_delta":   true,
+	"tool_use_start":   true,
+	"tool_use_stop":    true,
+	"tool_result":      true,
+	"turn_start":       true,
+	"agent_run_start":  true,
+	"shell_run_start":  true,
 }
 
 // Handle converts r → JSON line → Event → store.Apply. The roundtrip

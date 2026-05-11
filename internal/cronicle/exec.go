@@ -76,6 +76,20 @@ func (task *Task) Exec(t time.Time) exec.Result {
 		defer stdoutEmitter.Flush()
 		defer stderrEmitter.Flush()
 
+		// Header slog record carries the metadata pretty stdout would put
+		// in its bordered block (schedule, task, command). LiveSink's
+		// pretty encoder renders it as the header; stdout pretty mode
+		// suppresses it because StreamingWriter already wrote those bytes
+		// directly (above). file/Loki consumers see a structural record
+		// they can use to mark "task started" with full context.
+		slog.Info("shell run start",
+			"entry_type", "shell_run_start",
+			"run_id", task.RunID,
+			"schedule", task.ScheduleName,
+			"task", task.Name,
+			"command", strings.Join(cmd, " "),
+		)
+
 		// Honor the per-run cancel context when one is plumbed in
 		// (HTTP-worker mode, /v1/runs/{id}/cancel preempt). Falls
 		// through to context.Background() in default in-process mode
@@ -206,6 +220,20 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// subscriptions on. The local `runID` is a separate agent-internal
 	// identifier used for the per-task transcript file name.
 	cfg.StreamHandler = NewAgentSlogBridge(task.RunID, task.Name, task.ScheduleName, downstream)
+
+	// Header slog record — carries schedule/task/model/skills metadata.
+	// LiveSink's pretty encoder renders this as the bordered header block;
+	// stdout pretty mode suppresses it because WriteAgentRunHeader (above)
+	// already wrote those bytes directly. file/Loki consumers see a
+	// structural "agent task started" record with full context.
+	slog.Info("agent run start",
+		"entry_type", "agent_run_start",
+		"run_id", task.RunID,
+		"schedule", task.ScheduleName,
+		"task", task.Name,
+		"model", effectiveModel,
+		"skills_available", skillsAvailable,
+	)
 
 	// Tools: bind to the task's workspace and stream writer so bash output
 	// flows into the agent's pretty block AND the cronicle execution
