@@ -39,8 +39,13 @@ type Schedule struct {
 	Timezone  string `hcl:"timezone,optional"`
 	StartDate string `hcl:"start_date,optional"`
 	EndDate   string `hcl:"end_date,optional"`
-	Repo      *Repo  `hcl:"repo,block"`
-	Tasks     []Task `hcl:"task,block"`
+	Repo  *Repo  `hcl:"repo,block"`
+	Tasks []Task `hcl:"task,block"`
+	// AgentTasks is the first-class schedule-level `agent "X" { ... }` HCL
+	// block — folded into Tasks immediately after parse (see parse.go's
+	// ParseFile). It's a parse-time intermediate and never serialized:
+	// downstream consumers (DAG, projection, JSON wire) only see Tasks.
+	AgentTasks []AgentTask `hcl:"agent,block" json:"-"`
 	//Now is the execution time of the given schedule that will be used to
 	//fill variable task command ${datetime}. The cron scheduler generally provides
 	//the value.
@@ -145,6 +150,81 @@ type Agent struct {
 	// on the entire run. Empty means default ("10m"). Parsed via
 	// time.ParseDuration.
 	Wallclock string `hcl:"wallclock,optional"`
+}
+
+// AgentTask is the first-class schedule-level `agent "name" { ... }` block.
+// It's a parse-time convenience: every AgentTask is normalized to a regular
+// Task (with the Task.Agent field populated) right after HCL decode, so the
+// scheduler, DAG, queue, and projection only ever see Tasks.
+//
+// Why this exists: cronicle's product positioning ("scheduling for AI agents")
+// reads best when the HCL surface matches — operators write
+//
+//	schedule "X" {
+//	  agent "summarize" {
+//	    prompt = "..."
+//	    model  = "claude-opus-4-7"
+//	  }
+//	}
+//
+// instead of the legacy nested form
+//
+//	schedule "X" {
+//	  task "summarize" {
+//	    agent { prompt = "...", model = "..." }
+//	  }
+//	}
+//
+// Both forms parse identically (and both round-trip through Validate); the
+// new shape is purely sugar. Existing configs keep working unchanged.
+//
+// Fields are the union of Task's task-shared properties (name, depends, repo,
+// retry, env) and Agent's agent-specific properties (prompt, model, system,
+// tools, skills, etc.) flattened to the top level. ToTask builds the equivalent
+// Task; Schedule.normalizeAgentTasks appends them to Schedule.Tasks.
+type AgentTask struct {
+	Name    string   `hcl:"name,label"`
+	Depends []string `hcl:"depends,optional"`
+	Repo    *Repo    `hcl:"repo,block"`
+	Retry   *Retry   `hcl:"retry,block"`
+	Env     []string `hcl:"env,optional"`
+
+	// Flattened Agent fields — identical semantics to the Agent struct.
+	Prompt    string   `hcl:"prompt,optional"`
+	Model     string   `hcl:"model,optional"`
+	System    string   `hcl:"system,optional"`
+	MaxTokens int      `hcl:"max_tokens,optional"`
+	BudgetUSD float64  `hcl:"budget_usd,optional"`
+	Tools     []string `hcl:"tools,optional"`
+	Skills    []string `hcl:"skills,optional"`
+	MCPs      []MCP    `hcl:"mcp,block"`
+	MaxTurns  int      `hcl:"max_turns,optional"`
+	Wallclock string   `hcl:"wallclock,optional"`
+}
+
+// ToTask returns the equivalent Task struct, with .Agent populated from the
+// flattened agent fields. Callers route the resulting Task into the regular
+// scheduler/DAG/exec paths unchanged.
+func (a AgentTask) ToTask() Task {
+	return Task{
+		Name:    a.Name,
+		Depends: a.Depends,
+		Repo:    a.Repo,
+		Retry:   a.Retry,
+		Env:     a.Env,
+		Agent: &Agent{
+			Prompt:    a.Prompt,
+			Model:     a.Model,
+			System:    a.System,
+			MaxTokens: a.MaxTokens,
+			BudgetUSD: a.BudgetUSD,
+			Tools:     a.Tools,
+			Skills:    a.Skills,
+			MCPs:      a.MCPs,
+			MaxTurns:  a.MaxTurns,
+			Wallclock: a.Wallclock,
+		},
+	}
 }
 
 // MCP is a Model Context Protocol server definition. Cronicle launches the
