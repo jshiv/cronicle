@@ -39,6 +39,14 @@ type Event struct {
 	// schedule_complete
 	TaskCount int `json:"task_count,omitempty"`
 
+	// SSE de-dup key: minted by state.Tagger at the top of the slog chain
+	// (or by Retag() on the ingest path). Zero/empty when an Event is
+	// constructed programmatically without going through the chain — the
+	// projection writes NULL columns in that case and replay treats them
+	// as "deliver always".
+	Seq      int64  `json:"seq,omitempty"`
+	Lifetime string `json:"lifetime,omitempty"`
+
 	// raw is the serialized JSON record this Event was decoded from. Stored
 	// verbatim in events.payload so /v1/runs/{id}/events can replay the
 	// original line shape — including any fields the typed Event drops.

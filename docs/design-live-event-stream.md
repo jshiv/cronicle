@@ -460,3 +460,104 @@ filter, get folded into SQLite, then `publish` fires. Adding a
 handler-layer fan-out drops one of those projection layers and puts
 SSE consumers on the same level as stdout — closer to the source,
 consistent with the philosophy.
+
+---
+
+## Addendum (2026-05-10): de-dup via (lifetime, seq)
+
+After the original `LiveSink` + Option A backfill design landed, the
+remaining concern was the small window in which the SAME record reaches
+a client twice: once on the replay path (because it's in the events
+table) and once on the live path (because `LiveSink` fired). Clients
+were nominally expected to de-dup by `(time, msg)`, but those fields
+are not actually unique under fast bursts.
+
+The fix is a stable de-dup key, added in schema v4:
+
+- `events.seq`: per-process monotonic int64, minted by a top-of-chain
+  `state.Tagger` slog handler. Strictly increasing, dense, no gaps.
+- `events.lifetime`: 8-char hex nonce minted once per producer process,
+  cached in `state.ProcessNonce()`. Different across restarts.
+
+SSE wire format becomes `id: <lifetime>-<seq>`. Clients send the same
+value back as `Last-Event-ID` on reconnect. The new `EventsResume`
+query handles both cases:
+
+- **Same lifetime**: return rows with `seq > clientSeq`. The common
+  catch-up.
+- **Different lifetime**: return everything for the run. Covers
+  producer restart mid-run AND junk/stale cursors. Old-lifetime rows
+  get redelivered too — clients de-dup them in memory against their
+  seen-set.
+
+### Why a new column, not derive from row id
+
+`events.id` is a SQLite autoincrement and is reliable as long as the
+events table isn't deleted/recreated. But it also means SSE clients
+have to de-dup against TWO keys: the row id for replay, and... what
+for live? Live records don't have an id until they hit the table — and
+the LiveSink fires BEFORE the table commit. By minting the key at the
+top of the slog chain (before `Sink` AND before `LiveSink`), both
+paths emit the same `(lifetime, seq)` for the same record. One key,
+one de-dup rule.
+
+### Handler chain
+
+```
+Tagger
+  └─ multiHandler
+       ├─ existing (pretty/text/file)
+       ├─ Sink     → events table (seq, lifetime columns)
+       └─ LiveSink → SSE subscribers (payload already tagged)
+```
+
+`Tagger.Handle` adds the attrs to a cloned record and delegates. The
+downstream encoders (Sink's `encodeRecord`, LiveSink's same helper)
+include the attrs in the emitted JSON line. The events.seq /
+events.lifetime columns are read back off the decoded `Event` in
+`Sink.recordEvent`. SSE replay reads them straight from the columns.
+
+### Ingest path (worker → producer)
+
+Worker slog records arrive at the producer as bytes via
+`POST /v1/events`. They carry the WORKER's `(seq, lifetime)` — which
+is meaningless to the producer's de-dup namespace. So
+`handleIngestEvents` calls `state.Retag(line)` to re-stamp the line
+with the producer's `(seq, lifetime)` before forwarding to `Sink` and
+`LiveSink`. The worker's original values are preserved in
+`origin_seq` / `origin_lifetime` fields on the same JSON line for
+operator traceability.
+
+### Backwards compat
+
+The columns are nullable. Events written by:
+
+- Pre-v4 binaries
+- Programmatic `Store.Apply` callers that bypass the slog chain
+- `state.Event{}` constructed by hand without `Seq`/`Lifetime` fields
+
+land with `NULL` lifetime and `seq=0`. `EventsResume`'s SQL filter
+treats `NULL != ?` correctly — those rows are always returned to a
+client that supplies any non-empty lifetime, which is the desired
+"deliver always for pre-tagged history" behavior.
+
+### Tests
+
+- `TestParseEventID` / `TestExtractIDFromPayload`: wire helpers.
+- `TestRunEvents_SSEIDFormat`: every replayed frame uses `<lt>-<seq>`.
+- `TestRunEvents_LastEventIDResume`: client past seq=2 sees only seq=3.
+- `TestRunEvents_LifetimeMismatchReplaysAll`: stale cursor → full replay.
+- `TestRunEvents_LiveTailUsesTaggedID`: live frame carries the id.
+- `TestEventsResume_LifetimeFilter`: direct SQL cursor behavior.
+- `TestTaggerInjectsSeqAndLifetime`: monotonic seq + stable lifetime.
+- `TestRetag_PreservesOriginAndAssignsLocalSeq`: ingest path.
+
+### Out of scope (still)
+
+- Cross-producer dedup. A multi-producer setup (one HA pair behind a
+  LB) would each mint a distinct `lifetime`, so cross-producer events
+  are naturally "different lifetimes" and the client replays each.
+  Acceptable: HA is not a v1 target.
+- Wire-format negotiation. We assume clients understand the
+  `<lt>-<seq>` format. Browsers that fall through to the legacy
+  bare-int format work via the `?since=` query param.

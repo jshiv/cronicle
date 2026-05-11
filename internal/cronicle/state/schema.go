@@ -3,21 +3,25 @@ package state
 // schemaSQL is the v1 schema for the state plane.
 //
 // runs:    one row per scheduled execution. Status mutates as events fold in
-//          (queued → running → succeeded|failed|canceled). One row in this
-//          table corresponds to one schedule trigger (cron tick, HTTP trigger,
-//          or `cronicle exec` invocation).
+//
+//	(queued → running → succeeded|failed|canceled). One row in this
+//	table corresponds to one schedule trigger (cron tick, HTTP trigger,
+//	or `cronicle exec` invocation).
 //
 // tasks:   one row per task within a run. Status follows the same lifecycle
-//          and rolls up into the parent run's status on completion.
+//
+//	and rolls up into the parent run's status on completion.
 //
 // events:  append-only mirror of every slog event with entry_type set. Powers
-//          GET /v1/runs/{id}/events (live + recent). Bounded by retention
-//          window (see internal/cronicle/state/janitor.go); deeper history
-//          lives in the JSONL log on disk.
+//
+//	GET /v1/runs/{id}/events (live + recent). Bounded by retention
+//	window (see internal/cronicle/state/janitor.go); deeper history
+//	lives in the JSONL log on disk.
 //
 // schema_versions: numbered migrations. v1 is everything below; v2+ are
-//          appended via additional `schemaSQL_v2` blocks executed if the
-//          recorded version is < target.
+//
+//	appended via additional `schemaSQL_v2` blocks executed if the
+//	recorded version is < target.
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS schema_versions (
     version    INTEGER PRIMARY KEY,
@@ -113,9 +117,10 @@ CREATE INDEX IF NOT EXISTS idx_jobs_claim_expires   ON jobs(claim_expires_at)
 // is the claimed run_id (or empty when idle).
 //
 // Status values:
-//   active   — claimed a job, last seen within visibility window
-//   idle     — no current claim; last_seen is the most recent poll/ack
-//   stale    — last_seen older than 2× heartbeat cadence (set by janitor)
+//
+//	active   — claimed a job, last seen within visibility window
+//	idle     — no current claim; last_seen is the most recent poll/ack
+//	stale    — last_seen older than 2× heartbeat cadence (set by janitor)
 //
 // For now we record the row but compute "stale" on read in ListWorkers
 // rather than running a janitor. Cheap to derive, and avoids yet
@@ -134,4 +139,28 @@ CREATE TABLE IF NOT EXISTS workers (
 CREATE INDEX IF NOT EXISTS idx_workers_last_seen ON workers(last_seen DESC);
 `
 
-const targetSchemaVersion = 3
+// schemaSQL_v4 adds (seq, lifetime) columns to events. These are the
+// de-dup key for the SSE live-event stream:
+//
+//   - seq:      per-process monotonic int64, minted by state.Tagger
+//     (see seq.go). Strictly increasing, dense, no gaps.
+//   - lifetime: 8-char hex nonce minted once per process. Different
+//     value across restarts so a client reconnecting with
+//     Last-Event-ID built from the OLD lifetime is detected
+//     and we replay from scratch instead of risking a
+//     collision on a recycled seq.
+//
+// SSE event id format: "<lifetime>-<seq>". Clients send this back as
+// Last-Event-ID on reconnect; the server uses (lifetime match? then
+// seq > LE-ID's seq : replay all) to pick the resume point.
+//
+// Columns are nullable for backwards compat: pre-v4 events rows have
+// NULL here. Replay treats NULL as "deliver always" since they
+// predate de-dup support.
+const schemaSQL_v4 = `
+ALTER TABLE events ADD COLUMN seq      INTEGER;
+ALTER TABLE events ADD COLUMN lifetime TEXT;
+CREATE INDEX IF NOT EXISTS idx_events_lifetime_seq ON events(lifetime, seq);
+`
+
+const targetSchemaVersion = 4

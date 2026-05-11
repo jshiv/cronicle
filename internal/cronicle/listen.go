@@ -46,10 +46,11 @@ import (
 // function so tests can inject a store without exporting a setter on
 // the listener.
 type listenServer struct {
-	queue    chan<- []byte
-	token    string
-	confSrc  func() *Config
-	stateSrc func() *state.Store
+	queue       chan<- []byte
+	token       string
+	confSrc     func() *Config
+	stateSrc    func() *state.Store
+	liveSinkSrc func() *state.LiveSink
 }
 
 // startListener brings up the HTTP server in a background goroutine.
@@ -66,10 +67,11 @@ func startListener(addr, token string, queue chan<- []byte) {
 		return
 	}
 	s := &listenServer{
-		queue:    queue,
-		token:    token,
-		confSrc:  func() *Config { return confPriorGlobal },
-		stateSrc: StateStore,
+		queue:       queue,
+		token:       token,
+		confSrc:     func() *Config { return confPriorGlobal },
+		stateSrc:    StateStore,
+		liveSinkSrc: LiveSink,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -407,6 +409,19 @@ func (s *listenServer) currentStore() *state.Store {
 	return StateStore()
 }
 
+// currentLiveSink mirrors currentStore — falls back to the global
+// LiveSink so tests that wire only stateSrc still get the firehose.
+// Returns nil when the state subsystem is disabled.
+func (s *listenServer) currentLiveSink() *state.LiveSink {
+	if s == nil {
+		return nil
+	}
+	if s.liveSinkSrc != nil {
+		return s.liveSinkSrc()
+	}
+	return LiveSink()
+}
+
 // ---- /v1/events -------------------------------------------------------------
 
 // maxEventBatchBytes caps a single ingest body so a misbehaving worker
@@ -458,6 +473,7 @@ func (s *listenServer) handleIngestEvents(w http.ResponseWriter, r *http.Request
 		accepted int
 		dropped  int
 	)
+	liveSink := s.currentLiveSink()
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxEventBatchBytes)
 	for scanner.Scan() {
@@ -465,7 +481,14 @@ func (s *listenServer) handleIngestEvents(w http.ResponseWriter, r *http.Request
 		if len(line) == 0 || line[0] == '\n' {
 			continue
 		}
-		ev, ok := state.DecodeEvent(line)
+		// Re-tag with this producer's (lifetime, seq) so the events table
+		// and the SSE live stream are uniformly in P's identity. The
+		// worker's original seq/lifetime is preserved in origin_seq /
+		// origin_lifetime fields so operators can still trace back. Retag
+		// allocates — but this is the ingest path, not the hot slog path,
+		// so the cost is amortized across the network round-trip.
+		retagged, _ := state.Retag(line)
+		ev, ok := state.DecodeEvent(retagged)
 		if !ok {
 			dropped++
 			continue
@@ -474,6 +497,12 @@ func (s *listenServer) handleIngestEvents(w http.ResponseWriter, r *http.Request
 			slog.Warn("event apply failed", "run_id", ev.RunID, "entry_type", ev.EntryType, "error", err.Error())
 			dropped++
 			continue
+		}
+		// Fan out the re-tagged line to LiveSink so SSE subscribers see
+		// worker-originated events in real time too. Without this the
+		// live tail only includes producer-local records.
+		if liveSink != nil {
+			liveSink.Inject(ev.RunID, retagged)
 		}
 		accepted++
 	}
@@ -658,4 +687,3 @@ func (s *listenServer) handleJobControl(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "not found", http.StatusNotFound)
 	}
 }
-

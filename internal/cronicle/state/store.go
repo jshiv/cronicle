@@ -55,71 +55,11 @@ type Store struct {
 	wait        *jobWaiters
 	controlOnce sync.Once
 	controlReg2 *controlRegistry
-
-	// pub/sub for live event consumers (SSE on /v1/runs/{id}/events).
-	subsMu sync.Mutex
-	subs   map[*eventSub]struct{}
-}
-
-// eventSub is one subscriber to the event firehose. runID="" means
-// "all runs"; otherwise filter to that run only. Buffered chan; if
-// the consumer falls behind we drop (slow consumers don't stall Apply).
-type eventSub struct {
-	ch    chan Event
-	runID string
-}
-
-// SubscribeEvents registers a live consumer of Apply()ed events. Returns
-// the receive channel and an unsubscribe func. Filter to one run by
-// passing its runID, or pass "" for the firehose.
-//
-// Buffer size of 64 is empirical: events are JSON ~200B each, runs
-// rarely emit more than a few dozen events total. SSE clients that
-// can't keep up will drop the late ones; the historical replay path
-// (events table) still has them.
-//
-// Note the Subscribe sibling in control.go is the worker control-channel
-// pub/sub — separate consumer, separate type.
-func (s *Store) SubscribeEvents(runID string) (<-chan Event, func()) {
-	sub := &eventSub{ch: make(chan Event, 64), runID: runID}
-	s.subsMu.Lock()
-	if s.subs == nil {
-		s.subs = make(map[*eventSub]struct{})
-	}
-	s.subs[sub] = struct{}{}
-	s.subsMu.Unlock()
-	return sub.ch, func() {
-		s.subsMu.Lock()
-		delete(s.subs, sub)
-		s.subsMu.Unlock()
-		// no close: the producer side never sends after delete, so
-		// abandoning the chan is safe and avoids the "send on closed
-		// chan" race if a publish was already in flight.
-	}
-}
-
-// publish fans the event out to matching subscribers. Non-blocking per
-// subscriber so a slow client never wedges Apply(). Drops on full chan.
-func (s *Store) publish(e Event) {
-	s.subsMu.Lock()
-	if len(s.subs) == 0 {
-		s.subsMu.Unlock()
-		return
-	}
-	targets := make([]*eventSub, 0, len(s.subs))
-	for sub := range s.subs {
-		if sub.runID == "" || sub.runID == e.RunID {
-			targets = append(targets, sub)
-		}
-	}
-	s.subsMu.Unlock()
-	for _, t := range targets {
-		select {
-		case t.ch <- e:
-		default:
-			// slow consumer; SSE replay covers the gap on reconnect.
-		}
-	}
+	// (live event pub/sub moved to state.LiveSink in live_sink.go —
+	// it's a slog handler that sees records before they're filtered
+	// by entry_type, giving SSE consumers the full firehose including
+	// warnings/errors without a projection schema. See
+	// docs/design-live-event-stream.md.)
 }
 
 // Open returns a Store backed by the given DSN. Use ":memory:" for an
@@ -200,6 +140,12 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("state.migrate v3: %w", err)
 		}
 	}
+	// v4: events.seq + events.lifetime (SSE de-dup key)
+	if current < 4 {
+		if _, err := s.db.Exec(schemaSQL_v4); err != nil {
+			return fmt.Errorf("state.migrate v4: %w", err)
+		}
+	}
 	if current >= targetSchemaVersion {
 		return nil
 	}
@@ -237,18 +183,24 @@ func (s *Store) Apply(e Event) error {
 	if err := s.foldEvent(tx, e); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// Publish AFTER commit so SSE consumers see the same state any
-	// subsequent SELECT would see.
-	s.publish(e)
-	return nil
+	return tx.Commit()
+	// (Live SSE consumers receive events via LiveSink, which sits in
+	// the slog handler chain alongside this Sink. No publish call here —
+	// the architecture intentionally decouples live streaming from the
+	// projection write so a transient SQL error doesn't break the live
+	// stream and vice versa.)
 }
 
 // recordEvent appends to the events table. Stores the original JSON line
 // when present; otherwise re-marshals the typed Event (lossy for unknown
 // fields but acceptable for programmatic emitters).
+//
+// seq + lifetime are the SSE de-dup key. They land in dedicated columns
+// (schema v4) so the resume endpoint can answer "give me everything
+// after (lifetime=L, seq=N)" with a sargable index lookup rather than
+// re-parsing payload JSON per row. NULL columns mean the event was
+// constructed pre-Tagger (programmatic Apply, or a pre-v4 row); replay
+// treats those as "deliver always".
 func (s *Store) recordEvent(tx *sql.Tx, e Event) error {
 	payload := e.raw
 	if len(payload) == 0 {
@@ -259,9 +211,17 @@ func (s *Store) recordEvent(tx *sql.Tx, e Event) error {
 			e.Time.Format(time.RFC3339Nano), e.EntryType, e.RunID, e.Schedule, e.Task,
 		)
 	}
+	var seq any
+	if e.Seq > 0 {
+		seq = e.Seq
+	}
+	var lifetime any
+	if e.Lifetime != "" {
+		lifetime = e.Lifetime
+	}
 	_, err := tx.Exec(
-		`INSERT INTO events(run_id, task, entry_type, ts, payload) VALUES (?,?,?,?,?)`,
-		e.RunID, e.Task, e.EntryType, e.Time.UTC().Format(time.RFC3339Nano), string(payload),
+		`INSERT INTO events(run_id, task, entry_type, ts, payload, seq, lifetime) VALUES (?,?,?,?,?,?,?)`,
+		e.RunID, e.Task, e.EntryType, e.Time.UTC().Format(time.RFC3339Nano), string(payload), seq, lifetime,
 	)
 	if err != nil {
 		return fmt.Errorf("state.recordEvent: %w", err)

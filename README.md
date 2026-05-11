@@ -464,6 +464,7 @@ set `CRONICLE_LISTEN_TOKEN` in the environment.
 | POST   | `/v1/schedules/{name}/tasks/{task}/trigger`            | Fire one task (depends stripped)     |
 | GET    | `/v1/runs`                                             | List recent runs (filterable)        |
 | GET    | `/v1/runs/{run_id}`                                    | Single run + per-task detail         |
+| GET    | `/v1/runs/{run_id}/events`                             | SSE: replay history + live tail      |
 | POST   | `/v1/events`                                           | JSONL ingest (batched events)        |
 | GET    | `/v1/jobs?worker=&block=`                              | Long-poll job claim                  |
 | POST   | `/v1/jobs/{run_id}/ack`                                | Worker reports completion            |
@@ -539,6 +540,42 @@ Response shape (list):
 `cronicle exec` uses an in-memory projection (the run is foreground, you
 are watching it; nothing later queries the DB). `cronicle run` opens
 `.cronicle/state.db` in WAL mode and persists across restarts.
+
+### Watching a run live (GET /v1/runs/{run_id}/events)
+
+Server-Sent Events stream that replays the run's event history then
+hands you the live tail of new events as they happen. Same payload
+shape as `cronicle.jsonl` on disk — the bytes are the bytes.
+
+```bash
+curl -N -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/runs/$RUN_ID/events
+# id: 7a2f1c4e-12
+# event: cronicle
+# data: {"time":"2026-05-10T19:00:00Z","level":"INFO","msg":"task started","entry_type":"task_start","run_id":"...","seq":12,"lifetime":"7a2f1c4e"}
+#
+# id: 7a2f1c4e-13
+# event: cronicle
+# data: {...}
+```
+
+`id` is `<lifetime>-<seq>` — a stable de-dup key. `lifetime` is an
+8-char hex nonce minted once per producer process; `seq` is a
+per-process monotonic int64 minted at the top of the slog chain.
+Together they identify exactly one record across the producer's
+runtime AND across restarts (different lifetime → fresh seq space).
+
+Reconnect mid-stream by passing the last id back in `Last-Event-ID`:
+
+```bash
+curl -N -H "Authorization: Bearer $TOKEN" \
+     -H "Last-Event-ID: 7a2f1c4e-13" \
+     http://localhost:8765/v1/runs/$RUN_ID/events
+```
+
+- Same lifetime → server returns events with `seq > 13`.
+- Different lifetime (producer restarted, or stale cursor) → server
+  replays everything for the run; client de-dups against its seen-set.
 
 ### Posting events directly (POST /v1/events)
 

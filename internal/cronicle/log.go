@@ -146,27 +146,58 @@ var CroniclePath string
 // Set by EnableStateStore; closed by CloseStateStore at shutdown.
 var stateStore *state.Store
 
+// liveSink is the process-wide live SSE event source. Constructed
+// alongside stateStore in EnableStateStore (they're paired: the store
+// owns history replay, the LiveSink owns the live tail). nil when the
+// state subsystem isn't enabled — tests and `cronicle exec` modes that
+// don't open a store run without it.
+var liveSink *state.LiveSink
+
 // StateStore returns the process-wide state.Store, or nil if not enabled.
 // Listener handlers and tests use this to issue queries.
 func StateStore() *state.Store { return stateStore }
 
+// LiveSink returns the process-wide LiveSink, or nil if not enabled.
+// The listener's SSE event handler uses this to subscribe per-run.
+func LiveSink() *state.LiveSink { return liveSink }
+
 // EnableStateStore opens the projection store at dsn (":memory:" or a
-// filesystem path), wires its slog Sink into the default handler chain,
-// and stashes the handle for retrieval via StateStore. Idempotent — a
-// second call closes the prior store and replaces it.
+// filesystem path), wires its slog Sink + LiveSink into the default
+// handler chain wrapped by a top-of-chain Tagger (which mints seq +
+// lifetime attrs), and stashes the handles for retrieval via StateStore
+// and LiveSink. Idempotent — a second call closes the prior store and
+// replaces both.
+//
+// Handler chain after this call (outer → inner):
+//
+//	Tagger → multiHandler{ existing, Sink, LiveSink }
+//
+// Tagger sits at the top so every record — projection-bearing or not —
+// gets a (seq, lifetime) tag before fan-out. That guarantees the bytes
+// Sink writes to the events table match the bytes LiveSink emits on the
+// SSE stream, so clients can de-dup on (lifetime, seq) across replay
+// and live without a special case.
 func EnableStateStore(dsn string) error {
 	if stateStore != nil {
 		_ = stateStore.Close()
 		stateStore = nil
+		liveSink = nil
 	}
 	s, err := state.Open(dsn)
 	if err != nil {
 		return err
 	}
 	stateStore = s
+	liveSink = state.NewLiveSink()
 	current := slog.Default().Handler()
+	// Strip any existing top-level Tagger so a re-enable doesn't stack
+	// taggers on top of each other (would inject duplicate attrs).
+	if t, ok := current.(*state.Tagger); ok {
+		current = t.Inner()
+	}
 	sink := state.NewSink(s)
-	slog.SetDefault(slog.New(&multiHandler{handlers: []slog.Handler{current, sink}}))
+	multi := &multiHandler{handlers: []slog.Handler{current, sink, liveSink}}
+	slog.SetDefault(slog.New(state.NewTagger(multi)))
 	return nil
 }
 
@@ -199,7 +230,16 @@ func EnableFileLog(croniclePath string) error {
 	}
 	fileHandler := slog.NewJSONHandler(file, nil)
 	current := slog.Default().Handler()
-	slog.SetDefault(slog.New(&multiHandler{handlers: []slog.Handler{current, fileHandler}}))
+	// If a Tagger is at the top of the chain (EnableStateStore was called
+	// first), peel it off, add fileHandler to the inner multi-chain, and
+	// re-wrap with the same Tagger so file lines also carry seq + lifetime.
+	if t, ok := current.(*state.Tagger); ok {
+		inner := t.Inner()
+		combined := &multiHandler{handlers: []slog.Handler{inner, fileHandler}}
+		slog.SetDefault(slog.New(state.NewTagger(combined)))
+	} else {
+		slog.SetDefault(slog.New(&multiHandler{handlers: []slog.Handler{current, fileHandler}}))
+	}
 	FileLoggingEnabled = true
 	CroniclePath = croniclePath
 	return nil

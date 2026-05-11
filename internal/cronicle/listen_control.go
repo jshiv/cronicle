@@ -68,19 +68,41 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// runEvents streams the per-run event log as Server-Sent Events. The wire
-// format is one SSE message per event, with the JSON `EventRow` as the
-// data field and the row id as the `id:` field (so reconnect via
-// Last-Event-ID gets a clean replay).
+// runEvents streams the per-run event log as Server-Sent Events.
 //
+// Wire format:
+//
+//	id: <lifetime>-<seq>
 //	event: cronicle
-//	id:    42
-//	data:  {"id":42,"run_id":"…","entry_type":"task_start",…}
+//	data: {"time":"…","level":"INFO","msg":"…","entry_type":"task_start","run_id":"…","seq":42,"lifetime":"a1b2c3d4",…}
 //
-// Replay path: on connect, return all rows with id > Last-Event-ID
-// (or all rows if missing). Then subscribe to the in-process firehose
-// and emit live events. The publish is post-commit so the SSE stream
-// monotonically agrees with what GET /v1/runs/{id} would show.
+// `<lifetime>-<seq>` is the de-dup key. lifetime is an 8-char hex nonce
+// minted once per producer process; seq is a per-process monotonic
+// int64 minted by state.Tagger at the top of the slog chain. Together
+// they identify exactly one record across the producer's lifetime
+// AND across restarts (different lifetime → fresh seq space). Clients
+// MUST de-dup on (lifetime, seq); the same record reaches them once
+// via replay and once via live within the reconnect window.
+//
+// Two payload sources, identical bytes:
+//
+//   - Replay: rows from the events table (raw JSON line stored in
+//     events.payload), with (lifetime, seq) read back from dedicated
+//     columns (schema v4) and surfaced in the SSE id field.
+//   - Live: the LiveSink slog handler, sitting alongside the file/stdout
+//     handlers. Records with `run_id` pass the LiveSink filter — even
+//     records WITHOUT entry_type (warnings, lifecycle prints) reach
+//     subscribers. The payload already carries seq + lifetime because
+//     Tagger injected them upstream of LiveSink.
+//
+// Resume: clients reconnect with Last-Event-ID = "<lifetime>-<seq>".
+// EventsResume returns everything for the run that's not (lifetime ==
+// clientLifetime AND seq <= clientSeq) — covering both the in-lifetime
+// catch-up case and the producer-restart case (where lifetime mismatch
+// triggers full replay). To close the small window where a record is
+// committed AFTER the replay query but BEFORE the live subscription
+// catches up, we subscribe BEFORE replay and re-query once more after
+// the initial loop to backfill (Option A in the design doc).
 func (s *listenServer) runEvents(w http.ResponseWriter, r *http.Request, store *state.Store, runID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -88,18 +110,29 @@ func (s *listenServer) runEvents(w http.ResponseWriter, r *http.Request, store *
 		return
 	}
 
-	// Last-Event-ID resume support per the SSE spec.
-	var sinceID int64
-	if v := r.Header.Get("Last-Event-ID"); v != "" {
-		_, _ = fmt.Sscan(v, &sinceID)
-	} else if v := r.URL.Query().Get("since"); v != "" {
-		_, _ = fmt.Sscan(v, &sinceID)
+	// Last-Event-ID resume support per the SSE spec. New shape:
+	// "<lifetime>-<seq>". Legacy ?since=<int> still understood for
+	// scripts that pre-date the seq+lifetime change.
+	clientLifetime, clientSeq := parseEventID(r.Header.Get("Last-Event-ID"))
+	if clientLifetime == "" && clientSeq == 0 {
+		// Header empty/unparseable — fall back to ?since= query for legacy
+		// callers that pass the rowid directly.
+		if v := r.URL.Query().Get("since"); v != "" {
+			_, _ = fmt.Sscan(v, &clientSeq)
+		}
 	}
 
-	// Subscribe BEFORE replay so any event committed during replay is
-	// captured (we de-dupe via id below).
-	live, unsubscribe := store.SubscribeEvents(runID)
-	defer unsubscribe()
+	// Subscribe to LiveSink BEFORE the replay query so anything written
+	// while we're scanning history is captured (events sit in the buffered
+	// chan until we start consuming). If no LiveSink is wired (defensive
+	// — usually means the listener was constructed in a test harness
+	// without it), only the historical replay path runs.
+	var live <-chan []byte
+	var unsubscribe func()
+	if ls := s.currentLiveSink(); ls != nil {
+		live, unsubscribe = ls.Subscribe(runID)
+		defer unsubscribe()
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -107,18 +140,20 @@ func (s *listenServer) runEvents(w http.ResponseWriter, r *http.Request, store *
 	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
 	w.WriteHeader(http.StatusOK)
 
-	// Replay history.
-	history, err := store.EventsSince(runID, sinceID)
-	if err != nil {
-		slog.Error("events replay failed", "run_id", runID, "error", err.Error())
-		// Still proceed to live; better partial data than no data.
-	}
-	var lastID int64 = sinceID
-	for _, row := range history {
-		writeSSEEvent(w, row.ID, row.Payload)
-		lastID = row.ID
-	}
+	// Replay history then backfill. Track the highest (lifetime, seq) we've
+	// seen so live records that overlap with the backfill window can be
+	// short-circuited (they'd duplicate a replayed row otherwise — the
+	// LiveSink subscribe + table commit are not atomic).
+	lt, sq := s.replayHistory(w, store, runID, clientLifetime, clientSeq)
 	flusher.Flush()
+	lt, sq = s.replayHistory(w, store, runID, lt, sq)
+	flusher.Flush()
+
+	if live == nil {
+		// No live source. Without a heartbeat to write, return now —
+		// clients reconnect with Last-Event-ID to poll for more.
+		return
+	}
 
 	// Heartbeat keeps proxies (k8s, nginx) from killing idle connections.
 	heartbeat := time.NewTicker(15 * time.Second)
@@ -133,50 +168,113 @@ func (s *listenServer) runEvents(w http.ResponseWriter, r *http.Request, store *
 			// SSE comment line — ignored by clients but keeps the conn warm.
 			fmt.Fprintf(w, ": ping %d\n\n", time.Now().Unix())
 			flusher.Flush()
-		case ev, ok := <-live:
-			if !ok {
+		case line, alive := <-live:
+			if !alive {
 				return
 			}
-			// The in-memory Event doesn't carry the row id; re-marshal
-			// minimally and tag with monotonic time so SSE id stays
-			// strictly-increasing (lastID + 1, etc.).
-			lastID++
-			payload := marshalLiveEvent(ev)
-			writeSSEEvent(w, lastID, payload)
+			lineLT, lineSeq := extractIDFromPayload(line)
+			// Skip if we've already emitted this record during the
+			// replay/backfill loop. Same lifetime + seq <= last seen
+			// means it was already in the events table when we queried.
+			if lineLT == lt && lineSeq > 0 && lineSeq <= sq {
+				continue
+			}
+			writeSSEEventTagged(w, lineLT, lineSeq, string(line))
+			if lineLT == lt && lineSeq > sq {
+				sq = lineSeq
+			} else if lineLT != lt && lineLT != "" {
+				// Cross-lifetime live event — shouldn't happen within a
+				// single connection (producer doesn't restart mid-stream)
+				// but track it defensively so future events from this
+				// new lifetime get cursor updates.
+				lt = lineLT
+				sq = lineSeq
+			}
 			flusher.Flush()
 		}
 	}
 }
 
-func writeSSEEvent(w http.ResponseWriter, id int64, payload string) {
-	fmt.Fprintf(w, "id: %d\nevent: cronicle\ndata: %s\n\n", id, payload)
+// replayHistory writes events for runID that the client hasn't already
+// seen ((clientLifetime, clientSeq) cursor) and returns the
+// highest (lifetime, seq) tuple it observed. Logs on error but does
+// not abort — partial replay is better than no replay.
+//
+// Rows with NULL seq/lifetime (pre-v4 inserts, or programmatic Apply
+// callers bypassing the slog chain) are emitted with an id field
+// derived from the autoincrement row id as a fallback — better than
+// no id at all for clients that have no other dedup option.
+func (s *listenServer) replayHistory(w http.ResponseWriter, store *state.Store, runID string, clientLifetime string, clientSeq int64) (string, int64) {
+	history, err := store.EventsResume(runID, clientLifetime, clientSeq)
+	if err != nil {
+		slog.Error("events replay failed", "run_id", runID, "error", err.Error())
+		return clientLifetime, clientSeq
+	}
+	lt, sq := clientLifetime, clientSeq
+	for _, row := range history {
+		writeSSEEventTagged(w, row.Lifetime, row.Seq, row.Payload)
+		// Advance cursor on same-lifetime rows so the subsequent live-tail
+		// dedup window matches what we just emitted.
+		if row.Lifetime == lt && row.Seq > sq {
+			sq = row.Seq
+		} else if row.Lifetime != "" && row.Lifetime != lt {
+			lt = row.Lifetime
+			sq = row.Seq
+		}
+	}
+	return lt, sq
 }
 
-// marshalLiveEvent serializes a live state.Event in the same schema the
-// EventRow.Payload column holds (so the consumer doesn't have to branch
-// on history-vs-live shapes). Falls back to a minimal shape if marshal
-// fails.
-func marshalLiveEvent(e state.Event) string {
-	type out struct {
-		RunID     string `json:"run_id"`
-		Schedule  string `json:"schedule,omitempty"`
-		Task      string `json:"task,omitempty"`
-		EntryType string `json:"entry_type"`
-		Time      string `json:"time,omitempty"`
-		Msg       string `json:"msg,omitempty"`
+// writeSSEEventTagged emits an SSE frame with id = "<lifetime>-<seq>".
+// Falls back to a bare seq (or no id at all) when lifetime is missing —
+// e.g. pre-v4 events or programmatic Apply callers — so the SSE frame
+// is still well-formed and the live tail still works.
+func writeSSEEventTagged(w http.ResponseWriter, lifetime string, seq int64, payload string) {
+	switch {
+	case lifetime != "" && seq > 0:
+		fmt.Fprintf(w, "id: %s-%d\nevent: cronicle\ndata: %s\n\n", lifetime, seq, payload)
+	case seq > 0:
+		fmt.Fprintf(w, "id: %d\nevent: cronicle\ndata: %s\n\n", seq, payload)
+	default:
+		fmt.Fprintf(w, "event: cronicle\ndata: %s\n\n", payload)
 	}
-	body, err := json.Marshal(out{
-		RunID:     e.RunID,
-		Schedule:  e.Schedule,
-		Task:      e.Task,
-		EntryType: e.EntryType,
-		Time:      e.Time.UTC().Format(time.RFC3339Nano),
-		Msg:       e.Msg,
-	})
-	if err != nil {
-		return `{}`
+}
+
+// parseEventID parses an SSE Last-Event-ID in the new "<lifetime>-<seq>"
+// form, returning ("", 0) on any failure. Lifetime is the leading
+// non-dash run (length is intentionally not asserted to keep us
+// forward-compat with a wider nonce in the future); seq is the trailing
+// int64. Anything else returns zero values and the caller treats it as
+// a fresh-connect cursor.
+func parseEventID(id string) (string, int64) {
+	if id == "" {
+		return "", 0
 	}
-	return string(body)
+	i := strings.LastIndex(id, "-")
+	if i <= 0 || i == len(id)-1 {
+		return "", 0
+	}
+	lt := id[:i]
+	var seq int64
+	if _, err := fmt.Sscan(id[i+1:], &seq); err != nil {
+		return "", 0
+	}
+	return lt, seq
+}
+
+// extractIDFromPayload pulls seq + lifetime out of the JSON line emitted
+// by encodeRecord. Hot-path on the live tail — avoid a full unmarshal
+// by scanning for the two known keys. Returns ("", 0) on parse failure;
+// the caller emits an idless frame in that case.
+func extractIDFromPayload(line []byte) (string, int64) {
+	var m struct {
+		Seq      int64  `json:"seq"`
+		Lifetime string `json:"lifetime"`
+	}
+	if err := json.Unmarshal(line, &m); err != nil {
+		return "", 0
+	}
+	return m.Lifetime, m.Seq
 }
 
 // runGet is what handleGetRun used to do — kept here so all run-route

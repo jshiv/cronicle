@@ -170,14 +170,14 @@ func (s *Store) GetRun(runID string) (Run, error) {
 // threshold." Threshold defaults to 2 minutes (worker default heartbeat
 // is ~100s; one missed cycle is fine, two is concerning).
 type Worker struct {
-	WorkerID    string    `json:"worker_id"`
-	Host        string    `json:"host,omitempty"`
-	Status      string    `json:"status"` // active | idle | stale
-	LastSeen    time.Time `json:"last_seen,omitzero"`
-	CurrentRun  string    `json:"current_run,omitempty"`
-	ClaimedAt   time.Time `json:"claimed_at,omitzero"`
-	RunsTotal   int       `json:"runs_total"`
-	RunsFailed  int       `json:"runs_failed"`
+	WorkerID   string    `json:"worker_id"`
+	Host       string    `json:"host,omitempty"`
+	Status     string    `json:"status"` // active | idle | stale
+	LastSeen   time.Time `json:"last_seen,omitzero"`
+	CurrentRun string    `json:"current_run,omitempty"`
+	ClaimedAt  time.Time `json:"claimed_at,omitzero"`
+	RunsTotal  int       `json:"runs_total"`
+	RunsFailed int       `json:"runs_failed"`
 }
 
 // ListWorkers returns the worker registry sorted by last_seen DESC.
@@ -256,6 +256,11 @@ func (s *Store) CountRuns() (int, error) {
 // EventRow is the wire shape of one row from the events table — returned
 // by EventsSince for SSE replay. Payload is the raw JSON line the event
 // was decoded from, so consumers see exactly what slog wrote.
+//
+// Seq + Lifetime are the SSE de-dup key (schema v4). Both nullable: rows
+// inserted before v4 (or by programmatic Apply callers that bypass the
+// slog chain) have Seq=0 and Lifetime="". Clients dedup on (lifetime,
+// seq); zero values are unambiguous "not tagged" markers.
 type EventRow struct {
 	ID        int64     `json:"id"`
 	RunID     string    `json:"run_id"`
@@ -263,14 +268,21 @@ type EventRow struct {
 	EntryType string    `json:"entry_type"`
 	Ts        time.Time `json:"ts,omitzero"`
 	Payload   string    `json:"payload"` // raw JSON line, opaque to caller
+	Seq       int64     `json:"seq,omitempty"`
+	Lifetime  string    `json:"lifetime,omitempty"`
 }
 
 // EventsSince returns every event for runID with id > sinceID, ordered
 // oldest-first. Pass sinceID=0 for the full history. Used by SSE to
 // replay history on first connect and to catch up after reconnect.
+//
+// NOTE: sinceID is the row's autoincrement id, not the seq attr. Prefer
+// EventsResume for clients with Last-Event-ID — that respects the
+// (lifetime, seq) de-dup key and stays correct across producer restarts.
 func (s *Store) EventsSince(runID string, sinceID int64) ([]EventRow, error) {
 	rows, err := s.db.Query(`
-		SELECT id, run_id, COALESCE(task,''), entry_type, ts, payload
+		SELECT id, run_id, COALESCE(task,''), entry_type, ts, payload,
+		       COALESCE(seq, 0), COALESCE(lifetime, '')
 		FROM events
 		WHERE run_id = ? AND id > ?
 		ORDER BY id ASC`, runID, sinceID)
@@ -284,7 +296,59 @@ func (s *Store) EventsSince(runID string, sinceID int64) ([]EventRow, error) {
 			r  EventRow
 			ts string
 		)
-		if err := rows.Scan(&r.ID, &r.RunID, &r.Task, &r.EntryType, &ts, &r.Payload); err != nil {
+		if err := rows.Scan(&r.ID, &r.RunID, &r.Task, &r.EntryType, &ts, &r.Payload, &r.Seq, &r.Lifetime); err != nil {
+			return nil, err
+		}
+		r.Ts = parseTime(ts)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// EventsResume is the Last-Event-ID-aware history replay. clientLifetime
+// + clientSeq come from the SSE id format `<lifetime>-<seq>`.
+//
+// Returns oldest-first:
+//
+//   - When lifetime matches a row's: skip rows with seq <= clientSeq
+//     (the client already has them) and include the rest.
+//   - When lifetime does not match: include the row (client hasn't seen
+//     this process's events). Covers two cases:
+//     a) Producer restarted mid-run; client connects with the old
+//     lifetime; we replay all events from the new lifetime plus
+//     the tail of the old one.
+//     b) Client passes a junk/stale Last-Event-ID (e.g. the run got
+//     relocated to a different producer); replay everything for
+//     the run rather than silently dropping events.
+//
+// Pass clientLifetime="" + clientSeq=0 for a fresh history dump (the
+// initial-connect path).
+func (s *Store) EventsResume(runID, clientLifetime string, clientSeq int64) ([]EventRow, error) {
+	// SQL filter encodes the (lifetime ≠ client) OR (lifetime = client AND seq > clientSeq)
+	// rule. NULL lifetime sorts as ≠ client when client provided one — exactly what we
+	// want for pre-v4 rows that predate de-dup support.
+	q := `
+		SELECT id, run_id, COALESCE(task,''), entry_type, ts, payload,
+		       COALESCE(seq, 0), COALESCE(lifetime, '')
+		FROM events
+		WHERE run_id = ?
+		  AND (
+		    COALESCE(lifetime, '') != ?
+		    OR COALESCE(seq, 0) > ?
+		  )
+		ORDER BY id ASC`
+	rows, err := s.db.Query(q, runID, clientLifetime, clientSeq)
+	if err != nil {
+		return nil, fmt.Errorf("EventsResume: %w", err)
+	}
+	defer rows.Close()
+	out := make([]EventRow, 0, 16)
+	for rows.Next() {
+		var (
+			r  EventRow
+			ts string
+		)
+		if err := rows.Scan(&r.ID, &r.RunID, &r.Task, &r.EntryType, &ts, &r.Payload, &r.Seq, &r.Lifetime); err != nil {
 			return nil, err
 		}
 		r.Ts = parseTime(ts)
