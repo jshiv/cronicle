@@ -68,23 +68,54 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// runEvents streams the run's live event stream as Server-Sent Events.
-// LIVE-ONLY: no replay on subscribe, no Last-Event-ID resume. The
-// frame bytes are whatever LiveSink's configured Encoder produces
-// (pretty ANSI by default — set via --live-format). Frontends with a
-// terminal-emulator widget render those bytes faithfully, giving
-// operators the same visual experience as `cronicle run` in a TTY.
+// runEvents streams the events of one specific run. Drill-in case —
+// operator clicks a run from a list, wants its frames only.
+func (s *listenServer) runEvents(w http.ResponseWriter, r *http.Request, runID string) {
+	s.streamLive(w, r, state.Filter{RunID: runID})
+}
+
+// scheduleEvents streams every run of the named schedule, including
+// future runs that don't have a run_id yet. Solves the "open SSE
+// before trigger" chicken-and-egg: the subscriber registers against a
+// stable schedule name, and LiveSink delivers records as soon as the
+// next run starts emitting them — no polling for the run_id in between.
+//
+// Frontend pattern: schedule overview page opens this endpoint once,
+// renders runs as they fire. The pretty encoder's schedule_start /
+// agent_run / shell_run blocks make run boundaries visually obvious in
+// an xterm.js pane.
+func (s *listenServer) scheduleEvents(w http.ResponseWriter, r *http.Request, name string) {
+	s.streamLive(w, r, state.Filter{Schedule: name})
+}
+
+// handleEventsStream is the firehose: every run-bearing record across
+// every schedule. For operator dashboards monitoring all activity at
+// once. Volume can be high; xterm.js readers should mostly use the
+// per-schedule endpoint instead.
+func (s *listenServer) handleEventsStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authed(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	s.streamLive(w, r, state.Filter{})
+}
+
+// streamLive is the shared SSE plumbing for run / schedule / firehose
+// endpoints. LIVE-ONLY: no replay on subscribe, no Last-Event-ID
+// resume. Frame bytes are whatever LiveSink's configured Encoder
+// produces (pretty ANSI by default — set via --live-format).
 //
 // For history (older runs, debugging) the frontend queries Loki using
 // the seq+lifetime cursor IDs embedded in cronicle.jsonl. That's a
-// separate pane in the UI — this endpoint is purely "what's happening
-// right now."
+// separate pane in the UI — this code path is purely "what's
+// happening right now."
 //
-// Disconnect = miss. If the connection drops mid-task the client
-// won't see the missed bytes on reconnect; switch to the Loki pane
-// for that window. Keeps the server stateless and the implementation
-// trivial.
-func (s *listenServer) runEvents(w http.ResponseWriter, r *http.Request, runID string) {
+// Disconnect = miss. Keeps the server stateless and the wire trivial.
+func (s *listenServer) streamLive(w http.ResponseWriter, r *http.Request, filter state.Filter) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported by this server", http.StatusInternalServerError)
@@ -96,7 +127,7 @@ func (s *listenServer) runEvents(w http.ResponseWriter, r *http.Request, runID s
 		return
 	}
 
-	ch, unsubscribe := ls.Subscribe(runID)
+	ch, unsubscribe := ls.Subscribe(filter)
 	defer unsubscribe()
 
 	w.Header().Set("Content-Type", "text/event-stream")

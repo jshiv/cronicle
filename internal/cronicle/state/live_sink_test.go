@@ -37,9 +37,9 @@ func trivialEncoder(r slog.Record) []byte {
 // A subscriber and skips the B subscriber.
 func TestLiveSink_PerRunDelivery(t *testing.T) {
 	ls := NewLiveSink(trivialEncoder)
-	chA, unsubA := ls.Subscribe("A")
+	chA, unsubA := ls.Subscribe(Filter{RunID: "A"})
 	defer unsubA()
-	chB, unsubB := ls.Subscribe("B")
+	chB, unsubB := ls.Subscribe(Filter{RunID: "B"})
 	defer unsubB()
 
 	_ = ls.Handle(context.Background(), rec(slog.LevelInfo, "hello",
@@ -68,7 +68,7 @@ func TestLiveSink_PerRunDelivery(t *testing.T) {
 // process-level lifecycle prints don't belong on per-run SSE.
 func TestLiveSink_NoRunIDDrops(t *testing.T) {
 	ls := NewLiveSink(trivialEncoder)
-	all, unsub := ls.Subscribe("")
+	all, unsub := ls.Subscribe(Filter{})
 	defer unsub()
 
 	_ = ls.Handle(context.Background(), rec(slog.LevelInfo, "config loaded",
@@ -86,7 +86,7 @@ func TestLiveSink_NoRunIDDrops(t *testing.T) {
 // TestLiveSink_FirehoseSeesEveryRun: Subscribe("") receives every run.
 func TestLiveSink_FirehoseSeesEveryRun(t *testing.T) {
 	ls := NewLiveSink(trivialEncoder)
-	all, unsub := ls.Subscribe("")
+	all, unsub := ls.Subscribe(Filter{})
 	defer unsub()
 
 	for _, id := range []string{"A", "B", "C"} {
@@ -116,7 +116,7 @@ func TestLiveSink_FirehoseSeesEveryRun(t *testing.T) {
 // a placeholder for tests/code paths that don't need live streaming.
 func TestLiveSink_NoEncoderIsNoOp(t *testing.T) {
 	ls := NewLiveSink(nil)
-	ch, unsub := ls.Subscribe("A")
+	ch, unsub := ls.Subscribe(Filter{RunID: "A"})
 	defer unsub()
 
 	_ = ls.Handle(context.Background(), rec(slog.LevelInfo, "x",
@@ -137,7 +137,7 @@ func TestLiveSink_NoEncoderIsNoOp(t *testing.T) {
 func TestLiveSink_EmptyEncodedBytesDropped(t *testing.T) {
 	emptyEnc := func(_ slog.Record) []byte { return nil }
 	ls := NewLiveSink(emptyEnc)
-	ch, unsub := ls.Subscribe("A")
+	ch, unsub := ls.Subscribe(Filter{RunID: "A"})
 	defer unsub()
 
 	_ = ls.Handle(context.Background(), rec(slog.LevelInfo, "x",
@@ -158,9 +158,9 @@ func TestLiveSink_EmptyEncodedBytesDropped(t *testing.T) {
 // and the rest drop without blocking.
 func TestLiveSink_SlowConsumerDropsNotBlocks(t *testing.T) {
 	ls := NewLiveSink(trivialEncoder)
-	_, unsubSlow := ls.Subscribe("R") // intentionally undrained
+	_, unsubSlow := ls.Subscribe(Filter{RunID: "R"}) // intentionally undrained
 	defer unsubSlow()
-	fast, unsubFast := ls.Subscribe("R")
+	fast, unsubFast := ls.Subscribe(Filter{RunID: "R"})
 	defer unsubFast()
 
 	done := make(chan struct{})
@@ -202,7 +202,7 @@ func TestLiveSink_SlowConsumerDropsNotBlocks(t *testing.T) {
 // records arrive even if Handle is called.
 func TestLiveSink_UnsubscribeStopsDelivery(t *testing.T) {
 	ls := NewLiveSink(trivialEncoder)
-	ch, unsub := ls.Subscribe("R")
+	ch, unsub := ls.Subscribe(Filter{RunID: "R"})
 	unsub()
 
 	_ = ls.Handle(context.Background(), rec(slog.LevelInfo, "x",
@@ -219,11 +219,122 @@ func TestLiveSink_UnsubscribeStopsDelivery(t *testing.T) {
 	}
 }
 
+// TestLiveSink_ScheduleFilterMatchesAnyRunOfSchedule: a subscriber
+// with Filter{Schedule: "X"} sees records from every run of schedule
+// X — including a NEW run started AFTER subscribe (the chicken-and-egg
+// case where a frontend wants to watch the next run before its run_id
+// exists).
+func TestLiveSink_ScheduleFilterMatchesAnyRunOfSchedule(t *testing.T) {
+	ls := NewLiveSink(trivialEncoder)
+	ch, unsub := ls.Subscribe(Filter{Schedule: "X"})
+	defer unsub()
+
+	// Record from a different schedule — should NOT match.
+	_ = ls.Handle(context.Background(), rec(slog.LevelInfo, "ignored",
+		slog.String("run_id", "R1"),
+		slog.String("schedule", "Y"),
+		slog.String("task", "t1"),
+	))
+	// Two records from schedule X, different run_ids — both should arrive.
+	_ = ls.Handle(context.Background(), rec(slog.LevelInfo, "first",
+		slog.String("run_id", "R1"),
+		slog.String("schedule", "X"),
+		slog.String("task", "t1"),
+	))
+	_ = ls.Handle(context.Background(), rec(slog.LevelInfo, "second",
+		slog.String("run_id", "R2"),
+		slog.String("schedule", "X"),
+		slog.String("task", "t1"),
+	))
+
+	got := []string{}
+	deadline := time.After(time.Second)
+	for len(got) < 2 {
+		select {
+		case b := <-ch:
+			got = append(got, string(b))
+		case <-deadline:
+			t.Fatalf("got %d frames, want 2: %v", len(got), got)
+		}
+	}
+	// Schedule Y's record must NOT have arrived.
+	for _, g := range got {
+		if strings.Contains(g, "ignored") {
+			t.Fatalf("schedule filter let through wrong-schedule record: %v", got)
+		}
+	}
+}
+
+// TestLiveSink_FilterFirehoseSeesAllSchedules: Filter{} (zero value) is
+// the firehose — records from every schedule reach the subscriber.
+func TestLiveSink_FilterFirehoseSeesAllSchedules(t *testing.T) {
+	ls := NewLiveSink(trivialEncoder)
+	ch, unsub := ls.Subscribe(Filter{})
+	defer unsub()
+
+	for _, sched := range []string{"X", "Y", "Z"} {
+		_ = ls.Handle(context.Background(), rec(slog.LevelInfo, sched,
+			slog.String("run_id", "R-"+sched),
+			slog.String("schedule", sched),
+			slog.String("task", "t1"),
+		))
+	}
+
+	got := 0
+	deadline := time.After(time.Second)
+	for got < 3 {
+		select {
+		case <-ch:
+			got++
+		case <-deadline:
+			t.Fatalf("firehose got %d, want 3", got)
+		}
+	}
+}
+
+// TestLiveSink_FilterAndedCombined: RunID + Schedule + Task all set
+// means all three must match. Only records satisfying every non-empty
+// field arrive.
+func TestLiveSink_FilterAndedCombined(t *testing.T) {
+	ls := NewLiveSink(trivialEncoder)
+	ch, unsub := ls.Subscribe(Filter{RunID: "R1", Schedule: "X", Task: "t1"})
+	defer unsub()
+
+	// Wrong task — must NOT arrive.
+	_ = ls.Handle(context.Background(), rec(slog.LevelInfo, "wrong task",
+		slog.String("run_id", "R1"),
+		slog.String("schedule", "X"),
+		slog.String("task", "t2"),
+	))
+	// All three match — MUST arrive.
+	_ = ls.Handle(context.Background(), rec(slog.LevelInfo, "match",
+		slog.String("run_id", "R1"),
+		slog.String("schedule", "X"),
+		slog.String("task", "t1"),
+	))
+
+	select {
+	case b := <-ch:
+		if !strings.Contains(string(b), "match") {
+			t.Fatalf("wrong record passed combined filter: %s", b)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("matching record did not arrive")
+	}
+	// Confirm nothing else arrives.
+	select {
+	case b := <-ch:
+		t.Fatalf("non-matching record leaked through: %s", b)
+	case <-time.After(50 * time.Millisecond):
+		// expected
+	}
+}
+
 // TestLiveSink_DoubleUnsubscribeIsSafe: idempotent — calling unsub
 // twice doesn't panic.
 func TestLiveSink_DoubleUnsubscribeIsSafe(t *testing.T) {
 	ls := NewLiveSink(trivialEncoder)
-	_, unsub := ls.Subscribe("R")
+	_, unsub := ls.Subscribe(Filter{RunID: "R"})
 	unsub()
 	unsub() // would panic if not idempotent
 }
@@ -234,11 +345,11 @@ func TestLiveSink_DoubleUnsubscribeIsSafe(t *testing.T) {
 // remote worker rather than through this process's slog chain.
 func TestLiveSink_InjectFanout(t *testing.T) {
 	ls := NewLiveSink(trivialEncoder)
-	ch, unsub := ls.Subscribe("R")
+	ch, unsub := ls.Subscribe(Filter{RunID: "R"})
 	defer unsub()
 
 	line := []byte("hello from worker\n")
-	ls.Inject("R", line)
+	ls.Inject("R", "sched", "task1", line)
 
 	select {
 	case got := <-ch:
@@ -250,8 +361,8 @@ func TestLiveSink_InjectFanout(t *testing.T) {
 	}
 
 	// Empty runID and empty line are no-ops.
-	ls.Inject("", line)
-	ls.Inject("R", nil)
+	ls.Inject("", "sched", "task1", line)
+	ls.Inject("R", "sched", "task1", nil)
 }
 
 // TestLiveSink_ConcurrentSubscribePublish: lots of subscribers, lots
@@ -264,7 +375,7 @@ func TestLiveSink_ConcurrentSubscribePublish(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ch, unsub := ls.Subscribe("R")
+			ch, unsub := ls.Subscribe(Filter{RunID: "R"})
 			defer unsub()
 			go func() {
 				for range ch {

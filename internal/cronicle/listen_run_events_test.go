@@ -136,6 +136,188 @@ func TestRunEvents_NoLiveSinkReturnsServiceUnavailable(t *testing.T) {
 	}
 }
 
+// TestScheduleEvents_LiveStream: subscribing to /v1/schedules/{name}/events
+// delivers frames from any run of that schedule. This is the chicken-
+// and-egg solver: the test subscribes BEFORE any record is published,
+// then publishes — and the frame still arrives because LiveSink keys
+// on schedule, not on a run_id we'd have to know first.
+func TestScheduleEvents_LiveStream(t *testing.T) {
+	ls := state.NewLiveSink(newLiveEncoder(LiveFormatPretty))
+	store, _ := state.Open(":memory:")
+	defer store.Close()
+
+	// findSchedule needs a Config — provide one that has the schedule
+	// the test is subscribing to. The dispatcher 404s if missing.
+	conf := &Config{
+		Schedules: []Schedule{{Name: "story"}},
+	}
+	srv := &listenServer{
+		token:       "secret",
+		confSrc:     func() *Config { return conf },
+		stateSrc:    func() *state.Store { return store },
+		liveSinkSrc: func() *state.LiveSink { return ls },
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/schedules/", srv.handleScheduleRoute)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/schedules/story/events", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("got %d", resp.StatusCode)
+	}
+
+	got := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		var cur []string
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				frame := strings.Join(cur, "\n")
+				cur = nil
+				if strings.HasPrefix(frame, ": ping") {
+					continue
+				}
+				got <- frame
+				return
+			}
+			cur = append(cur, line)
+		}
+		got <- ""
+	}()
+
+	// Let the subscriber register, then publish with a brand-new
+	// run_id the SSE caller never knew. The schedule filter still
+	// catches the frame.
+	time.Sleep(50 * time.Millisecond)
+	r := slog.NewRecord(time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC),
+		slog.LevelInfo, "live from new run", 0)
+	r.AddAttrs(
+		slog.String("entry_type", "stdout_chunk"),
+		slog.String("run_id", "20260511T999999Z-justnow"),
+		slog.String("schedule", "story"),
+		slog.String("task", "tell-a-story"),
+		slog.String("stream", "stdout"),
+	)
+	_ = ls.Handle(context.Background(), r)
+
+	select {
+	case frame := <-got:
+		if !strings.Contains(frame, "data: live from new run") {
+			t.Fatalf("schedule subscriber missed the frame: %q", frame)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for schedule SSE frame")
+	}
+}
+
+// TestScheduleEvents_UnknownSchedule404: misspelled or unloaded
+// schedules return 404 honestly rather than hanging the client on a
+// never-firing subscription.
+func TestScheduleEvents_UnknownSchedule404(t *testing.T) {
+	conf := &Config{Schedules: []Schedule{{Name: "real"}}}
+	srv := &listenServer{
+		token:       "secret",
+		confSrc:     func() *Config { return conf },
+		liveSinkSrc: func() *state.LiveSink { return state.NewLiveSink(newLiveEncoder(LiveFormatPretty)) },
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/schedules/typo/events", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	srv.handleScheduleRoute(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("got %d, want 404", rr.Code)
+	}
+}
+
+// TestEventsStream_Firehose: GET /v1/events/stream delivers records
+// from ANY schedule. The single subscriber sees frames from "story"
+// and "tick" both, proving Filter{} matches everything.
+func TestEventsStream_Firehose(t *testing.T) {
+	ls := state.NewLiveSink(newLiveEncoder(LiveFormatPretty))
+	srv := &listenServer{
+		token:       "secret",
+		liveSinkSrc: func() *state.LiveSink { return ls },
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/events/stream", srv.handleEventsStream)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/events/stream", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("got %d", resp.StatusCode)
+	}
+
+	frames := make(chan string, 4)
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		var cur []string
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				frame := strings.Join(cur, "\n")
+				cur = nil
+				if strings.HasPrefix(frame, ": ping") {
+					continue
+				}
+				select {
+				case frames <- frame:
+				default:
+					return
+				}
+				continue
+			}
+			cur = append(cur, line)
+		}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	for _, sched := range []string{"story", "tick"} {
+		r := slog.NewRecord(time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC),
+			slog.LevelInfo, sched+" line", 0)
+		r.AddAttrs(
+			slog.String("entry_type", "stdout_chunk"),
+			slog.String("run_id", "R-"+sched),
+			slog.String("schedule", sched),
+			slog.String("task", "t1"),
+			slog.String("stream", "stdout"),
+		)
+		_ = ls.Handle(context.Background(), r)
+	}
+
+	seen := map[string]bool{}
+	deadline := time.After(2 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case f := <-frames:
+			if strings.Contains(f, "data: story line") {
+				seen["story"] = true
+			}
+			if strings.Contains(f, "data: tick line") {
+				seen["tick"] = true
+			}
+		case <-deadline:
+			t.Fatalf("firehose got %v, want both story and tick", seen)
+		}
+	}
+}
+
 // TestRunEvents_AuthRequired: bearer token check applies.
 func TestRunEvents_AuthRequired(t *testing.T) {
 	srv := &listenServer{token: "secret"}

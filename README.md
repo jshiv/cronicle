@@ -464,7 +464,9 @@ set `CRONICLE_LISTEN_TOKEN` in the environment.
 | POST   | `/v1/schedules/{name}/tasks/{task}/trigger`            | Fire one task (depends stripped)     |
 | GET    | `/v1/runs`                                             | List recent runs (filterable)        |
 | GET    | `/v1/runs/{run_id}`                                    | Single run + per-task detail         |
-| GET    | `/v1/runs/{run_id}/events`                             | SSE: live, pretty-rendered task output |
+| GET    | `/v1/runs/{run_id}/events`                             | SSE: live frames for one run         |
+| GET    | `/v1/schedules/{name}/events`                          | SSE: live frames for every run of a schedule (incl. next run) |
+| GET    | `/v1/events/stream`                                    | SSE: firehose — every run on every schedule |
 | POST   | `/v1/events`                                           | JSONL ingest (batched events)        |
 | GET    | `/v1/jobs?worker=&block=`                              | Long-poll job claim                  |
 | POST   | `/v1/jobs/{run_id}/ack`                                | Worker reports completion            |
@@ -541,24 +543,41 @@ Response shape (list):
 are watching it; nothing later queries the DB). `cronicle run` opens
 `.cronicle/state.db` in WAL mode and persists across restarts.
 
-### Live event stream (GET /v1/runs/{run_id}/events)
+### Live event stream
 
-Server-Sent Events stream of the live task output as it happens. The
-wire bytes are whatever `--live-format` produces — pretty by default,
-which means ANSI-colored multi-line text identical to what a TTY would
-show when running cronicle locally. Frontends with a terminal-emulator
-widget (e.g. xterm.js) render the stream as a faithful mirror of the
-producer's console.
+Server-Sent Events stream of task output as it happens — token-by-token
+for agents, line-by-line for shell. The wire bytes are whatever
+`--live-format` produces (default `pretty`: ANSI-colored multi-line
+text identical to what a TTY would show). Frontends with a terminal-
+emulator widget (e.g. xterm.js) render the stream as a faithful mirror
+of the producer's console.
+
+Three subscription scopes, each its own endpoint:
 
 ```bash
+# Drill into one specific run (only works after the run exists)
 curl -N -H "Authorization: Bearer $TOKEN" \
   http://localhost:8765/v1/runs/$RUN_ID/events
-# event: cronicle
-# data: hello from tick
-#
-# event: cronicle
-# data: step 2
-# ...
+
+# Watch every run of a schedule — including the NEXT run before its
+# run_id exists. Open this BEFORE triggering; the SSE handler routes
+# by schedule name, so the next-run's frames arrive without polling.
+curl -N -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/schedules/daily/events
+
+# Firehose — every run on every schedule. Dashboard view.
+curl -N -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/events/stream
+```
+
+A typical frame:
+
+```
+event: cronicle
+data: hello from tick
+
+event: cronicle
+data: step 2
 ```
 
 `--live-format` toggles the wire encoding:
