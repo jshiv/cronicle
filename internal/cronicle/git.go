@@ -3,6 +3,7 @@ package cronicle
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -133,6 +134,16 @@ func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, err
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
 		slog.Info("git clone", "url", url, "path", worktreeDir)
 		cloneOptions := git.CloneOptions{URL: url, Auth: *auth}
+		// In pretty mode, route go-git's progress sideband straight to
+		// stdout so the user sees the live "Counting objects" / "Receiving
+		// objects" lines (the same UX as the host `git` CLI). In file/Loki
+		// modes we deliberately omit Progress — those sinks already get
+		// the structured "git clone" / "git clone complete" slog records,
+		// and the per-percent overwrite lines (carriage-return updates)
+		// just produce noise in line-oriented log files.
+		if IsStreamingPretty() {
+			cloneOptions.Progress = os.Stdout
+		}
 
 		_, err := git.PlainClone(worktreeDir, false, &cloneOptions)
 		if err != nil {
