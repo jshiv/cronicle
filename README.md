@@ -198,6 +198,62 @@ retry {
 }
 ```
 
+### Template variables
+
+Cronicle substitutes the following placeholders in `task.command`,
+`agent.prompt`, and `agent.system` strings at execution time:
+
+| variable      | resolves to                                        |
+|---------------|----------------------------------------------------|
+| `${date}`     | `YYYY-MM-DD` (UTC) of the schedule trigger time    |
+| `${datetime}` | RFC3339 timestamp of the schedule trigger time     |
+| `${timestamp}`| Unix epoch (seconds) of the schedule trigger time  |
+| `${path}`     | the task's working directory (after any `repo` clone) |
+| `${scratch}`  | a schedule-scoped shared directory (see below)     |
+
+Unresolved placeholders (e.g. `${scratch}` used when no schedule context
+is available) are left as the literal string — loud enough to debug.
+
+#### `${scratch}` — pass artifacts between tasks in one run
+
+Every fire of a schedule gets its own scratch directory at
+`<croniclePath>/.cronicle/scratch/<schedule>/<run-timestamp>/`. All
+tasks within that run see the same path. Tasks earlier in the DAG can
+write files there; downstream tasks read them. The directory persists
+across the run for transcript / audit access; the janitor can prune
+old runs.
+
+```hcl
+schedule "report" {
+  cron = "@every 1h"
+
+  task "fetch" {
+    // Writes intermediate output to scratch
+    command = ["sh", "-c", "curl -s api.example.com/data > ${scratch}/raw.json"]
+  }
+
+  agent "summarize" {
+    depends = ["fetch"]
+    prompt  = <<-EOT
+      The fetched data is at ${scratch}/raw.json.
+      Read it with the bash tool, then write a 3-bullet summary to
+      ${scratch}/summary.md.
+    EOT
+    model     = "claude-haiku-4-5"
+    tools     = ["bash", "text_editor"]
+    max_turns = 8
+  }
+
+  task "publish" {
+    depends = ["summarize"]
+    command = ["sh", "-c", "cp ${scratch}/summary.md /var/www/today.md"]
+  }
+}
+```
+
+For a fuller worked example, see [deploy/mcp-demo](deploy/mcp-demo/README.md)
+and [deploy/daily-report](deploy/daily-report/README.md).
+
 ### `agent` (first-class)
 Run a Claude agent task. `agent` is a sibling of `task` at the schedule level
 — same DAG, same scheduler, same telemetry — with agent-specific fields
@@ -205,8 +261,9 @@ Run a Claude agent task. `agent` is a sibling of `task` at the schedule level
 instead of buried in a nested `agent { }`. Shell tasks still use `task`;
 agent tasks use `agent`. Pick whichever describes the work.
 
-`${date}`, `${datetime}`, `${timestamp}`, and `${path}` are substituted into
-`prompt` and `system` at execution time. The agent runs as a multi-turn loop:
+`${date}`, `${datetime}`, `${timestamp}`, `${path}`, and `${scratch}` are
+substituted into `prompt` and `system` at execution time (see
+[Template variables](#template-variables)). The agent runs as a multi-turn loop:
 it can think, call tools, observe results, and continue until it stops calling
 tools, hits `max_turns`, or the `wallclock` deadline fires. With
 `--log-to-file`, each run writes a JSONL transcript (request, response per
