@@ -476,6 +476,10 @@ func (s *listenServer) handleIngestEvents(w http.ResponseWriter, r *http.Request
 		http.Error(w, "state store not enabled", http.StatusServiceUnavailable)
 		return
 	}
+	// liveSink may be nil when the state subsystem is wired without a
+	// live plane (older test harnesses). Inject is a no-op on nil, so the
+	// only cost of resolving it here is one accessor call per request.
+	liveSink := s.currentLiveSink()
 	body := http.MaxBytesReader(w, r.Body, maxEventBatchBytes)
 	defer body.Close()
 
@@ -500,6 +504,20 @@ func (s *listenServer) handleIngestEvents(w http.ResponseWriter, r *http.Request
 			dropped++
 			continue
 		}
+		// Fan worker-shipped events out to SSE subscribers on the runner.
+		// Without this, /v1/runs/{id}/events and /v1/schedules/{name}/events
+		// only ever see records produced by the runner's own slog chain —
+		// distributed-mode workers stay invisible to the live stream even
+		// though their events are persisted just fine.
+		//
+		// We pass the worker's original JSONL bytes through unchanged. The
+		// Inject contract is "as if these came through Handle"; the encoder
+		// the runner's own LiveSink uses would only re-encode the same data,
+		// and re-encoding worker-side ANSI/pretty bytes would lose color
+		// fidelity (workers ship JSON over the wire regardless of operator
+		// --live-format choice). Subscribers get exactly what the worker's
+		// file/jsonl record looks like; the SSE handler doesn't care.
+		liveSink.Inject(ev.RunID, ev.Schedule, ev.Task, append([]byte(nil), line...))
 		accepted++
 	}
 	if err := scanner.Err(); err != nil {
