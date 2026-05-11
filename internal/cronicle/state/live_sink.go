@@ -175,11 +175,16 @@ func (s *LiveSink) WithAttrs(_ []slog.Attr) slog.Handler { return s }
 func (s *LiveSink) WithGroup(_ string) slog.Handler      { return s }
 
 // Inject forwards pre-encoded bytes to subscribers as if they had come
-// through Handle. Used by the distributed-mode ingest path (POST
-// /v1/events) where worker records arrive at the producer as bytes,
-// not through the producer's slog handler chain, so Handle never sees
-// them. Caller passes the routing tags it already decoded from the
-// Event struct.
+// through Handle, bypassing the LiveSink's Encoder. Useful when a caller
+// already has the exact wire bytes they want subscribers to see and
+// wants to skip the encode step entirely.
+//
+// The runner's /v1/events ingest path does NOT use Inject — it
+// rehydrates worker JSON back to a slog.Record and calls Handle, so
+// subscribers see one consistent --live-format regardless of where the
+// work ran. Inject is kept for cases where format bypass is intentional
+// (e.g. a future bridge that ferries pre-rendered bytes from a
+// non-slog source).
 func (s *LiveSink) Inject(runID, schedule, task string, line []byte) {
 	if s == nil || runID == "" || len(line) == 0 {
 		return

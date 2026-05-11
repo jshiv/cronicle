@@ -248,18 +248,110 @@ func TestIngest_FanoutsToLiveSink(t *testing.T) {
 		if frame == "" {
 			t.Fatal("empty SSE frame — subscriber received nothing")
 		}
-		// We pass the worker's bytes through verbatim, so the frame's
-		// `data:` line carries the original JSON. Asserting on the
-		// run_id substring is enough to prove fan-out; format-fidelity
-		// is a separate concern (see commit message).
-		if !strings.Contains(frame, "WORKER-R1") {
-			t.Fatalf("subscriber missed the worker event; frame=%q", frame)
+		// After rehydrate + re-encode, the subscriber sees the runner's
+		// pretty form, NOT the worker's raw JSON. renderStdoutChunk
+		// renders only the message line; the run_id stays in the
+		// routing tags (used by fan-out filter) but doesn't appear in
+		// the encoded payload.
+		if !strings.Contains(frame, "data: hello from worker") {
+			t.Fatalf("subscriber missed pretty-rendered chunk; frame=%q", frame)
 		}
-		if !strings.Contains(frame, "hello from worker") {
-			t.Fatalf("subscriber missed event body; frame=%q", frame)
+		// JSON wire-shape leakage check: if the run_id key appears in
+		// the frame, we're back to raw-JSON pass-through and the format
+		// unification regressed.
+		if strings.Contains(frame, `"run_id"`) {
+			t.Fatalf("frame leaked raw JSON shape; want pretty encoding only; frame=%q", frame)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out — worker event did not reach SSE subscriber")
+	}
+}
+
+// TestIngest_AgentDeltaRendersPretty: workers run agents in distributed
+// mode (the heavy work). Text deltas (token-by-token model output) MUST
+// reach the SSE pane in the same ANSI-pretty form a runner-local agent
+// would produce — anything else means a frontend operator gets raw JSON
+// when watching a worker-executed agent, while a runner-executed agent
+// shows clean text. The whole point of unifying the wire format on the
+// runner side is that the operator can't tell the difference.
+//
+// Mechanically: rehydrate must reconstruct a slog.Record that
+// renderTextDelta accepts. The renderer reads r.Message directly and
+// writes it without a trailing newline (the model controls its own
+// formatting), so the SSE frame's `data:` line carries the token
+// exactly as the model produced it.
+func TestIngest_AgentDeltaRendersPretty(t *testing.T) {
+	store, err := state.Open(":memory:")
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer store.Close()
+
+	ls := state.NewLiveSink(newLiveEncoder(LiveFormatPretty))
+	srv := &listenServer{
+		token:       "secret",
+		stateSrc:    func() *state.Store { return store },
+		liveSinkSrc: func() *state.LiveSink { return ls },
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/events", srv.handleIngestEvents)
+	mux.HandleFunc("/v1/runs/", srv.handleRunRoute)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	subReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/runs/AGENT-RUN/events", nil)
+	subReq.Header.Set("Authorization", "Bearer secret")
+	subResp, err := http.DefaultClient.Do(subReq)
+	if err != nil {
+		t.Fatalf("subscribe GET: %v", err)
+	}
+	defer subResp.Body.Close()
+
+	frames := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(subResp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		var cur []string
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				frame := strings.Join(cur, "\n")
+				cur = nil
+				if strings.HasPrefix(frame, ": ping") {
+					continue
+				}
+				frames <- frame
+				return
+			}
+			cur = append(cur, line)
+		}
+		frames <- ""
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Worker ships a single agent text_delta carrying the model's token.
+	// Numeric attrs (output_tokens) go through json.Number so the
+	// rehydrate produces Int64Kind — same as a runner-local record.
+	body := `{"time":"2026-05-11T12:00:00Z","level":"INFO","msg":"The quick brown fox","entry_type":"text_delta","run_id":"AGENT-RUN","schedule":"agent-demo","task":"summarize","output_tokens":4}`
+	rr := httptest.NewRecorder()
+	srv.handleIngestEvents(rr, ingestRequest(body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ingest: got %d", rr.Code)
+	}
+
+	select {
+	case frame := <-frames:
+		// renderTextDelta writes just r.Message — no decoration, no
+		// newline added. SSE frame is then `event: cronicle` / `data: The quick brown fox`.
+		if !strings.Contains(frame, "data: The quick brown fox") {
+			t.Fatalf("agent delta did not render as pretty text; frame=%q", frame)
+		}
+		if strings.Contains(frame, `"entry_type"`) {
+			t.Fatalf("frame leaked raw JSON shape from worker; frame=%q", frame)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out — agent delta did not reach SSE subscriber")
 	}
 }
 

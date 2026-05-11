@@ -510,14 +510,18 @@ func (s *listenServer) handleIngestEvents(w http.ResponseWriter, r *http.Request
 		// distributed-mode workers stay invisible to the live stream even
 		// though their events are persisted just fine.
 		//
-		// We pass the worker's original JSONL bytes through unchanged. The
-		// Inject contract is "as if these came through Handle"; the encoder
-		// the runner's own LiveSink uses would only re-encode the same data,
-		// and re-encoding worker-side ANSI/pretty bytes would lose color
-		// fidelity (workers ship JSON over the wire regardless of operator
-		// --live-format choice). Subscribers get exactly what the worker's
-		// file/jsonl record looks like; the SSE handler doesn't care.
-		liveSink.Inject(ev.RunID, ev.Schedule, ev.Task, append([]byte(nil), line...))
+		// Rehydrate the worker's JSON line back into a slog.Record and
+		// route it through liveSink.Handle. This puts worker records on
+		// the same encode path the runner's own slog chain uses, so SSE
+		// subscribers see ONE wire format (whatever --live-format chose)
+		// regardless of whether the work ran locally or on a worker. The
+		// alternative — Inject with raw bytes — leaks JSON-on-the-wire
+		// into a pretty subscriber's pane, which is jarring for agent
+		// runs where the user expects the same ANSI-rendered output as
+		// a local run.
+		if rec, ok := rehydrateRecord(line); ok {
+			_ = liveSink.Handle(r.Context(), rec)
+		}
 		accepted++
 	}
 	if err := scanner.Err(); err != nil {
