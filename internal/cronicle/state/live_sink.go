@@ -174,24 +174,6 @@ func (s *LiveSink) Handle(_ context.Context, r slog.Record) error {
 func (s *LiveSink) WithAttrs(_ []slog.Attr) slog.Handler { return s }
 func (s *LiveSink) WithGroup(_ string) slog.Handler      { return s }
 
-// Inject forwards pre-encoded bytes to subscribers as if they had come
-// through Handle, bypassing the LiveSink's Encoder. Useful when a caller
-// already has the exact wire bytes they want subscribers to see and
-// wants to skip the encode step entirely.
-//
-// The runner's /v1/events ingest path does NOT use Inject — it
-// rehydrates worker JSON back to a slog.Record and calls Handle, so
-// subscribers see one consistent --live-format regardless of where the
-// work ran. Inject is kept for cases where format bypass is intentional
-// (e.g. a future bridge that ferries pre-rendered bytes from a
-// non-slog source).
-func (s *LiveSink) Inject(runID, schedule, task string, line []byte) {
-	if s == nil || runID == "" || len(line) == 0 {
-		return
-	}
-	s.fanout(recordTags{runID: runID, schedule: schedule, task: task}, line)
-}
-
 // fanout walks the subscriber set under the mutex, then sends under no
 // lock. Slow consumers get a non-blocking drop — better to lose a few
 // frames in one tab than stall every other tab watching the same run.
