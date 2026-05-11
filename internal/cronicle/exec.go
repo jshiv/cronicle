@@ -201,8 +201,11 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// Always wire the slog bridge so text_delta / thinking_delta /
 	// tool_use_start / tool_result / turn_start records flow to
 	// LiveSink (live SSE pane) and the JSONL log (→ Loki) regardless
-	// of stdout pretty mode.
-	cfg.StreamHandler = NewAgentSlogBridge(runID, task.Name, task.ScheduleName, downstream)
+	// of stdout pretty mode. We use task.RunID (the SCHEDULE run_id)
+	// for the slog records — that's what /v1/runs/{id}/events keys
+	// subscriptions on. The local `runID` is a separate agent-internal
+	// identifier used for the per-task transcript file name.
+	cfg.StreamHandler = NewAgentSlogBridge(task.RunID, task.Name, task.ScheduleName, downstream)
 
 	// Tools: bind to the task's workspace and stream writer so bash output
 	// flows into the agent's pretty block AND the cronicle execution
