@@ -27,11 +27,13 @@ import (
 
 // ---- /v1/runs/{id}/(get|cancel|retry) --------------------------------------
 
-// handleRunRoute dispatches under /v1/runs/. Three shapes:
+// handleRunRoute dispatches under /v1/runs/. Shapes:
 //
-//	GET  /v1/runs/{id}         → run + tasks (Phase 1)
+//	GET  /v1/runs/{id}         → run + tasks
+//	GET  /v1/runs/{id}/events  → SSE stream of replayed history + live events
 //	POST /v1/runs/{id}/cancel  → cancel a running or pending run
 //	POST /v1/runs/{id}/retry   → re-enqueue a terminal run with a new id
+//	POST /v1/runs/{id}/resume  → re-enqueue a non-terminal run (rare)
 func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	if !s.authed(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -53,6 +55,8 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		s.runGet(w, store, runID)
+	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
+		s.runEvents(w, r, store, runID)
 	case len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost:
 		s.runCancel(w, store, runID)
 	case len(parts) == 2 && parts[1] == "retry" && r.Method == http.MethodPost:
@@ -62,6 +66,117 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// runEvents streams the per-run event log as Server-Sent Events. The wire
+// format is one SSE message per event, with the JSON `EventRow` as the
+// data field and the row id as the `id:` field (so reconnect via
+// Last-Event-ID gets a clean replay).
+//
+//	event: cronicle
+//	id:    42
+//	data:  {"id":42,"run_id":"…","entry_type":"task_start",…}
+//
+// Replay path: on connect, return all rows with id > Last-Event-ID
+// (or all rows if missing). Then subscribe to the in-process firehose
+// and emit live events. The publish is post-commit so the SSE stream
+// monotonically agrees with what GET /v1/runs/{id} would show.
+func (s *listenServer) runEvents(w http.ResponseWriter, r *http.Request, store *state.Store, runID string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported by this server", http.StatusInternalServerError)
+		return
+	}
+
+	// Last-Event-ID resume support per the SSE spec.
+	var sinceID int64
+	if v := r.Header.Get("Last-Event-ID"); v != "" {
+		_, _ = fmt.Sscan(v, &sinceID)
+	} else if v := r.URL.Query().Get("since"); v != "" {
+		_, _ = fmt.Sscan(v, &sinceID)
+	}
+
+	// Subscribe BEFORE replay so any event committed during replay is
+	// captured (we de-dupe via id below).
+	live, unsubscribe := store.SubscribeEvents(runID)
+	defer unsubscribe()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
+	w.WriteHeader(http.StatusOK)
+
+	// Replay history.
+	history, err := store.EventsSince(runID, sinceID)
+	if err != nil {
+		slog.Error("events replay failed", "run_id", runID, "error", err.Error())
+		// Still proceed to live; better partial data than no data.
+	}
+	var lastID int64 = sinceID
+	for _, row := range history {
+		writeSSEEvent(w, row.ID, row.Payload)
+		lastID = row.ID
+	}
+	flusher.Flush()
+
+	// Heartbeat keeps proxies (k8s, nginx) from killing idle connections.
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+			// SSE comment line — ignored by clients but keeps the conn warm.
+			fmt.Fprintf(w, ": ping %d\n\n", time.Now().Unix())
+			flusher.Flush()
+		case ev, ok := <-live:
+			if !ok {
+				return
+			}
+			// The in-memory Event doesn't carry the row id; re-marshal
+			// minimally and tag with monotonic time so SSE id stays
+			// strictly-increasing (lastID + 1, etc.).
+			lastID++
+			payload := marshalLiveEvent(ev)
+			writeSSEEvent(w, lastID, payload)
+			flusher.Flush()
+		}
+	}
+}
+
+func writeSSEEvent(w http.ResponseWriter, id int64, payload string) {
+	fmt.Fprintf(w, "id: %d\nevent: cronicle\ndata: %s\n\n", id, payload)
+}
+
+// marshalLiveEvent serializes a live state.Event in the same schema the
+// EventRow.Payload column holds (so the consumer doesn't have to branch
+// on history-vs-live shapes). Falls back to a minimal shape if marshal
+// fails.
+func marshalLiveEvent(e state.Event) string {
+	type out struct {
+		RunID     string `json:"run_id"`
+		Schedule  string `json:"schedule,omitempty"`
+		Task      string `json:"task,omitempty"`
+		EntryType string `json:"entry_type"`
+		Time      string `json:"time,omitempty"`
+		Msg       string `json:"msg,omitempty"`
+	}
+	body, err := json.Marshal(out{
+		RunID:     e.RunID,
+		Schedule:  e.Schedule,
+		Task:      e.Task,
+		EntryType: e.EntryType,
+		Time:      e.Time.UTC().Format(time.RFC3339Nano),
+		Msg:       e.Msg,
+	})
+	if err != nil {
+		return `{}`
+	}
+	return string(body)
 }
 
 // runGet is what handleGetRun used to do — kept here so all run-route

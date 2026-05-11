@@ -253,6 +253,46 @@ func (s *Store) CountRuns() (int, error) {
 	return n, err
 }
 
+// EventRow is the wire shape of one row from the events table — returned
+// by EventsSince for SSE replay. Payload is the raw JSON line the event
+// was decoded from, so consumers see exactly what slog wrote.
+type EventRow struct {
+	ID        int64     `json:"id"`
+	RunID     string    `json:"run_id"`
+	Task      string    `json:"task,omitempty"`
+	EntryType string    `json:"entry_type"`
+	Ts        time.Time `json:"ts,omitzero"`
+	Payload   string    `json:"payload"` // raw JSON line, opaque to caller
+}
+
+// EventsSince returns every event for runID with id > sinceID, ordered
+// oldest-first. Pass sinceID=0 for the full history. Used by SSE to
+// replay history on first connect and to catch up after reconnect.
+func (s *Store) EventsSince(runID string, sinceID int64) ([]EventRow, error) {
+	rows, err := s.db.Query(`
+		SELECT id, run_id, COALESCE(task,''), entry_type, ts, payload
+		FROM events
+		WHERE run_id = ? AND id > ?
+		ORDER BY id ASC`, runID, sinceID)
+	if err != nil {
+		return nil, fmt.Errorf("EventsSince: %w", err)
+	}
+	defer rows.Close()
+	out := make([]EventRow, 0, 16)
+	for rows.Next() {
+		var (
+			r  EventRow
+			ts string
+		)
+		if err := rows.Scan(&r.ID, &r.RunID, &r.Task, &r.EntryType, &ts, &r.Payload); err != nil {
+			return nil, err
+		}
+		r.Ts = parseTime(ts)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func parseTime(s string) time.Time {
 	if s == "" {
 		return time.Time{}
