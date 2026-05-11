@@ -464,6 +464,7 @@ set `CRONICLE_LISTEN_TOKEN` in the environment.
 | POST   | `/v1/schedules/{name}/tasks/{task}/trigger`            | Fire one task (depends stripped)     |
 | GET    | `/v1/runs`                                             | List recent runs (filterable)        |
 | GET    | `/v1/runs/{run_id}`                                    | Single run + per-task detail         |
+| GET    | `/v1/runs/{run_id}/events`                             | SSE: live, pretty-rendered task output |
 | POST   | `/v1/events`                                           | JSONL ingest (batched events)        |
 | GET    | `/v1/jobs?worker=&block=`                              | Long-poll job claim                  |
 | POST   | `/v1/jobs/{run_id}/ack`                                | Worker reports completion            |
@@ -539,6 +540,54 @@ Response shape (list):
 `cronicle exec` uses an in-memory projection (the run is foreground, you
 are watching it; nothing later queries the DB). `cronicle run` opens
 `.cronicle/state.db` in WAL mode and persists across restarts.
+
+### Live event stream (GET /v1/runs/{run_id}/events)
+
+Server-Sent Events stream of the live task output as it happens. The
+wire bytes are whatever `--live-format` produces — pretty by default,
+which means ANSI-colored multi-line text identical to what a TTY would
+show when running cronicle locally. Frontends with a terminal-emulator
+widget (e.g. xterm.js) render the stream as a faithful mirror of the
+producer's console.
+
+```bash
+curl -N -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/runs/$RUN_ID/events
+# event: cronicle
+# data: hello from tick
+#
+# event: cronicle
+# data: step 2
+# ...
+```
+
+`--live-format` toggles the wire encoding:
+
+| flag                  | wire bytes                                                                |
+|-----------------------|---------------------------------------------------------------------------|
+| `--live-format=pretty` | ANSI multi-line — for xterm.js / TTY clients (default)                   |
+| `--live-format=json`   | one JSON object per record — for programmatic consumers                  |
+| `--live-format=text`   | `time=... level=INFO msg=... key=val` — for plain log viewers            |
+
+Architecture: cronicle keeps three planes for run telemetry, each tuned
+to a different consumer:
+
+| Plane         | Source                                       | Use case                                |
+|---------------|----------------------------------------------|-----------------------------------------|
+| **State**     | SQLite `runs` / `tasks` tables               | Red/green/blue status, filterable list  |
+| **History**   | `cronicle.jsonl` → Loki + on-disk transcripts | Search & debug past runs                |
+| **Live (this)** | LiveSink in-memory pub/sub                 | "What's happening right now?" — token-by-token, line-by-line |
+
+The live stream is **live-only**. Disconnect = miss. If your tab drops
+mid-task and reconnects, you start from "now"; switch to the Loki pane
+in your UI for the missed window. This keeps the server stateless and
+the wire format trivial.
+
+Cross-plane linking: every record in the JSONL log (and therefore in
+Loki) carries `seq` (per-process monotonic int64) and `lifetime`
+(8-char hex nonce per producer process) attrs injected by the top-of-
+chain `state.Tagger`. A frontend can deep-link from a live frame to
+a Loki query scoped to the same `lifetime`+`seq` neighborhood.
 
 ### Posting events directly (POST /v1/events)
 

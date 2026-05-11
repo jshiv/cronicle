@@ -35,6 +35,23 @@ func (s *Sink) Errors() int64 { return s.errs.Load() }
 // rarely carry entry_type.
 func (s *Sink) Enabled(_ context.Context, _ slog.Level) bool { return true }
 
+// skipEntryTypes are noisy per-line / per-token entry_types that flow
+// through pretty/file/Loki/LiveSink but MUST NOT bloat the slim events
+// ledger. A long shell task can emit thousands of stdout_chunk records;
+// an agent run emits one text_delta per token. The chronology ledger
+// answers "what structural events happened?" and only structural events
+// (schedule_*, task_*, shell_run, agent_run) get rows.
+var skipEntryTypes = map[string]bool{
+	"stdout_chunk":    true,
+	"stderr_chunk":    true,
+	"text_delta":      true,
+	"thinking_delta":  true,
+	"tool_use_start":  true,
+	"tool_use_stop":   true,
+	"tool_result":     true,
+	"turn_start":      true,
+}
+
 // Handle converts r → JSON line → Event → store.Apply. The roundtrip
 // through JSON keeps Sink consistent with the wire format used in
 // Phase 2 (POST /v1/events): the same encoder that produces the file
@@ -44,18 +61,18 @@ func (s *Sink) Handle(ctx context.Context, r slog.Record) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
-	// Quick discard for records without entry_type — the bulk of slog
-	// traffic is lifecycle prints (Loading config, heartbeat, …) we
-	// don't project. Saves the JSON marshal on the hot path.
-	hasEntry := false
+	// Quick discard for records without entry_type, OR records whose
+	// entry_type is on the skip list (per-line/per-token streaming
+	// records that go to file/Loki/LiveSink but never to SQLite).
+	var entryType string
 	r.Attrs(func(a slog.Attr) bool {
 		if a.Key == "entry_type" {
-			hasEntry = true
+			entryType = a.Value.String()
 			return false
 		}
 		return true
 	})
-	if !hasEntry {
+	if entryType == "" || skipEntryTypes[entryType] {
 		return nil
 	}
 	line, err := encodeRecord(r)

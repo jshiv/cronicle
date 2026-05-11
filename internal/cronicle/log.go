@@ -30,6 +30,35 @@ const (
 	LogFormatJSON   LogFormat = "json"
 )
 
+// LiveFormat selects the wire encoding of the live-stream SSE endpoint
+// (GET /v1/runs/{id}/events). Independent of LogFormat — operators may
+// want pretty-on-stdout AND json-on-the-wire, or vice versa.
+//
+// Default (set by SetLiveFormat at startup) is pretty: the SSE stream
+// emits ANSI-colored multi-line text identical to what a TTY would
+// show. Frontends consume via xterm.js. JSON / text are alternatives
+// for non-terminal clients.
+type LiveFormat string
+
+const (
+	LiveFormatPretty LiveFormat = "pretty"
+	LiveFormatJSON   LiveFormat = "json"
+	LiveFormatText   LiveFormat = "text"
+)
+
+// currentLiveFormat is the format applied when NewLiveEncoder is called
+// from EnableStateStore. Defaults to pretty; override with SetLiveFormat
+// before EnableStateStore.
+var currentLiveFormat LiveFormat = LiveFormatPretty
+
+// SetLiveFormat changes the wire format the SSE live-stream will use.
+// Call before EnableStateStore. Empty string keeps the default (pretty).
+func SetLiveFormat(format LiveFormat) {
+	if format != "" {
+		currentLiveFormat = format
+	}
+}
+
 // resolvedLogFormat tracks what format SetupLogging settled on after auto-
 // resolution. Other subsystems (the agent streaming path) probe it via
 // IsStreamingPretty to decide whether to render in real time or buffer.
@@ -54,6 +83,10 @@ func SetupLogging(format LogFormat) {
 		handler = &prettyHandler{
 			fallback: newTintHandler(os.Stdout),
 			out:      os.Stdout,
+			// stdout already gets per-line bytes from StreamingWriter / the
+			// agent renderer; don't double-print when those records also
+			// flow through slog.
+			suppressChunks: true,
 		}
 	case LogFormatJSON:
 		handler = slog.NewJSONHandler(os.Stdout, nil)
@@ -146,28 +179,84 @@ var CroniclePath string
 // Set by EnableStateStore; closed by CloseStateStore at shutdown.
 var stateStore *state.Store
 
+// liveSink is the process-wide live-stream pub/sub. Constructed by
+// EnableStateStore (paired with the projection store — same lifecycle).
+// nil when state is disabled. The HTTP listener's SSE handler reads
+// this via LiveSink() to subscribe per-run.
+var liveSink *state.LiveSink
+
 // StateStore returns the process-wide state.Store, or nil if not enabled.
 // Listener handlers and tests use this to issue queries.
 func StateStore() *state.Store { return stateStore }
 
-// EnableStateStore opens the projection store at dsn (":memory:" or a
-// filesystem path), wires its slog Sink into the default handler chain,
-// and stashes the handle for retrieval via StateStore. Idempotent — a
-// second call closes the prior store and replaces it.
+// LiveSink returns the process-wide LiveSink, or nil if not enabled.
+// The /v1/runs/{id}/events SSE handler uses this to subscribe.
+func LiveSink() *state.LiveSink { return liveSink }
+
+// EnableStateStore opens the projection store at dsn, wires the slog
+// chain to fan out into:
+//
+//	Tagger → multiHandler{ existing, Sink, LiveSink }
+//
+// Tagger sits at the top so every record gets seq+lifetime BEFORE the
+// fan-out — guaranteeing the bytes in cronicle.jsonl (which Loki ships)
+// carry the same cursor IDs as the frames in the live SSE stream. The
+// frontend can deep-link "I clicked seq=42 in live → take me to the
+// Loki view scoped to lifetime+seq=42."
+//
+// Idempotent — a second call closes the prior store and replaces both
+// store and live sink.
 func EnableStateStore(dsn string) error {
 	if stateStore != nil {
 		_ = stateStore.Close()
 		stateStore = nil
+		liveSink = nil
 	}
 	s, err := state.Open(dsn)
 	if err != nil {
 		return err
 	}
 	stateStore = s
+	liveSink = state.NewLiveSink(newLiveEncoder(currentLiveFormat))
+
 	current := slog.Default().Handler()
+	// If a Tagger already sits at the top of the chain (re-enable),
+	// peel it off so we don't stack two — that would double-tag every
+	// record (two seq attrs, two lifetime attrs).
+	if t, ok := current.(*state.Tagger); ok {
+		current = t.Inner()
+	}
 	sink := state.NewSink(s)
-	slog.SetDefault(slog.New(&multiHandler{handlers: []slog.Handler{current, sink}}))
+	multi := &multiHandler{handlers: []slog.Handler{current, sink, liveSink}}
+	slog.SetDefault(slog.New(state.NewTagger(multi)))
 	return nil
+}
+
+// newLiveEncoder constructs the per-record encoding closure used by
+// LiveSink. Each invocation gets a fresh bytes.Buffer plus a handler
+// configured to write into it; we return the captured bytes.
+//
+// Pretty mode reuses the existing prettyHandler (same logic that drives
+// cronicle's stdout rendering); JSON/text reuse the slog built-ins.
+// Allocation per record is small and amortizes against the network send.
+func newLiveEncoder(format LiveFormat) state.Encoder {
+	return func(r slog.Record) []byte {
+		var buf bytes.Buffer
+		var h slog.Handler
+		switch format {
+		case LiveFormatJSON:
+			h = slog.NewJSONHandler(&buf, nil)
+		case LiveFormatText:
+			h = slog.NewTextHandler(&buf, nil)
+		default: // pretty (also the empty-string fallback)
+			h = &prettyHandler{
+				fallback: newTintHandler(&buf),
+				out:      &buf,
+			}
+		}
+		_ = h.Handle(context.Background(), r)
+		return buf.Bytes()
+	}
 }
 
 // CloseStateStore tears down the projection store. Safe to call when
@@ -199,7 +288,16 @@ func EnableFileLog(croniclePath string) error {
 	}
 	fileHandler := slog.NewJSONHandler(file, nil)
 	current := slog.Default().Handler()
-	slog.SetDefault(slog.New(&multiHandler{handlers: []slog.Handler{current, fileHandler}}))
+	// Preserve Tagger at the top so file records also carry seq+lifetime.
+	// Without this, cronicle.jsonl → Loki would lack the cursor IDs the
+	// frontend uses to deep-link from live → history.
+	if t, ok := current.(*state.Tagger); ok {
+		inner := t.Inner()
+		combined := &multiHandler{handlers: []slog.Handler{inner, fileHandler}}
+		slog.SetDefault(slog.New(state.NewTagger(combined)))
+	} else {
+		slog.SetDefault(slog.New(&multiHandler{handlers: []slog.Handler{current, fileHandler}}))
+	}
 	FileLoggingEnabled = true
 	CroniclePath = croniclePath
 	return nil
@@ -390,9 +488,17 @@ func formatValue(v slog.Value) string {
 // or compact section headers, and everything else as a dim single line. The
 // fallback handler exists for nested compositions but isn't used for direct
 // rendering — pretty mode always renders something itself.
+//
+// suppressChunks controls whether the streaming entry_types (stdout_chunk,
+// text_delta, etc.) render at all. On stdout pretty mode it MUST be true:
+// the StreamingWriter and NewAgentStreamRenderer already wrote the bytes
+// directly to stdout, and rendering them again from slog would double-print.
+// For the LiveSink encoder (live SSE wire) it MUST be false — those bytes
+// are exactly what the frontend needs in its live pane.
 type prettyHandler struct {
-	fallback slog.Handler
-	out      io.Writer
+	fallback        slog.Handler
+	out             io.Writer
+	suppressChunks  bool
 }
 
 func (p *prettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
@@ -423,17 +529,47 @@ func (p *prettyHandler) Handle(_ context.Context, r slog.Record) error {
 		// so suppress task_start in pretty mode. The file mirror still
 		// gets the event.
 		return nil
+	case "stdout_chunk":
+		if p.suppressChunks {
+			return nil
+		}
+		return p.renderStdoutChunk(r, false)
+	case "stderr_chunk":
+		if p.suppressChunks {
+			return nil
+		}
+		return p.renderStdoutChunk(r, true)
+	case "text_delta":
+		if p.suppressChunks {
+			return nil
+		}
+		return p.renderTextDelta(r, false)
+	case "thinking_delta":
+		if p.suppressChunks {
+			return nil
+		}
+		return p.renderTextDelta(r, true)
+	case "tool_use_start":
+		if p.suppressChunks {
+			return nil
+		}
+		return p.renderToolUseStart(r)
+	case "tool_result":
+		if p.suppressChunks {
+			return nil
+		}
+		return p.renderToolResult(r)
 	default:
 		return p.renderDimLine(r)
 	}
 }
 
 func (p *prettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &prettyHandler{fallback: p.fallback.WithAttrs(attrs), out: p.out}
+	return &prettyHandler{fallback: p.fallback.WithAttrs(attrs), out: p.out, suppressChunks: p.suppressChunks}
 }
 
 func (p *prettyHandler) WithGroup(name string) slog.Handler {
-	return &prettyHandler{fallback: p.fallback.WithGroup(name), out: p.out}
+	return &prettyHandler{fallback: p.fallback.WithGroup(name), out: p.out, suppressChunks: p.suppressChunks}
 }
 
 // entryType extracts the entry_type attr from a record, returning "" if absent.
@@ -970,6 +1106,67 @@ func (p *prettyHandler) renderScheduleComplete(r slog.Record) error {
 // renderDimLine renders a record as a faint single line. Used for lifecycle
 // events (Loading, executing tasks, heartbeat, refreshing config, etc.) that
 // don't carry a structural entry_type.
+// renderStdoutChunk writes one line of streaming task output. The slog
+// record carries the line as msg. stderr is rendered in red (matching
+// what a TTY would show); stdout is rendered plain.
+func (p *prettyHandler) renderStdoutChunk(r slog.Record, isStderr bool) error {
+	line := r.Message
+	if isStderr {
+		// Faint red so error output is visible without overpowering normal
+		// stdout. Mirrors what users see when running the command locally.
+		errc := color.New(color.FgRed, color.Faint).SprintFunc()
+		_, err := fmt.Fprintln(p.out, errc(line))
+		return err
+	}
+	_, err := fmt.Fprintln(p.out, line)
+	return err
+}
+
+// renderTextDelta writes one chunk of agent output. Text deltas are
+// rendered inline (no decoration, no trailing newline added — the model
+// controls its own newlines). Thinking deltas are dimmed and prefixed
+// once per turn-start, matching the existing NewAgentStreamRenderer
+// behavior so the live SSE pane reads identically to the local TTY.
+func (p *prettyHandler) renderTextDelta(r slog.Record, isThinking bool) error {
+	if isThinking {
+		dim := color.New(color.Faint).SprintFunc()
+		_, err := fmt.Fprint(p.out, dim(r.Message))
+		return err
+	}
+	_, err := fmt.Fprint(p.out, r.Message)
+	return err
+}
+
+// renderToolUseStart writes the highlighted "→ tool: <input>" line that
+// the agent stream renderer used to write directly to stdout. Reads
+// the attrs the bridge emits: tool, input.
+func (p *prettyHandler) renderToolUseStart(r slog.Record) error {
+	toolHi := color.New(color.FgYellow).SprintFunc()
+	tool := attrString(r, "tool")
+	input := attrString(r, "input")
+	display := displayToolName(tool)
+	formatted := formatToolInput(tool, input)
+	_, err := fmt.Fprintf(p.out, "\n%s%s%s %s\n",
+		toolHi("→ "), toolHi(display), toolHi(":"), formatted)
+	return err
+}
+
+// renderToolResult writes the colored result line. Exit / duration come
+// from attrs; is_error flips green→red.
+func (p *prettyHandler) renderToolResult(r slog.Record) error {
+	dim := color.New(color.Faint).SprintFunc()
+	ok := color.New(color.FgGreen, color.Faint).SprintFunc()
+	bad := color.New(color.FgRed, color.Faint).SprintFunc()
+	isError := attrBool(r, "is_error")
+	duration := attrInt64(r, "duration_ms")
+	marker := ok("← exit=0")
+	if isError {
+		marker = bad("← error")
+	}
+	_, err := fmt.Fprintf(p.out, "%s %s\n", marker, dim(formatDuration(duration)))
+	return err
+}
+
 func (p *prettyHandler) renderDimLine(r slog.Record) error {
 	dim := color.New(color.Faint).SprintFunc()
 

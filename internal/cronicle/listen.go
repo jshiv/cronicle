@@ -46,10 +46,11 @@ import (
 // function so tests can inject a store without exporting a setter on
 // the listener.
 type listenServer struct {
-	queue    chan<- []byte
-	token    string
-	confSrc  func() *Config
-	stateSrc func() *state.Store
+	queue       chan<- []byte
+	token       string
+	confSrc     func() *Config
+	stateSrc    func() *state.Store
+	liveSinkSrc func() *state.LiveSink
 }
 
 // startListener brings up the HTTP server in a background goroutine.
@@ -66,10 +67,11 @@ func startListener(addr, token string, queue chan<- []byte) {
 		return
 	}
 	s := &listenServer{
-		queue:    queue,
-		token:    token,
-		confSrc:  func() *Config { return confPriorGlobal },
-		stateSrc: StateStore,
+		queue:       queue,
+		token:       token,
+		confSrc:     func() *Config { return confPriorGlobal },
+		stateSrc:    StateStore,
+		liveSinkSrc: LiveSink,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -405,6 +407,19 @@ func (s *listenServer) currentStore() *state.Store {
 		return s.stateSrc()
 	}
 	return StateStore()
+}
+
+// currentLiveSink mirrors currentStore — falls back to the global
+// LiveSink so tests that wire only stateSrc still get the firehose.
+// Returns nil when the state subsystem is disabled.
+func (s *listenServer) currentLiveSink() *state.LiveSink {
+	if s == nil {
+		return nil
+	}
+	if s.liveSinkSrc != nil {
+		return s.liveSinkSrc()
+	}
+	return LiveSink()
 }
 
 // ---- /v1/events -------------------------------------------------------------

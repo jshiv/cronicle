@@ -10,10 +10,12 @@ package state
 // tasks:   one row per task within a run. Status follows the same lifecycle
 //          and rolls up into the parent run's status on completion.
 //
-// events:  append-only mirror of every slog event with entry_type set. Powers
-//          GET /v1/runs/{id}/events (live + recent). Bounded by retention
-//          window (see internal/cronicle/state/janitor.go); deeper history
-//          lives in the JSONL log on disk.
+// events:  slim chronology ledger — one row per structural slog event
+//          (entry_type-bearing) so the API can answer "what happened in
+//          this run, in what order?" without parsing JSONL. NO payload
+//          column: the rich bytes live in cronicle.jsonl (and Loki, when
+//          shipped). This table is metadata only; pretty/text/json bytes
+//          come from Loki for history, from LiveSink for live.
 //
 // schema_versions: numbered migrations. v1 is everything below; v2+ are
 //          appended via additional `schemaSQL_v2` blocks executed if the
@@ -65,12 +67,11 @@ CREATE TABLE IF NOT EXISTS events (
     run_id     TEXT NOT NULL,
     task       TEXT NOT NULL DEFAULT '',
     entry_type TEXT NOT NULL,
-    ts         TEXT NOT NULL,
-    payload    TEXT NOT NULL          -- the raw JSON record
+    ts         TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_run        ON events(run_id, id);
-CREATE INDEX IF NOT EXISTS idx_events_ts         ON events(ts);
+CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_events_ts  ON events(ts);
 `
 
 // schemaSQL_v2 adds the producer-served queue. Jobs persist as rows
@@ -134,4 +135,28 @@ CREATE TABLE IF NOT EXISTS workers (
 CREATE INDEX IF NOT EXISTS idx_workers_last_seen ON workers(last_seen DESC);
 `
 
-const targetSchemaVersion = 3
+// schemaSQL_v4 slims the events table. Previously `payload` stored the
+// full JSON line — duplicate of cronicle.jsonl and the Loki ingest, and
+// the source of the unbounded-growth concern. After v4, events is a
+// chronology ledger only: id, run_id, task, entry_type, ts. The actual
+// log bytes live in cronicle.jsonl → Loki for history, and in LiveSink
+// for live.
+//
+// Aggressive rebuild rather than ALTER TABLE DROP COLUMN: keeps the
+// SQL trivial and we don't carry forward old payloads anyway.
+const schemaSQL_v4 = `
+DROP TABLE IF EXISTS events;
+
+CREATE TABLE events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id     TEXT NOT NULL,
+    task       TEXT NOT NULL DEFAULT '',
+    entry_type TEXT NOT NULL,
+    ts         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_events_ts  ON events(ts);
+`
+
+const targetSchemaVersion = 4

@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -27,9 +28,10 @@ import (
 
 // ---- /v1/runs/{id}/(get|cancel|retry) --------------------------------------
 
-// handleRunRoute dispatches under /v1/runs/. Three shapes:
+// handleRunRoute dispatches under /v1/runs/. Shapes:
 //
 //	GET  /v1/runs/{id}         → run + tasks (Phase 1)
+//	GET  /v1/runs/{id}/events  → SSE: live-only stream of slog records for this run
 //	POST /v1/runs/{id}/cancel  → cancel a running or pending run
 //	POST /v1/runs/{id}/retry   → re-enqueue a terminal run with a new id
 func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +55,8 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		s.runGet(w, store, runID)
+	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
+		s.runEvents(w, r, runID)
 	case len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost:
 		s.runCancel(w, store, runID)
 	case len(parts) == 2 && parts[1] == "retry" && r.Method == http.MethodPost:
@@ -62,6 +66,93 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// runEvents streams the run's live event stream as Server-Sent Events.
+// LIVE-ONLY: no replay on subscribe, no Last-Event-ID resume. The
+// frame bytes are whatever LiveSink's configured Encoder produces
+// (pretty ANSI by default — set via --live-format). Frontends with a
+// terminal-emulator widget render those bytes faithfully, giving
+// operators the same visual experience as `cronicle run` in a TTY.
+//
+// For history (older runs, debugging) the frontend queries Loki using
+// the seq+lifetime cursor IDs embedded in cronicle.jsonl. That's a
+// separate pane in the UI — this endpoint is purely "what's happening
+// right now."
+//
+// Disconnect = miss. If the connection drops mid-task the client
+// won't see the missed bytes on reconnect; switch to the Loki pane
+// for that window. Keeps the server stateless and the implementation
+// trivial.
+func (s *listenServer) runEvents(w http.ResponseWriter, r *http.Request, runID string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported by this server", http.StatusInternalServerError)
+		return
+	}
+	ls := s.currentLiveSink()
+	if ls == nil {
+		http.Error(w, "live stream not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	ch, unsubscribe := ls.Subscribe(runID)
+	defer unsubscribe()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Heartbeat keeps proxies (nginx, k8s, ELB) from killing idle
+	// connections. SSE comment lines are ignored by clients but count
+	// as activity at the TCP layer.
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+			fmt.Fprintf(w, ": ping %d\n\n", time.Now().Unix())
+			flusher.Flush()
+		case line, alive := <-ch:
+			if !alive {
+				return
+			}
+			writeSSEFrame(w, line)
+			flusher.Flush()
+		}
+	}
+}
+
+// writeSSEFrame emits one SSE event with the given bytes as data. Pretty
+// encoding produces multi-line text — SSE allows multiple `data:` lines
+// in one frame; clients (browsers' EventSource) join them with '\n'.
+// Empty payload is dropped (the encoder occasionally returns nothing
+// for filtered records, no point shipping an empty frame).
+func writeSSEFrame(w io.Writer, payload []byte) {
+	if len(payload) == 0 {
+		return
+	}
+	fmt.Fprint(w, "event: cronicle\n")
+	// Per SSE spec, every newline in the payload starts a new `data:`
+	// line. Trailing newline collapses to no extra line.
+	start := 0
+	for i := 0; i < len(payload); i++ {
+		if payload[i] == '\n' {
+			fmt.Fprintf(w, "data: %s\n", payload[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(payload) {
+		fmt.Fprintf(w, "data: %s\n", payload[start:])
+	}
+	fmt.Fprint(w, "\n")
 }
 
 // runGet is what handleGetRun used to do — kept here so all run-route
