@@ -97,6 +97,7 @@ When `--log-to-file` is on, each task execution also writes a per-run JSONL tran
 * [MCP + skills + scratch in one task — minimal live demo](deploy/mcp-demo/README.md)
 * [Daily-report agent fan-out + composer demo](deploy/daily-report/README.md)
 * [Centralize cronicle logs on a local loki/graphana log aggregator](deploy/local/README.md)
+* [SSE live-stream demo — per-run, per-schedule, firehose filters](deploy/sse-demo/README.md)
 
 
 ---
@@ -464,6 +465,9 @@ set `CRONICLE_LISTEN_TOKEN` in the environment.
 | POST   | `/v1/schedules/{name}/tasks/{task}/trigger`            | Fire one task (depends stripped)     |
 | GET    | `/v1/runs`                                             | List recent runs (filterable)        |
 | GET    | `/v1/runs/{run_id}`                                    | Single run + per-task detail         |
+| GET    | `/v1/runs/{run_id}/events`                             | SSE: live frames for one run         |
+| GET    | `/v1/schedules/{name}/events`                          | SSE: live frames for every run of a schedule (incl. next run) |
+| GET    | `/v1/events/stream`                                    | SSE: firehose — every run on every schedule |
 | POST   | `/v1/events`                                           | JSONL ingest (batched events)        |
 | GET    | `/v1/jobs?worker=&block=`                              | Long-poll job claim                  |
 | POST   | `/v1/jobs/{run_id}/ack`                                | Worker reports completion            |
@@ -539,6 +543,162 @@ Response shape (list):
 `cronicle exec` uses an in-memory projection (the run is foreground, you
 are watching it; nothing later queries the DB). `cronicle run` opens
 `.cronicle/state.db` in WAL mode and persists across restarts.
+
+### Live event stream
+
+Server-Sent Events stream of task output as it happens — token-by-token
+for agents, line-by-line for shell. The wire bytes are whatever
+`--live-format` produces (default `pretty`: ANSI-colored multi-line
+text identical to what a TTY would show). Frontends with a terminal-
+emulator widget (e.g. xterm.js) render the stream as a faithful mirror
+of the producer's console.
+
+Three subscription scopes, each its own endpoint:
+
+```bash
+# Drill into one specific run (only works after the run exists)
+curl -N -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/runs/$RUN_ID/events
+
+# Watch every run of a schedule — including the NEXT run before its
+# run_id exists. Open this BEFORE triggering; the SSE handler routes
+# by schedule name, so the next-run's frames arrive without polling.
+curl -N -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/schedules/daily/events
+
+# Firehose — every run on every schedule. Dashboard view.
+curl -N -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8765/v1/events/stream
+```
+
+A typical frame:
+
+```
+event: cronicle
+data: hello from tick
+
+event: cronicle
+data: step 2
+```
+
+Multi-line records (a pretty-rendered shell_run header, or an agent text
+delta containing `\n`) become one event with multiple `data:` lines per
+the SSE spec — browser `EventSource` joins them with `\n` automatically.
+
+#### Filter scope — when to use which endpoint
+
+| You want | Endpoint | Notes |
+|---|---|---|
+| Watch one specific in-flight run (operator clicked it from a list) | `GET /v1/runs/{run_id}/events` | Drill-in. Requires `run_id` to already exist — won't help for the next run. |
+| Watch every run of a schedule, including the next one before it fires | `GET /v1/schedules/{name}/events` | Subscribe BEFORE triggering. The handler routes by schedule name, so a run that doesn't have a `run_id` yet still delivers frames the moment it starts emitting. |
+| Operator dashboard — every run on every schedule | `GET /v1/events/stream` | Firehose. Concurrent runs interleave by event-time. |
+
+All three share the same SSE plumbing — same wire format, same `--live-format` controlling the encoding, same 15s `: ping` heartbeat. Frontend code differs only in the URL.
+
+#### Worked example — multi-schedule walkthrough
+
+Set up a `cronicle.hcl` with three schedules:
+
+```hcl
+schedule "heartbeat" {
+  cron = "@every 10s"
+  task "tick" {
+    command = ["sh", "-c", "echo 'tick'; sleep 1; echo 'second line'"]
+  }
+}
+
+schedule "long-build" {
+  cron = ""  // manual trigger
+  task "compile" {
+    command = ["sh", "-c", "for s in fetching compiling linking testing done; do echo \"[step] $s\"; sleep 1; done"]
+  }
+}
+
+schedule "story" {
+  cron = ""  // manual trigger
+  task "tell" {
+    agent {
+      prompt    = "Tell a two-sentence story about an octopus debugging Go."
+      model     = "claude-haiku-4-5"
+      max_turns = 1
+    }
+  }
+}
+```
+
+```bash
+cronicle run --path cronicle.hcl --listen :7766 --listen-token smoke
+```
+
+**Per-run** — trigger `long-build`, capture its `run_id`, subscribe to just that one:
+
+```bash
+curl -X POST -H "Authorization: Bearer smoke" \
+     http://localhost:7766/v1/schedules/long-build/trigger
+RUN_ID=$(curl -s -H "Authorization: Bearer smoke" \
+     "http://localhost:7766/v1/runs?status=running&limit=1" | jq -r '.[0].run_id')
+curl -N -H "Authorization: Bearer smoke" \
+     "http://localhost:7766/v1/runs/$RUN_ID/events"
+```
+
+Frames you'll see: `shell_run_start` (header rule + command), six `stdout_chunk` lines (`[step] fetching` …), footer `[exit=0 · 6062ms · transcript=…]`, `schedule_complete` ✓.
+
+**Per-schedule** — open SSE first, then trigger twice. Both runs flow through one connection:
+
+```bash
+( curl -N -H "Authorization: Bearer smoke" \
+       http://localhost:7766/v1/schedules/long-build/events ) &
+sleep 0.2
+curl -X POST -H "Authorization: Bearer smoke" \
+     http://localhost:7766/v1/schedules/long-build/trigger
+sleep 7
+curl -X POST -H "Authorization: Bearer smoke" \
+     http://localhost:7766/v1/schedules/long-build/trigger
+```
+
+Two full run sequences come down the same stream — `schedule_start` / `shell_run_start` / chunks / footer / `schedule_complete`, then the second run's identical sequence. No polling for the second run's `run_id`.
+
+**Firehose** — interleave heartbeat (auto-firing every 10s) with a manual `story` trigger:
+
+```bash
+( curl -N -H "Authorization: Bearer smoke" \
+       http://localhost:7766/v1/events/stream ) &
+sleep 0.2
+curl -X POST -H "Authorization: Bearer smoke" \
+     http://localhost:7766/v1/schedules/story/trigger
+```
+
+The stream interleaves `heartbeat`'s shell output with `story`'s agent `text_delta` tokens by event-time — you'll see frames from both runs alternating as they fire. That's the operator-dashboard view.
+
+#### Wire format toggle (`--live-format`)
+
+`--live-format` controls the bytes inside `data:` lines. Set at startup; the same format applies to every SSE consumer regardless of endpoint.
+
+| flag                   | wire bytes                                                       | best for |
+|------------------------|------------------------------------------------------------------|---|
+| `--live-format=pretty` | ANSI multi-line (default)                                        | xterm.js / TTY clients |
+| `--live-format=json`   | one JSON object per record (same shape as `cronicle.jsonl`)       | programmatic consumers, custom UIs |
+| `--live-format=text`   | `time=... level=INFO msg=... key=val`                            | plain log viewers, debugging |
+
+Architecture: cronicle keeps three planes for run telemetry, each tuned
+to a different consumer:
+
+| Plane         | Source                                       | Use case                                |
+|---------------|----------------------------------------------|-----------------------------------------|
+| **State**     | SQLite `runs` / `tasks` tables               | Red/green/blue status, filterable list  |
+| **History**   | `cronicle.jsonl` → Loki + on-disk transcripts | Search & debug past runs                |
+| **Live (this)** | LiveSink in-memory pub/sub                 | "What's happening right now?" — token-by-token, line-by-line |
+
+The live stream is **live-only**. Disconnect = miss. If your tab drops
+mid-task and reconnects, you start from "now"; switch to the Loki pane
+in your UI for the missed window. This keeps the server stateless and
+the wire format trivial.
+
+Cross-plane linking: every record in the JSONL log (and therefore in
+Loki) carries `seq` (per-process monotonic int64) and `lifetime`
+(8-char hex nonce per producer process) attrs injected by the top-of-
+chain `state.Tagger`. A frontend can deep-link from a live frame to
+a Loki query scoped to the same `lifetime`+`seq` neighborhood.
 
 ### Posting events directly (POST /v1/events)
 

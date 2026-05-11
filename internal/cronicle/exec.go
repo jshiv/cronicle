@@ -55,7 +55,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 
 		streaming := IsStreamingPretty()
 		var sw *StreamingWriter
-		var stdoutW, stderrW io.Writer
+		var stdoutInner, stderrInner io.Writer = io.Discard, io.Discard
 		if streaming {
 			// Per-task writer: leader streams to stdout, followers buffer.
 			// The shell command runs WITHOUT holding the global lock, so
@@ -64,9 +64,31 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			defer sw.Close()
 			WriteShellRunHeader(sw, task.ScheduleName, task.Name, strings.Join(cmd, " "))
 			fmt.Fprintln(sw)
-			stdoutW = sw
-			stderrW = sw
+			stdoutInner = sw
+			stderrInner = sw
 		}
+
+		// Per-line slog emission feeds LiveSink (live SSE) and the JSONL
+		// log (→ Loki) regardless of stdout pretty mode. The frontend's
+		// live pane works even when cronicle's stdout is text/json.
+		stdoutEmitter := newLineEmitter(stdoutInner, task.RunID, task.Name, task.ScheduleName, "stdout")
+		stderrEmitter := newLineEmitter(stderrInner, task.RunID, task.Name, task.ScheduleName, "stderr")
+		defer stdoutEmitter.Flush()
+		defer stderrEmitter.Flush()
+
+		// Header slog record carries the metadata pretty stdout would put
+		// in its bordered block (schedule, task, command). LiveSink's
+		// pretty encoder renders it as the header; stdout pretty mode
+		// suppresses it because StreamingWriter already wrote those bytes
+		// directly (above). file/Loki consumers see a structural record
+		// they can use to mark "task started" with full context.
+		slog.Info("shell run start",
+			"entry_type", "shell_run_start",
+			"run_id", task.RunID,
+			"schedule", task.ScheduleName,
+			"task", task.Name,
+			"command", strings.Join(cmd, " "),
+		)
 
 		// Honor the per-run cancel context when one is plumbed in
 		// (HTTP-worker mode, /v1/runs/{id}/cancel preempt). Falls
@@ -77,11 +99,10 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			runCtx = context.Background()
 		}
 		startedAt := time.Now()
-		if streaming {
-			result = exec.ExecuteWithStreamContext(runCtx, cmd, task.Path, task.Env, stdoutW, stderrW)
-		} else {
-			result = exec.ExecuteContext(runCtx, cmd, task.Path, task.Env)
-		}
+		// Always use the streaming entry point so per-line slog records
+		// fire; pkg/exec captures stdout/stderr into the Result either
+		// way, so the shell_run terminal event payload is unchanged.
+		result = exec.ExecuteWithStreamContext(runCtx, cmd, task.Path, task.Env, stdoutEmitter, stderrEmitter)
 		finishedAt := time.Now()
 		task.lastDurationMs = finishedAt.Sub(startedAt).Milliseconds()
 
@@ -179,6 +200,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		skillsAvailable = skillTool.Available()
 	}
 	var sw *StreamingWriter
+	var downstream agent.StreamHandler
 	if streaming {
 		// Per-task writer: the leader streams live to stdout; followers
 		// buffer and atomically flush on Close. agent.Run runs WITHOUT
@@ -188,8 +210,30 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		defer sw.Close()
 		WriteAgentRunHeader(sw, task.ScheduleName, task.Name, effectiveModel, skillsAvailable)
 		fmt.Fprintln(sw)
-		cfg.StreamHandler = NewAgentStreamRenderer(sw)
+		downstream = NewAgentStreamRenderer(sw)
 	}
+	// Always wire the slog bridge so text_delta / thinking_delta /
+	// tool_use_start / tool_result / turn_start records flow to
+	// LiveSink (live SSE pane) and the JSONL log (→ Loki) regardless
+	// of stdout pretty mode. We use task.RunID (the SCHEDULE run_id)
+	// for the slog records — that's what /v1/runs/{id}/events keys
+	// subscriptions on. The local `runID` is a separate agent-internal
+	// identifier used for the per-task transcript file name.
+	cfg.StreamHandler = NewAgentSlogBridge(task.RunID, task.Name, task.ScheduleName, downstream)
+
+	// Header slog record — carries schedule/task/model/skills metadata.
+	// LiveSink's pretty encoder renders this as the bordered header block;
+	// stdout pretty mode suppresses it because WriteAgentRunHeader (above)
+	// already wrote those bytes directly. file/Loki consumers see a
+	// structural "agent task started" record with full context.
+	slog.Info("agent run start",
+		"entry_type", "agent_run_start",
+		"run_id", task.RunID,
+		"schedule", task.ScheduleName,
+		"task", task.Name,
+		"model", effectiveModel,
+		"skills_available", skillsAvailable,
+	)
 
 	// Tools: bind to the task's workspace and stream writer so bash output
 	// flows into the agent's pretty block AND the cronicle execution

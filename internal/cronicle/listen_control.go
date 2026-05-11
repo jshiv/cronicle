@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -27,9 +28,10 @@ import (
 
 // ---- /v1/runs/{id}/(get|cancel|retry) --------------------------------------
 
-// handleRunRoute dispatches under /v1/runs/. Three shapes:
+// handleRunRoute dispatches under /v1/runs/. Shapes:
 //
 //	GET  /v1/runs/{id}         → run + tasks (Phase 1)
+//	GET  /v1/runs/{id}/events  → SSE: live-only stream of slog records for this run
 //	POST /v1/runs/{id}/cancel  → cancel a running or pending run
 //	POST /v1/runs/{id}/retry   → re-enqueue a terminal run with a new id
 func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +55,8 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		s.runGet(w, store, runID)
+	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
+		s.runEvents(w, r, runID)
 	case len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost:
 		s.runCancel(w, store, runID)
 	case len(parts) == 2 && parts[1] == "retry" && r.Method == http.MethodPost:
@@ -62,6 +66,124 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// runEvents streams the events of one specific run. Drill-in case —
+// operator clicks a run from a list, wants its frames only.
+func (s *listenServer) runEvents(w http.ResponseWriter, r *http.Request, runID string) {
+	s.streamLive(w, r, state.Filter{RunID: runID})
+}
+
+// scheduleEvents streams every run of the named schedule, including
+// future runs that don't have a run_id yet. Solves the "open SSE
+// before trigger" chicken-and-egg: the subscriber registers against a
+// stable schedule name, and LiveSink delivers records as soon as the
+// next run starts emitting them — no polling for the run_id in between.
+//
+// Frontend pattern: schedule overview page opens this endpoint once,
+// renders runs as they fire. The pretty encoder's schedule_start /
+// agent_run / shell_run blocks make run boundaries visually obvious in
+// an xterm.js pane.
+func (s *listenServer) scheduleEvents(w http.ResponseWriter, r *http.Request, name string) {
+	s.streamLive(w, r, state.Filter{Schedule: name})
+}
+
+// handleEventsStream is the firehose: every run-bearing record across
+// every schedule. For operator dashboards monitoring all activity at
+// once. Volume can be high; xterm.js readers should mostly use the
+// per-schedule endpoint instead.
+func (s *listenServer) handleEventsStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authed(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	s.streamLive(w, r, state.Filter{})
+}
+
+// streamLive is the shared SSE plumbing for run / schedule / firehose
+// endpoints. LIVE-ONLY: no replay on subscribe, no Last-Event-ID
+// resume. Frame bytes are whatever LiveSink's configured Encoder
+// produces (pretty ANSI by default — set via --live-format).
+//
+// For history (older runs, debugging) the frontend queries Loki using
+// the seq+lifetime cursor IDs embedded in cronicle.jsonl. That's a
+// separate pane in the UI — this code path is purely "what's
+// happening right now."
+//
+// Disconnect = miss. Keeps the server stateless and the wire trivial.
+func (s *listenServer) streamLive(w http.ResponseWriter, r *http.Request, filter state.Filter) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported by this server", http.StatusInternalServerError)
+		return
+	}
+	ls := s.currentLiveSink()
+	if ls == nil {
+		http.Error(w, "live stream not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	ch, unsubscribe := ls.Subscribe(filter)
+	defer unsubscribe()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Heartbeat keeps proxies (nginx, k8s, ELB) from killing idle
+	// connections. SSE comment lines are ignored by clients but count
+	// as activity at the TCP layer.
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+			fmt.Fprintf(w, ": ping %d\n\n", time.Now().Unix())
+			flusher.Flush()
+		case line, alive := <-ch:
+			if !alive {
+				return
+			}
+			writeSSEFrame(w, line)
+			flusher.Flush()
+		}
+	}
+}
+
+// writeSSEFrame emits one SSE event with the given bytes as data. Pretty
+// encoding produces multi-line text — SSE allows multiple `data:` lines
+// in one frame; clients (browsers' EventSource) join them with '\n'.
+// Empty payload is dropped (the encoder occasionally returns nothing
+// for filtered records, no point shipping an empty frame).
+func writeSSEFrame(w io.Writer, payload []byte) {
+	if len(payload) == 0 {
+		return
+	}
+	fmt.Fprint(w, "event: cronicle\n")
+	// Per SSE spec, every newline in the payload starts a new `data:`
+	// line. Trailing newline collapses to no extra line.
+	start := 0
+	for i := 0; i < len(payload); i++ {
+		if payload[i] == '\n' {
+			fmt.Fprintf(w, "data: %s\n", payload[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(payload) {
+		fmt.Fprintf(w, "data: %s\n", payload[start:])
+	}
+	fmt.Fprint(w, "\n")
 }
 
 // runGet is what handleGetRun used to do — kept here so all run-route

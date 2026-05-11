@@ -31,10 +31,17 @@ var cfgFile string
 // PersistentPreRun before any subcommand executes.
 var logFormat string
 
+// liveFormat is bound to the --live-format persistent flag. Sets the
+// wire encoding for the live SSE event stream (GET /v1/runs/{id}/events).
+// Default "pretty" emits ANSI-colored multi-line bytes that an xterm.js
+// frontend renders as a faithful TTY mirror.
+var liveFormat string
+
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		cronicle.SetupLogging(cronicle.LogFormat(logFormat))
+		cronicle.SetLiveFormat(cronicle.LiveFormat(liveFormat))
 	},
 	Use:   "cronicle",
 	Short: "Cronicle is a distributed, git integrated cron based task engine.",
@@ -84,6 +91,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.cronicle.yaml)")
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "auto",
 		"stdout log format: auto (pretty if TTY, text if piped), pretty, text, or json")
+	rootCmd.PersistentFlags().StringVar(&liveFormat, "live-format", "pretty",
+		"wire format for the live SSE event stream (GET /v1/runs/{id}/events): pretty (ANSI, default), json, or text")
 
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.

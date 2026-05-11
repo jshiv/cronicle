@@ -46,10 +46,11 @@ import (
 // function so tests can inject a store without exporting a setter on
 // the listener.
 type listenServer struct {
-	queue    chan<- []byte
-	token    string
-	confSrc  func() *Config
-	stateSrc func() *state.Store
+	queue       chan<- []byte
+	token       string
+	confSrc     func() *Config
+	stateSrc    func() *state.Store
+	liveSinkSrc func() *state.LiveSink
 }
 
 // startListener brings up the HTTP server in a background goroutine.
@@ -66,10 +67,11 @@ func startListener(addr, token string, queue chan<- []byte) {
 		return
 	}
 	s := &listenServer{
-		queue:    queue,
-		token:    token,
-		confSrc:  func() *Config { return confPriorGlobal },
-		stateSrc: StateStore,
+		queue:       queue,
+		token:       token,
+		confSrc:     func() *Config { return confPriorGlobal },
+		stateSrc:    StateStore,
+		liveSinkSrc: LiveSink,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -77,6 +79,7 @@ func startListener(addr, token string, queue chan<- []byte) {
 	mux.HandleFunc("/v1/schedules/", s.handleScheduleRoute)
 	mux.HandleFunc("/v1/runs", s.handleListRuns)
 	mux.HandleFunc("/v1/events", s.handleIngestEvents)
+	mux.HandleFunc("/v1/events/stream", s.handleEventsStream)
 	mux.HandleFunc("/v1/jobs", s.handleClaimJob)
 	mux.HandleFunc("/v1/jobs/", s.handleJobControl)
 	mux.HandleFunc("/v1/workers", s.handleListWorkers)
@@ -159,19 +162,18 @@ func (s *listenServer) handleListSchedules(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleScheduleRoute dispatches POSTs under /v1/schedules/. Two shapes:
+// handleScheduleRoute dispatches under /v1/schedules/. Shapes:
 //
 //	POST /v1/schedules/{name}/trigger
 //	POST /v1/schedules/{name}/tasks/{task}/trigger
+//	GET  /v1/schedules/{name}/events   → SSE: live frames for every
+//	                                    run of this schedule (incl.
+//	                                    runs that haven't started yet)
 //
 // We split on "/" rather than mounting per-pattern routers because the
-// path shape is fixed and tiny; bringing in a routing library for two
+// path shape is fixed and tiny; bringing in a routing library for three
 // endpoints is overkill.
 func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	if !s.authed(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -187,6 +189,16 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 	sch := s.findSchedule(schedName)
 	if sch == nil {
 		http.Error(w, fmt.Sprintf("schedule %q not found", schedName), http.StatusNotFound)
+		return
+	}
+
+	// GET /v1/schedules/{name}/events — live SSE.
+	if len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet {
+		s.scheduleEvents(w, r, schedName)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -405,6 +417,19 @@ func (s *listenServer) currentStore() *state.Store {
 		return s.stateSrc()
 	}
 	return StateStore()
+}
+
+// currentLiveSink mirrors currentStore — falls back to the global
+// LiveSink so tests that wire only stateSrc still get the firehose.
+// Returns nil when the state subsystem is disabled.
+func (s *listenServer) currentLiveSink() *state.LiveSink {
+	if s == nil {
+		return nil
+	}
+	if s.liveSinkSrc != nil {
+		return s.liveSinkSrc()
+	}
+	return LiveSink()
 }
 
 // ---- /v1/events -------------------------------------------------------------

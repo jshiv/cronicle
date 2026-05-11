@@ -135,6 +135,12 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("state.migrate v3: %w", err)
 		}
 	}
+	// v4: slim events ledger (drop payload column on upgrade)
+	if current < 4 {
+		if _, err := s.db.Exec(schemaSQL_v4); err != nil {
+			return fmt.Errorf("state.migrate v4: %w", err)
+		}
+	}
 	if current >= targetSchemaVersion {
 		return nil
 	}
@@ -175,22 +181,15 @@ func (s *Store) Apply(e Event) error {
 	return tx.Commit()
 }
 
-// recordEvent appends to the events table. Stores the original JSON line
-// when present; otherwise re-marshals the typed Event (lossy for unknown
-// fields but acceptable for programmatic emitters).
+// recordEvent appends a chronology row to the events ledger. Metadata
+// only — no payload. The rich bytes for an event live in cronicle.jsonl
+// (and Loki, when shipped); this row just answers "what entry_type fired
+// at which timestamp for this run/task?" so /v1/runs/{id}/events can
+// return a coarse timeline without parsing JSONL.
 func (s *Store) recordEvent(tx *sql.Tx, e Event) error {
-	payload := e.raw
-	if len(payload) == 0 {
-		// Re-marshal a minimal record. Programmatic Apply() callers don't
-		// usually need raw fidelity.
-		payload = fmt.Appendf(nil,
-			`{"time":%q,"entry_type":%q,"run_id":%q,"schedule":%q,"task":%q}`,
-			e.Time.Format(time.RFC3339Nano), e.EntryType, e.RunID, e.Schedule, e.Task,
-		)
-	}
 	_, err := tx.Exec(
-		`INSERT INTO events(run_id, task, entry_type, ts, payload) VALUES (?,?,?,?,?)`,
-		e.RunID, e.Task, e.EntryType, e.Time.UTC().Format(time.RFC3339Nano), string(payload),
+		`INSERT INTO events(run_id, task, entry_type, ts) VALUES (?,?,?,?)`,
+		e.RunID, e.Task, e.EntryType, e.Time.UTC().Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		return fmt.Errorf("state.recordEvent: %w", err)
