@@ -109,4 +109,21 @@ var _ = Describe("git", func() {
 		os.RemoveAll("./cronicle-sample")
 	})
 
+	// Regression: pointing DeployKey at a missing file used to segfault
+	// inside (*Repo).Auth — ssh.NewPublicKeysFromFile returns (nil, err)
+	// and the code touched auth.HostKeyCallback before checking err.
+	// Expect a clean error now, not a panic.
+	It("Repo.Auth returns a clean error when the deploy key file does not exist", func() {
+		repo := cronicle.Repo{
+			URL:       "git@github.com:jshiv/cronicle-sample.git",
+			DeployKey: "/nonexistent/path/to/ssh_key",
+		}
+		auth, err := repo.Auth()
+		Expect(err).ToNot(BeNil())
+		Expect(auth).To(BeNil())
+		// Error message should name the offending key path so operators
+		// see what to fix.
+		Expect(err.Error()).To(ContainSubstring("/nonexistent/path/to/ssh_key"))
+	})
+
 })
