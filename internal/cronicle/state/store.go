@@ -158,6 +158,12 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("state.migrate v6: %w", err)
 		}
 	}
+	// v7: run_state (per-run pause flag)
+	if current < 7 {
+		if _, err := s.db.Exec(schemaSQL_v7); err != nil {
+			return fmt.Errorf("state.migrate v7: %w", err)
+		}
+	}
 	if current >= targetSchemaVersion {
 		return nil
 	}

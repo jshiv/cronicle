@@ -34,8 +34,11 @@ import (
 //	GET  /v1/runs/{id}/events                → SSE: live-only stream of slog records for this run
 //	POST /v1/runs/{id}/cancel                → cancel a running or pending run
 //	POST /v1/runs/{id}/retry                 → re-enqueue a terminal run with a new id
-//	POST /v1/runs/{id}/resume                → re-enqueue with already-succeeded tasks skipped
+//	POST /v1/runs/{id}/retry-failed    → re-enqueue with already-succeeded tasks skipped
+//	POST /v1/runs/{id}/pause                 → block the DAG walker before launching new tasks
+//	POST /v1/runs/{id}/resume                → clear the in-flight pause flag
 //	POST /v1/runs/{id}/tasks/{task}/cancel   → cancel one task + cascade to dependents
+//	POST /v1/runs/{id}/tasks/{task}/retry    → re-enqueue with only task + DAG dependents
 func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	if !s.authed(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -63,13 +66,150 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 		s.runCancel(w, store, runID)
 	case len(parts) == 2 && parts[1] == "retry" && r.Method == http.MethodPost:
 		s.runRetry(w, store, runID)
+	case len(parts) == 2 && parts[1] == "retry-failed" && r.Method == http.MethodPost:
+		s.runRetryFailed(w, store, runID)
+	case len(parts) == 2 && parts[1] == "pause" && r.Method == http.MethodPost:
+		s.runPause(w, r, store, runID)
 	case len(parts) == 2 && parts[1] == "resume" && r.Method == http.MethodPost:
-		s.runResume(w, store, runID)
+		s.runResume(w, r, store, runID)
 	case len(parts) == 4 && parts[1] == "tasks" && parts[3] == "cancel" && r.Method == http.MethodPost:
 		s.taskCancel(w, store, runID, parts[2])
+	case len(parts) == 4 && parts[1] == "tasks" && parts[3] == "retry" && r.Method == http.MethodPost:
+		s.taskRetry(w, store, runID, parts[2])
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// taskRetry re-enqueues the run as a fresh run_id containing only the
+// named task and its DAG dependents. Predecessor tasks (even succeeded
+// ones) are dropped from the new payload because the operator is
+// explicitly asking "re-run from this task forward."
+//
+// Cascade is computed from the schedule's loaded HCL; if the schedule
+// can't be resolved we fall back to a singleton keep set (just the
+// head task), trusting the operator's intent over a stale cache.
+func (s *listenServer) taskRetry(w http.ResponseWriter, store *state.Store, runID, taskName string) {
+	run, err := store.GetRun(runID)
+	if err != nil {
+		if isNoRows(err) {
+			http.Error(w, fmt.Sprintf("run %q not found", runID), http.StatusNotFound)
+			return
+		}
+		slog.Error("task retry: get run failed", "run_id", runID, "error", err.Error())
+		http.Error(w, "retry failed", http.StatusInternalServerError)
+		return
+	}
+	cascade := s.computeCascade(run.Schedule, taskName)
+	keep := map[string]bool{taskName: true}
+	for _, name := range cascade {
+		keep[name] = true
+	}
+
+	newID := newRunID()
+	res, err := store.RetryTask(runID, taskName, keep, newID)
+	if err != nil {
+		// Distinguish operator errors from server faults.
+		msg := err.Error()
+		if strings.Contains(msg, "not found") || strings.Contains(msg, "still in flight") || strings.Contains(msg, "empty task list") {
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
+		slog.Error("task retry failed", "run_id", runID, "task", taskName, "error", msg)
+		http.Error(w, "retry failed", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("task retry enqueued",
+		"entry_type", "task_retry",
+		"original_run_id", runID,
+		"new_run_id", newID,
+		"schedule", res.Schedule,
+		"task", taskName,
+		"kept", append([]string{taskName}, cascade...),
+		"dropped", res.SkippedTasks,
+	)
+	writeJSON(w, http.StatusAccepted, res)
+}
+
+// runStateResponse is the public shape of the in-flight pause row.
+// Distinct from scheduleStateResponse (which describes future ticks).
+type runStateResponse struct {
+	RunID     string `json:"run_id"`
+	Paused    bool   `json:"paused"`
+	PausedAt  string `json:"paused_at,omitempty"`
+	PausedBy  string `json:"paused_by,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+func runStateFromStore(store *state.Store, runID string) runStateResponse {
+	out := runStateResponse{RunID: runID}
+	row, err := store.GetRunState(runID)
+	if err != nil {
+		slog.Warn("get run state failed", "run_id", runID, "error", err.Error())
+		return out
+	}
+	out.Paused = row.Paused
+	out.PausedBy = row.PausedBy
+	out.Reason = row.Reason
+	if !row.PausedAt.IsZero() {
+		out.PausedAt = row.PausedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !row.UpdatedAt.IsZero() {
+		out.UpdatedAt = row.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return out
+}
+
+// runPause flags an in-flight run as paused. The DAG walker reads the
+// flag at every task-launch boundary and blocks until cleared. The run
+// must exist in the projection — pausing a not-yet-queued run would
+// race the projection writer; refuse with 404 to keep the surface
+// honest.
+//
+// Body shape mirrors schedule-pause: optional {actor, reason} JSON or
+// X-Actor / X-Reason headers.
+func (s *listenServer) runPause(w http.ResponseWriter, r *http.Request, store *state.Store, runID string) {
+	// Verify the run exists. A 404 here surfaces "you pasted a run_id
+	// that doesn't match a real run" before any state row is created.
+	if _, err := store.GetRun(runID); err != nil {
+		if isNoRows(err) {
+			http.Error(w, fmt.Sprintf("run %q not found", runID), http.StatusNotFound)
+			return
+		}
+		slog.Error("run pause: get run failed", "run_id", runID, "error", err.Error())
+		http.Error(w, "pause failed", http.StatusInternalServerError)
+		return
+	}
+	actor, reason := readPauseBody(r)
+	if err := store.PauseRun(runID, actor, reason); err != nil {
+		slog.Error("pause run failed", "run_id", runID, "error", err.Error())
+		http.Error(w, "pause failed", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("run paused",
+		"entry_type", "run_paused",
+		"run_id", runID,
+		"actor", actor,
+		"reason", reason)
+	writeJSON(w, http.StatusOK, runStateFromStore(store, runID))
+}
+
+// runResume clears the in-flight pause flag — the natural partner to
+// /pause. Distinct from /retry-failed which targets terminal
+// runs; resume only affects an actively-paused walker.
+func (s *listenServer) runResume(w http.ResponseWriter, r *http.Request, store *state.Store, runID string) {
+	actor, _ := readPauseBody(r)
+	if err := store.ResumeRun(runID, actor); err != nil {
+		slog.Error("resume run failed", "run_id", runID, "error", err.Error())
+		http.Error(w, "resume failed", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("run resumed",
+		"entry_type", "run_resumed",
+		"run_id", runID,
+		"actor", actor)
+	writeJSON(w, http.StatusOK, runStateFromStore(store, runID))
 }
 
 // taskCancel marks the named task and its transitive dependents in this
@@ -340,20 +480,21 @@ func (s *listenServer) runRetry(w http.ResponseWriter, store *state.Store, runID
 	writeJSON(w, http.StatusAccepted, res)
 }
 
-// runResume re-enqueues a terminal run with only the tasks that didn't
-// succeed in the original. Intended workflow: cancel → investigate →
-// fix → resume from where it stopped. The new run's DAG is the
-// original DAG minus already-succeeded nodes, with depends stripped
-// of references to those nodes.
-func (s *listenServer) runResume(w http.ResponseWriter, store *state.Store, runID string) {
+// runRetryFailed re-enqueues a terminal run with only the tasks
+// that didn't succeed in the original. Intended workflow: cancel →
+// investigate → fix → re-fire from where it broke. The new run's DAG
+// is the original DAG minus already-succeeded nodes, with depends
+// stripped of references to those nodes. Distinct from runResume,
+// which unpauses an in-flight DAG walker.
+func (s *listenServer) runRetryFailed(w http.ResponseWriter, store *state.Store, runID string) {
 	newID := newRunID()
-	res, err := store.Resume(runID, newID)
+	res, err := store.RetryFailed(runID, newID)
 	if err != nil {
-		slog.Warn("resume failed", "run_id", runID, "error", err.Error())
+		slog.Warn("retry-failed failed", "run_id", runID, "error", err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	slog.Info("run resumed",
+	slog.Info("run retry-failed",
 		"original_run_id", runID,
 		"new_run_id", newID,
 		"schedule", res.Schedule,

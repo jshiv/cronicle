@@ -76,6 +76,13 @@ func (schedule Schedule) ExecuteTasks() {
 
 	walkErr := walkDAG(deps, func(name string) error {
 		task := taskMap[name]
+		// Run-pause gate: a POST /v1/runs/{id}/pause may land mid-walk.
+		// Block here before launching the task body. Resume (POST
+		// /v1/runs/{id}/unpause) clears the flag; the poll loop picks
+		// up on its next tick. Cancel of the whole run (via ctx) takes
+		// precedence — a paused run that's then canceled exits the
+		// loop immediately rather than waiting for unpause.
+		awaitRunPauseClear(schedule.RunCtx, schedule.RunID, name, schedule.Name)
 		// Per-task cancel gate: a POST /v1/runs/{id}/tasks/{task}/cancel
 		// landed against this run before the walker reached this node.
 		// The projection already shows status='canceled' for this task

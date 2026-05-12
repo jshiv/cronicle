@@ -157,9 +157,10 @@ func TestRunRetry_HappyPath(t *testing.T) {
 	}
 }
 
-// TestRunResume_HappyPath: cancel a 3-task run after task A succeeded,
-// resume → new run has only B and C with depends rewired.
-func TestRunResume_HappyPath(t *testing.T) {
+// TestRunRetryFailed_HappyPath: cancel a 3-task run after task A
+// succeeded, retry-failed → new run has only B and C with depends
+// rewired.
+func TestRunRetryFailed_HappyPath(t *testing.T) {
 	srv, store := controlHarness(t)
 	payload := `{"Name":"daily","RunID":"R1","Tasks":[
 		{"Name":"A","Depends":null},
@@ -178,7 +179,7 @@ func TestRunResume_HappyPath(t *testing.T) {
 	_, _ = store.Cancel("R1")
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/runs/R1/resume", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs/R1/retry-failed", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	srv.handleRunRoute(rr, req)
 	if rr.Code != http.StatusAccepted {

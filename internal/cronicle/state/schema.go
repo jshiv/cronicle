@@ -214,4 +214,26 @@ CREATE TABLE IF NOT EXISTS task_state (
 );
 `
 
-const targetSchemaVersion = 6
+// schemaSQL_v7 adds run_state — per-run-instance pause flag. Distinct
+// from schedule_state (which pauses *future* ticks) and task_state
+// (which skips tasks at definition time). run_state is the "freeze the
+// DAG walker mid-execution" verb: in-flight tasks finish, but the
+// walker blocks before launching the next layer until the run is
+// unpaused.
+//
+// Composite key not needed: run_id is globally unique. Sparse rows.
+// The runs projection table is left untouched so the read model for
+// "what's the status of run X" stays event-derived; control state
+// lives here.
+const schemaSQL_v7 = `
+CREATE TABLE IF NOT EXISTS run_state (
+    run_id      TEXT PRIMARY KEY,
+    paused      INTEGER NOT NULL DEFAULT 0,
+    paused_at   TEXT NOT NULL DEFAULT '',
+    paused_by   TEXT NOT NULL DEFAULT '',
+    reason      TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`
+
+const targetSchemaVersion = 7
