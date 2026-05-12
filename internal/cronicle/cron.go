@@ -273,6 +273,24 @@ func ConsumeSchedule(queue <-chan []byte, path string, wg *sync.WaitGroup) {
 //schdule to the message queue for consumption
 func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 	return func() {
+		// Pause gate: a schedule with an active schedule_state.paused=1
+		// row is silently skipped at tick time. This is independent of
+		// the HCL definition — operators can pause without round-tripping
+		// through the config source. Resume flips the row, no reload
+		// needed. Missing rows (the common case) default to "active".
+		if st := StateStore(); st != nil {
+			if paused, err := st.IsSchedulePaused(schedule.Name); err != nil {
+				slog.Warn("pause check failed; proceeding with schedule",
+					"schedule", schedule.Name, "error", err.Error())
+			} else if paused {
+				slog.Info("Skipping tick: schedule paused",
+					"entry_type", "schedule_skipped",
+					"schedule", schedule.Name,
+					"reason", "paused")
+				return
+			}
+		}
+
 		slog.Info("Queuing...", "schedule", schedule.Name)
 		var loc *time.Location
 		if schedule.Timezone != "" {

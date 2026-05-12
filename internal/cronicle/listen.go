@@ -9,6 +9,9 @@
 //   GET  /v1/schedules                                   list configured schedules
 //   POST /v1/schedules/{name}/trigger                    fire whole schedule
 //   POST /v1/schedules/{name}/tasks/{task}/trigger       fire one task in a schedule
+//   POST /v1/schedules/{name}/pause                      pause (silence cron + reject manual triggers)
+//   POST /v1/schedules/{name}/resume                     clear a pause
+//   GET  /v1/schedules/{name}/state                      report paused + drained flags
 //
 // Auth is bearer-token. The listener refuses to start without a token —
 // this is an unattended cron service, hostile-by-default is the right
@@ -197,6 +200,11 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 		s.scheduleEvents(w, r, schedName)
 		return
 	}
+	// GET /v1/schedules/{name}/state — current pause/drain flags.
+	if len(parts) == 2 && parts[1] == "state" && r.Method == http.MethodGet {
+		s.handleGetScheduleState(w, r, schedName)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -204,6 +212,10 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 
 	switch {
 	case len(parts) == 2 && parts[1] == "trigger":
+		if s.isPaused(schedName) {
+			http.Error(w, "schedule is paused", http.StatusConflict)
+			return
+		}
 		ok := s.triggerSchedule(*sch)
 		if !ok {
 			http.Error(w, "queue unavailable", http.StatusServiceUnavailable)
@@ -219,6 +231,10 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 			http.Error(w, fmt.Sprintf("task %q not in schedule %q", taskName, schedName), http.StatusNotFound)
 			return
 		}
+		if s.isPaused(schedName) {
+			http.Error(w, "schedule is paused", http.StatusConflict)
+			return
+		}
 		ok := s.triggerTask(*sch, taskName)
 		if !ok {
 			http.Error(w, "queue unavailable", http.StatusServiceUnavailable)
@@ -229,9 +245,136 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 			"schedule": schedName,
 			"task":     taskName,
 		})
+	case len(parts) == 2 && parts[1] == "pause":
+		s.handlePauseSchedule(w, r, schedName)
+	case len(parts) == 2 && parts[1] == "resume":
+		s.handleResumeSchedule(w, r, schedName)
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// pauseRequest is the (optional) body for POST /v1/schedules/{name}/pause.
+// All fields are optional; callers commonly POST an empty body. Reason is
+// surfaced in /state and in slog audit lines.
+type pauseRequest struct {
+	Actor  string `json:"actor"`
+	Reason string `json:"reason"`
+}
+
+// scheduleStateResponse is the public shape of GET /v1/schedules/{name}/state.
+type scheduleStateResponse struct {
+	Name      string `json:"name"`
+	Paused    bool   `json:"paused"`
+	PausedAt  string `json:"paused_at,omitempty"`
+	PausedBy  string `json:"paused_by,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Drained   bool   `json:"drained"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// handlePauseSchedule marks a schedule as paused so the cron loop and
+// trigger endpoints skip its runs. Idempotent on the row level: a second
+// pause refreshes actor/reason but preserves the original paused_at so
+// "how long has this been off?" answers consistently.
+//
+// Reads actor/reason from the JSON body when provided; falls back to
+// X-Actor / X-Reason headers, then to "" (handler-side audit reads
+// these from slog regardless).
+func (s *listenServer) handlePauseSchedule(w http.ResponseWriter, r *http.Request, name string) {
+	st := s.stateSrc()
+	if st == nil {
+		http.Error(w, "state store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	actor, reason := readPauseBody(r)
+	if err := st.SetSchedulePaused(name, actor, reason); err != nil {
+		slog.Error("pause schedule failed", "schedule", name, "error", err.Error())
+		http.Error(w, "pause failed", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("schedule paused",
+		"entry_type", "schedule_paused",
+		"schedule", name,
+		"actor", actor,
+		"reason", reason)
+	writeJSON(w, http.StatusOK, scheduleStateFromStore(st, name))
+}
+
+// handleResumeSchedule clears the pause flag. Idempotent: resume on an
+// already-active schedule returns 200 + the unchanged state row.
+func (s *listenServer) handleResumeSchedule(w http.ResponseWriter, r *http.Request, name string) {
+	st := s.stateSrc()
+	if st == nil {
+		http.Error(w, "state store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	actor, _ := readPauseBody(r)
+	if err := st.ClearSchedulePaused(name, actor); err != nil {
+		slog.Error("resume schedule failed", "schedule", name, "error", err.Error())
+		http.Error(w, "resume failed", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("schedule resumed",
+		"entry_type", "schedule_resumed",
+		"schedule", name,
+		"actor", actor)
+	writeJSON(w, http.StatusOK, scheduleStateFromStore(st, name))
+}
+
+// handleGetScheduleState returns the current control row. A schedule
+// with no row reports {paused: false, drained: false} — consistent with
+// the cron loop's default.
+func (s *listenServer) handleGetScheduleState(w http.ResponseWriter, r *http.Request, name string) {
+	st := s.stateSrc()
+	if st == nil {
+		// Without state, we can still answer the question honestly:
+		// nothing is paused (because nothing CAN be paused).
+		writeJSON(w, http.StatusOK, scheduleStateResponse{Name: name})
+		return
+	}
+	writeJSON(w, http.StatusOK, scheduleStateFromStore(st, name))
+}
+
+// readPauseBody pulls actor/reason from a JSON body when one is present,
+// falling back to X-Actor / X-Reason headers. Bodyless POSTs (curl with
+// no -d) are explicitly supported — the headers and falling-through
+// empties keep the endpoint script-friendly.
+func readPauseBody(r *http.Request) (string, string) {
+	var req pauseRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	if req.Actor == "" {
+		req.Actor = r.Header.Get("X-Actor")
+	}
+	if req.Reason == "" {
+		req.Reason = r.Header.Get("X-Reason")
+	}
+	return req.Actor, req.Reason
+}
+
+// scheduleStateFromStore loads the row and maps it to the wire shape.
+// Pulled out so the pause/resume handlers can echo current state back
+// without re-implementing the conversion.
+func scheduleStateFromStore(st *state.Store, name string) scheduleStateResponse {
+	out := scheduleStateResponse{Name: name}
+	row, err := st.GetScheduleState(name)
+	if err != nil {
+		slog.Warn("get schedule state failed", "schedule", name, "error", err.Error())
+		return out
+	}
+	out.Paused = row.Paused
+	out.Drained = row.Drained
+	out.PausedBy = row.PausedBy
+	out.Reason = row.Reason
+	if !row.PausedAt.IsZero() {
+		out.PausedAt = row.PausedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !row.UpdatedAt.IsZero() {
+		out.UpdatedAt = row.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return out
 }
 
 // findSchedule walks the current loaded config. Returns a pointer into the
@@ -267,7 +410,16 @@ func hasTask(sch Schedule, name string) bool {
 // Now is set to the current wall-clock so ${date}/${datetime}/${timestamp}
 // resolve to the trigger moment, not whatever last cron tick set them to.
 // Returns false when the queue is full / blocked / unavailable.
+//
+// Pause semantics: a paused schedule rejects manual triggers too. The
+// rule is "paused means do not run, regardless of source." An operator
+// who wants to run a paused schedule once should resume + trigger +
+// pause, or use the (future) /v1/schedules/{name}/run-once endpoint
+// that's explicit about bypassing pause.
 func (s *listenServer) triggerSchedule(sch Schedule) bool {
+	if s.isPaused(sch.Name) {
+		return false
+	}
 	sch.Now = nowInScheduleZone(sch)
 	sch.RunID = newRunID()
 	sch.Source = "http"
@@ -279,7 +431,13 @@ func (s *listenServer) triggerSchedule(sch Schedule) bool {
 // asking specifically for this one to run; they're not asking for its
 // upstream DAG. If the user wanted the full chain, they'd hit the
 // schedule-level trigger.
+//
+// A paused schedule blocks per-task triggers too: pause is the schedule-
+// wide "freeze" verb.
 func (s *listenServer) triggerTask(sch Schedule, taskName string) bool {
+	if s.isPaused(sch.Name) {
+		return false
+	}
 	sub := sch
 	sub.Tasks = nil
 	for _, t := range sch.Tasks {
@@ -292,6 +450,28 @@ func (s *listenServer) triggerTask(sch Schedule, taskName string) bool {
 	sub.RunID = newRunID()
 	sub.Source = "http"
 	return s.send(sub.JSON(), sch.Name, taskName)
+}
+
+// isPaused consults the state store. Returns false when the store is
+// unavailable — failing open is correct here: the projection is a
+// derived view, not the source of truth, and a transient DB hiccup
+// shouldn't take the trigger surface offline. The cron-loop gate
+// applies the same policy.
+func (s *listenServer) isPaused(name string) bool {
+	if s.stateSrc == nil {
+		return false
+	}
+	st := s.stateSrc()
+	if st == nil {
+		return false
+	}
+	paused, err := st.IsSchedulePaused(name)
+	if err != nil {
+		slog.Warn("listener pause check failed; treating as active",
+			"schedule", name, "error", err.Error())
+		return false
+	}
+	return paused
 }
 
 // send pushes payload to the queue with a hard bound so a stuck consumer

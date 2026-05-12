@@ -141,6 +141,12 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("state.migrate v4: %w", err)
 		}
 	}
+	// v5: schedule_state (pause/drained control rows)
+	if current < 5 {
+		if _, err := s.db.Exec(schemaSQL_v5); err != nil {
+			return fmt.Errorf("state.migrate v5: %w", err)
+		}
+	}
 	if current >= targetSchemaVersion {
 		return nil
 	}

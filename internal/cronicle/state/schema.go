@@ -159,4 +159,32 @@ CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_events_ts  ON events(ts);
 `
 
-const targetSchemaVersion = 4
+// schemaSQL_v5 adds the schedule_state table — the control-plane row
+// that lives alongside the HCL definition. The HCL says "what to run";
+// schedule_state says "is it currently allowed to run?"
+//
+// This is the first piece of true runtime control state: the cron loop
+// consults schedule_state.paused on every tick to decide whether to
+// enqueue the run, and operators flip it via the listener (POST
+// /v1/schedules/{name}/pause). Hot-reloading the HCL to set cron=""
+// is too rudimentary (it conflates definition and control) and round-
+// trips through the config source; this row is authoritative state
+// inside the runner.
+//
+// Rows are sparse: only paused/drained schedules need rows. The cron
+// loop's pause check is LEFT JOIN, so unknown schedules default to
+// "active". Drained semantics (Phase 4) are reserved here so we don't
+// re-migrate later.
+const schemaSQL_v5 = `
+CREATE TABLE IF NOT EXISTS schedule_state (
+    name       TEXT PRIMARY KEY,
+    paused     INTEGER NOT NULL DEFAULT 0,   -- 0|1
+    paused_at  TEXT NOT NULL DEFAULT '',
+    paused_by  TEXT NOT NULL DEFAULT '',
+    reason     TEXT NOT NULL DEFAULT '',
+    drained    INTEGER NOT NULL DEFAULT 0,   -- 0|1, reserved for Phase 4
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`
+
+const targetSchemaVersion = 5
