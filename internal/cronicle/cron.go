@@ -157,9 +157,29 @@ func StartCron(cronicleFile string, queue chan<- []byte) {
 	if conf.Heartbeat == "" {
 		conf.Heartbeat = "@every 30s"
 	}
-	c.AddFunc(conf.Heartbeat, func() { LoadCron(cronicleFile, c, queue, false) })
+	// Heartbeat is now purely an observability signal — it emits a log
+	// line at its cadence so monitors can confirm the runner is alive.
+	// HCL reload has moved to the ConfigRefresh ticker below so the two
+	// cadences can differ (slow heartbeat for sane logs, fast refresh
+	// for snappy edits).
+	hbID, _ := c.AddFunc(conf.Heartbeat, func() {
+		slog.Info("heartbeat", "cronicle", "alive", "schedules", len(conf.Schedules))
+	})
+	if conf.ConfigRefresh == "" {
+		conf.ConfigRefresh = "@every 1s"
+	}
+	refreshID, _ := c.AddFunc(conf.ConfigRefresh, func() { LoadCron(cronicleFile, c, queue, false) })
+	staticEntryIDs = map[cron.EntryID]bool{hbID: true, refreshID: true}
 	LoadCron(cronicleFile, c, queue, true)
 }
+
+// staticEntryIDs tracks the cron entry IDs registered at startup
+// (heartbeat + config_refresh). LoadCron uses this set as the "do
+// not delete" mask when it re-registers the dynamic schedule entries
+// on a config change. Previously this check was a hard-coded
+// `entry.ID > 1`, which broke as soon as we added the second static
+// entry for decoupled heartbeat / refresh.
+var staticEntryIDs = map[cron.EntryID]bool{}
 
 //confPrior stores a gloabal state of the previosly loaded config for diff checking
 var confPriorGlobal *Config
@@ -195,11 +215,13 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 		slog.Info("Refreshing config...", "cronicle", "heartbeat", "path", cronicleFile)
 		c.Stop()
 		for _, entry := range c.Entries() {
-			// assumes that LoadCron has entry.ID == 1
-			if entry.ID > 1 {
-				c.Remove(entry.ID)
-
+			// Preserve the heartbeat + config_refresh static entries; only
+			// remove the dynamic per-schedule entries so we can re-register
+			// them from the new conf.
+			if staticEntryIDs[entry.ID] {
+				continue
 			}
+			c.Remove(entry.ID)
 		}
 
 		for _, schedule := range conf.Schedules {
