@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -12,6 +14,178 @@ import (
 
 	"github.com/jshiv/cronicle/internal/cronicle/configsource"
 )
+
+// RunFromSource is the Source-aware counterpart of Run. Used by
+// `cronicle run --config-source <spec>` to load the config from a
+// non-file backing store (http / s3 / postgres) while keeping every
+// other Run-time concern intact: file logging, the state-plane DB,
+// the listener + queue + worker plumbing.
+//
+// workdir anchors the runner's filesystem artifacts (.cronicle/state.db,
+// .cronicle/log/cronicle.jsonl, scratch dirs). File-based runs derived
+// it from the HCL's parent directory; non-file sources have no inherent
+// workdir, so the caller supplies one. Defaults to cwd when empty.
+//
+// Returns when ctx is canceled or the listener errors. The blocking
+// behavior matches Run().
+func RunFromSource(ctx context.Context, spec, workdir string, runOptions RunOptions) error {
+	if spec == "" {
+		return fmt.Errorf("RunFromSource: spec is empty")
+	}
+	if workdir == "" {
+		workdir = "."
+	}
+	workdirAbs, err := filepath.Abs(workdir)
+	if err != nil {
+		return fmt.Errorf("workdir abspath: %w", err)
+	}
+	if err := os.MkdirAll(workdirAbs, 0o755); err != nil {
+		return fmt.Errorf("workdir mkdir: %w", err)
+	}
+
+	src, err := configsource.Open(ctx, spec)
+	if err != nil {
+		return fmt.Errorf("open config source: %w", err)
+	}
+
+	// Initial fetch synchronously so startup fails on a missing or
+	// unreachable source rather than silently waiting for the first
+	// refresh tick to log a warning.
+	body, etag, _, err := src.Fetch(ctx, "")
+	if err != nil {
+		return fmt.Errorf("initial fetch from %s: %w", src.String(), err)
+	}
+	parser := hclparse.NewParser()
+	conf, diags := ParseBytes(body, "cronicle.hcl", parser)
+	if diags.HasErrors() {
+		return fmt.Errorf("parse initial config: %s", diags.Error())
+	}
+	if conf == nil {
+		return fmt.Errorf("parse returned nil config")
+	}
+	// Seed confPriorGlobal so the first refresh tick sees identical
+	// bytes and skips a redundant reload pass.
+	confPriorGlobal = conf
+
+	taskCount := 0
+	for _, s := range conf.Schedules {
+		taskCount += len(s.Tasks)
+	}
+	slog.Info("config loaded",
+		"source", src.String(),
+		"workdir", workdirAbs,
+		"schedules", len(conf.Schedules),
+		"tasks", taskCount,
+	)
+
+	if runOptions.LogToFile {
+		if err := EnableFileLog(workdirAbs); err != nil {
+			return fmt.Errorf("enable file log: %w", err)
+		}
+	}
+
+	// Same state-plane setup as Run(): .cronicle/state.db lives under
+	// the workdir.
+	stateDir := filepath.Join(workdirAbs, ".cronicle")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		slog.Warn("state dir mkdir failed; projection disabled", "error", err.Error())
+	} else if err := EnableStateStore(filepath.Join(stateDir, "state.db")); err != nil {
+		slog.Warn("state store open failed; projection disabled", "error", err.Error())
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1) // hold the goroutine open
+
+	// Queue mode mirrors Run(): listener+token+stateStore → SQLite-backed
+	// queue with workers long-polling /v1/jobs; otherwise in-memory chan
+	// with an in-process consumer.
+	var triggerQueue chan<- []byte
+	if runOptions.ListenAddr != "" && runOptions.ListenToken != "" && stateStore != nil {
+		enqueueChan := make(chan []byte, 64)
+		triggerQueue = enqueueChan
+		go enqueueAdapter(enqueueChan, stateStore)
+		if err := startSchedulerFromSource(ctx, src, conf, etag, enqueueChan); err != nil {
+			return fmt.Errorf("scheduler start: %w", err)
+		}
+		if runOptions.RunWorker {
+			go selfWorker(stateStore, workdirAbs, &wg)
+		}
+		go reaperLoop(stateStore)
+	} else {
+		queue := make(chan []byte)
+		triggerQueue = queue
+		if err := startSchedulerFromSource(ctx, src, conf, etag, queue); err != nil {
+			return fmt.Errorf("scheduler start: %w", err)
+		}
+		go ConsumeSchedule(queue, workdirAbs, &wg)
+	}
+
+	startListener(runOptions.ListenAddr, runOptions.ListenToken, triggerQueue)
+	wg.Wait()
+	return nil
+}
+
+// startSchedulerFromSource is the inner helper shared by RunFromSource:
+// register heartbeat + config_refresh cron entries, seed the reload
+// state with the pre-fetched conf so the first tick is a true diff
+// rather than a redundant parse.
+func startSchedulerFromSource(ctx context.Context, src configsource.Source, conf *Config, etag string, queue chan<- []byte) error {
+	loc, err := pickLocation(conf.Timezone)
+	if err != nil {
+		return err
+	}
+	ApplyTimezone(loc)
+	logSchedules(conf)
+
+	c := cron.New(cron.WithLocation(loc))
+	c.Start()
+
+	heartbeat := conf.Heartbeat
+	if heartbeat == "" {
+		heartbeat = "@every 30s"
+	}
+	refresh := conf.ConfigRefresh
+	if refresh == "" {
+		refresh = "@every 1s"
+	}
+
+	state := newReloadState(src)
+	// Seed the reload state with the already-fetched conf so the first
+	// refresh tick sees `changed=false` and we don't re-parse.
+	state.mu.Lock()
+	state.lastEtag = etag
+	state.lastConf = conf
+	state.mu.Unlock()
+
+	hbID, err := c.AddFunc(heartbeat, func() {
+		slog.Info("heartbeat",
+			"cronicle", "alive",
+			"source", src.String(),
+			"schedules", state.scheduleCount(),
+		)
+	})
+	if err != nil {
+		return fmt.Errorf("register heartbeat (%q): %w", heartbeat, err)
+	}
+	refreshID, err := c.AddFunc(refresh, func() { state.loadInto(ctx, c, queue, false) })
+	if err != nil {
+		return fmt.Errorf("register config refresh (%q): %w", refresh, err)
+	}
+	state.static = map[cron.EntryID]bool{hbID: true, refreshID: true}
+
+	// Initial dynamic-schedule registration. Force=true so the static
+	// confPriorGlobal == conf check doesn't short-circuit.
+	state.loadInto(ctx, c, queue, true)
+
+	go func() {
+		<-ctx.Done()
+		c.Stop()
+		if closer, ok := src.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}()
+	return nil
+}
 
 // StartCronFromSource is the source-aware counterpart of StartCron. It
 // performs the initial Fetch synchronously (so a missing source fails
