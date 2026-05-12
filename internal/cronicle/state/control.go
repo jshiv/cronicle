@@ -367,10 +367,14 @@ func jsonHasEmptyTasks(payload []byte) bool {
 // (heartbeat-based detection picks it up next cycle).
 
 // ControlMsg is the wire shape of the SSE control stream. Type is
-// "cancel" or "ping" today; future verbs (pause, drain) layer in here.
+// "cancel", "cancel_task", or "ping" today; future verbs (pause, drain)
+// layer in here. Task is populated only for "cancel_task" messages —
+// a hint to the worker to preempt just the named task; the load-bearing
+// path remains the projection's sticky cancel + walker gate.
 type ControlMsg struct {
 	Type  string `json:"type"`
 	RunID string `json:"run_id,omitempty"`
+	Task  string `json:"task,omitempty"`
 }
 
 // controlRegistry is process-local — reset on producer restart, which

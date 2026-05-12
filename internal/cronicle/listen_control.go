@@ -30,10 +30,12 @@ import (
 
 // handleRunRoute dispatches under /v1/runs/. Shapes:
 //
-//	GET  /v1/runs/{id}         → run + tasks (Phase 1)
-//	GET  /v1/runs/{id}/events  → SSE: live-only stream of slog records for this run
-//	POST /v1/runs/{id}/cancel  → cancel a running or pending run
-//	POST /v1/runs/{id}/retry   → re-enqueue a terminal run with a new id
+//	GET  /v1/runs/{id}                       → run + tasks (Phase 1)
+//	GET  /v1/runs/{id}/events                → SSE: live-only stream of slog records for this run
+//	POST /v1/runs/{id}/cancel                → cancel a running or pending run
+//	POST /v1/runs/{id}/retry                 → re-enqueue a terminal run with a new id
+//	POST /v1/runs/{id}/resume                → re-enqueue with already-succeeded tasks skipped
+//	POST /v1/runs/{id}/tasks/{task}/cancel   → cancel one task + cascade to dependents
 func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	if !s.authed(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -63,9 +65,94 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 		s.runRetry(w, store, runID)
 	case len(parts) == 2 && parts[1] == "resume" && r.Method == http.MethodPost:
 		s.runResume(w, store, runID)
+	case len(parts) == 4 && parts[1] == "tasks" && parts[3] == "cancel" && r.Method == http.MethodPost:
+		s.taskCancel(w, store, runID, parts[2])
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// taskCancel marks the named task and its transitive dependents in this
+// run as canceled. The cascade set is computed from the schedule's
+// loaded HCL (via confSrc); falling back to a degree-zero cascade if
+// the schedule isn't found, so the head task at least gets canceled.
+//
+// MVP semantics: the projection is updated immediately and the DAG
+// walker's per-task gate honors the canceled state at launch. An
+// already-running task is NOT preempted (no per-task ctx yet) but its
+// terminal event lands as canceled thanks to the sticky-cancel rule in
+// applyTaskTerminal.
+func (s *listenServer) taskCancel(w http.ResponseWriter, store *state.Store, runID, taskName string) {
+	// Look up the run to find its schedule name; needed to compute the
+	// cascade set against the loaded HCL.
+	run, err := store.GetRun(runID)
+	if err != nil {
+		if isNoRows(err) {
+			http.Error(w, fmt.Sprintf("run %q not found", runID), http.StatusNotFound)
+			return
+		}
+		slog.Error("task cancel: get run failed", "run_id", runID, "error", err.Error())
+		http.Error(w, "cancel failed", http.StatusInternalServerError)
+		return
+	}
+	cascade := s.computeCascade(run.Schedule, taskName)
+
+	res, err := store.CancelTask(runID, taskName, cascade)
+	if err != nil {
+		if errors.Is(err, state.ErrTaskNotCancelable) {
+			http.Error(w, "task is already terminal", http.StatusConflict)
+			return
+		}
+		// Surface NotFound for missing head task.
+		if strings.Contains(err.Error(), "not found in run") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		slog.Error("task cancel failed", "run_id", runID, "task", taskName, "error", err.Error())
+		http.Error(w, "cancel failed", http.StatusInternalServerError)
+		return
+	}
+	// Best-effort SSE hint so a future per-task preemption can wire in
+	// without API churn. Today the worker has no handler for this msg;
+	// the projection-based gate is the load-bearing path.
+	if res.WasClaimed && res.WorkerID != "" {
+		_ = store.PushControl(res.WorkerID, state.ControlMsg{
+			Type:  "cancel_task",
+			RunID: runID,
+			Task:  taskName,
+		})
+	}
+	slog.Info("task canceled (cascade)",
+		"entry_type", "task_cancel_set",
+		"run_id", runID,
+		"task", taskName,
+		"canceled_tasks", res.CanceledTasks,
+		"skipped_terminal", res.SkippedTerminal,
+		"worker_id", res.WorkerID,
+	)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// computeCascade walks the schedule's DAG to find every transitive
+// dependent of `task`. Returns an empty slice if the schedule isn't in
+// the loaded config — the head task still gets canceled, but downstream
+// blocking falls back to "whatever the worker does next." A missing
+// schedule typically means the operator edited the HCL since the run
+// was queued; we don't want to refuse the cancel for that.
+func (s *listenServer) computeCascade(scheduleName, task string) []string {
+	if s.confSrc == nil {
+		return nil
+	}
+	conf := s.confSrc()
+	if conf == nil {
+		return nil
+	}
+	for i := range conf.Schedules {
+		if conf.Schedules[i].Name == scheduleName {
+			return conf.Schedules[i].downstreamTasks(task)
+		}
+	}
+	return nil
 }
 
 // runEvents streams the events of one specific run. Drill-in case —
