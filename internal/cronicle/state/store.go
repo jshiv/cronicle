@@ -26,6 +26,11 @@ const (
 	StatusSucceeded = "succeeded"
 	StatusFailed    = "failed"
 	StatusCanceled  = "canceled"
+	// StatusSkipped is recorded for tasks the DAG walker bypassed
+	// because their task_state.skipped flag was set. The run that
+	// contains skipped tasks can still succeed: skipped is a
+	// terminal task state but not a failure mode.
+	StatusSkipped = "skipped"
 )
 
 // Source values as recorded in runs.source.
@@ -147,6 +152,12 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("state.migrate v5: %w", err)
 		}
 	}
+	// v6: task_state (per-task skip flags)
+	if current < 6 {
+		if _, err := s.db.Exec(schemaSQL_v6); err != nil {
+			return fmt.Errorf("state.migrate v6: %w", err)
+		}
+	}
 	if current >= targetSchemaVersion {
 		return nil
 	}
@@ -210,6 +221,11 @@ func (s *Store) foldEvent(tx *sql.Tx, e Event) error {
 		return s.applyScheduleStart(tx, e)
 	case "task_start":
 		return s.applyTaskStart(tx, e)
+	case "task_skipped":
+		// DAG walker bypassed this task because task_state.skipped=1.
+		// Terminal state, doesn't roll up cost or exit_code, sets
+		// kind='' since no body ran.
+		return s.applyTaskSkipped(tx, e)
 	case "shell_run", "shell_run_streamed":
 		return s.applyTaskTerminal(tx, e, "shell")
 	case "agent_run", "agent_run_streamed":
@@ -224,6 +240,31 @@ func (s *Store) foldEvent(tx *sql.Tx, e Event) error {
 		return s.applyTrigger(tx, e)
 	}
 	return nil // unknown entry_type — ignore (forward-compat)
+}
+
+// applyTaskSkipped marks a task row terminal with status='skipped'.
+// Idempotent: re-emitting the same skip event won't move the row. The
+// task may not have a row yet (skip is detected before task_start fires),
+// so we INSERT-or-UPDATE with both started_at and ended_at set to the
+// same timestamp — duration_ms=0 conveys "this never executed."
+func (s *Store) applyTaskSkipped(tx *sql.Tx, e Event) error {
+	ts := e.Time.UTC().Format(time.RFC3339Nano)
+	_, err := tx.Exec(`
+		INSERT INTO tasks(run_id, name, status, started_at, ended_at, duration_ms, kind, error)
+		VALUES (?, ?, ?, ?, ?, 0, '', ?)
+		ON CONFLICT(run_id, name) DO UPDATE SET
+		    status = excluded.status,
+		    started_at = COALESCE(tasks.started_at, excluded.started_at),
+		    ended_at = excluded.ended_at,
+		    duration_ms = 0,
+		    error = excluded.error
+		`,
+		e.RunID, e.Task, StatusSkipped, ts, ts, e.Error,
+	)
+	if err != nil {
+		return fmt.Errorf("applyTaskSkipped: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) applyTrigger(tx *sql.Tx, e Event) error {

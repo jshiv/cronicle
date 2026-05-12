@@ -11,7 +11,9 @@
 //   POST /v1/schedules/{name}/tasks/{task}/trigger       fire one task in a schedule
 //   POST /v1/schedules/{name}/pause                      pause (silence cron + reject manual triggers)
 //   POST /v1/schedules/{name}/resume                     clear a pause
-//   GET  /v1/schedules/{name}/state                      report paused + drained flags
+//   GET  /v1/schedules/{name}/state                      report paused + drained + skipped-tasks
+//   POST /v1/schedules/{name}/tasks/{task}/skip          flag task as skipped on next run
+//   POST /v1/schedules/{name}/tasks/{task}/unskip        clear the skip flag
 //
 // Auth is bearer-token. The listener refuses to start without a token —
 // this is an unattended cron service, hostile-by-default is the right
@@ -245,6 +247,20 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 			"schedule": schedName,
 			"task":     taskName,
 		})
+	case len(parts) == 4 && parts[1] == "tasks" && parts[3] == "skip":
+		taskName := parts[2]
+		if !hasTask(*sch, taskName) {
+			http.Error(w, fmt.Sprintf("task %q not in schedule %q", taskName, schedName), http.StatusNotFound)
+			return
+		}
+		s.handleSkipTask(w, r, schedName, taskName)
+	case len(parts) == 4 && parts[1] == "tasks" && parts[3] == "unskip":
+		taskName := parts[2]
+		if !hasTask(*sch, taskName) {
+			http.Error(w, fmt.Sprintf("task %q not in schedule %q", taskName, schedName), http.StatusNotFound)
+			return
+		}
+		s.handleUnskipTask(w, r, schedName, taskName)
 	case len(parts) == 2 && parts[1] == "pause":
 		s.handlePauseSchedule(w, r, schedName)
 	case len(parts) == 2 && parts[1] == "resume":
@@ -252,6 +268,83 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// taskStateResponse is the public shape of the per-task skip state row.
+type taskStateResponse struct {
+	Schedule  string `json:"schedule"`
+	Task      string `json:"task"`
+	Skipped   bool   `json:"skipped"`
+	SkippedAt string `json:"skipped_at,omitempty"`
+	SkippedBy string `json:"skipped_by,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// handleSkipTask flags (schedule, task) as skipped. Idempotent — re-skip
+// preserves the original skipped_at. Body shape mirrors the pause
+// endpoint: optional JSON {actor, reason} or X-Actor / X-Reason headers.
+func (s *listenServer) handleSkipTask(w http.ResponseWriter, r *http.Request, schedule, task string) {
+	st := s.stateSrc()
+	if st == nil {
+		http.Error(w, "state store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	actor, reason := readPauseBody(r)
+	if err := st.SetTaskSkipped(schedule, task, actor, reason); err != nil {
+		slog.Error("skip task failed", "schedule", schedule, "task", task, "error", err.Error())
+		http.Error(w, "skip failed", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("task skipped (flag set)",
+		"entry_type", "task_skip_set",
+		"schedule", schedule,
+		"task", task,
+		"actor", actor,
+		"reason", reason)
+	writeJSON(w, http.StatusOK, taskStateFromStore(st, schedule, task))
+}
+
+// handleUnskipTask clears the skip flag. Idempotent: a missing row
+// returns 200 with skipped=false.
+func (s *listenServer) handleUnskipTask(w http.ResponseWriter, r *http.Request, schedule, task string) {
+	st := s.stateSrc()
+	if st == nil {
+		http.Error(w, "state store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	actor, _ := readPauseBody(r)
+	if err := st.ClearTaskSkipped(schedule, task, actor); err != nil {
+		slog.Error("unskip task failed", "schedule", schedule, "task", task, "error", err.Error())
+		http.Error(w, "unskip failed", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("task unskipped",
+		"entry_type", "task_skip_cleared",
+		"schedule", schedule,
+		"task", task,
+		"actor", actor)
+	writeJSON(w, http.StatusOK, taskStateFromStore(st, schedule, task))
+}
+
+// taskStateFromStore reads the row and maps it to the wire shape.
+func taskStateFromStore(st *state.Store, schedule, task string) taskStateResponse {
+	out := taskStateResponse{Schedule: schedule, Task: task}
+	row, err := st.GetTaskState(schedule, task)
+	if err != nil {
+		slog.Warn("get task state failed", "schedule", schedule, "task", task, "error", err.Error())
+		return out
+	}
+	out.Skipped = row.Skipped
+	out.SkippedBy = row.SkippedBy
+	out.Reason = row.Reason
+	if !row.SkippedAt.IsZero() {
+		out.SkippedAt = row.SkippedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !row.UpdatedAt.IsZero() {
+		out.UpdatedAt = row.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return out
 }
 
 // pauseRequest is the (optional) body for POST /v1/schedules/{name}/pause.
@@ -264,13 +357,14 @@ type pauseRequest struct {
 
 // scheduleStateResponse is the public shape of GET /v1/schedules/{name}/state.
 type scheduleStateResponse struct {
-	Name      string `json:"name"`
-	Paused    bool   `json:"paused"`
-	PausedAt  string `json:"paused_at,omitempty"`
-	PausedBy  string `json:"paused_by,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	Drained   bool   `json:"drained"`
-	UpdatedAt string `json:"updated_at,omitempty"`
+	Name         string              `json:"name"`
+	Paused       bool                `json:"paused"`
+	PausedAt     string              `json:"paused_at,omitempty"`
+	PausedBy     string              `json:"paused_by,omitempty"`
+	Reason       string              `json:"reason,omitempty"`
+	Drained      bool                `json:"drained"`
+	UpdatedAt    string              `json:"updated_at,omitempty"`
+	SkippedTasks []taskStateResponse `json:"skipped_tasks,omitempty"`
 }
 
 // handlePauseSchedule marks a schedule as paused so the cron loop and
@@ -356,7 +450,9 @@ func readPauseBody(r *http.Request) (string, string) {
 
 // scheduleStateFromStore loads the row and maps it to the wire shape.
 // Pulled out so the pause/resume handlers can echo current state back
-// without re-implementing the conversion.
+// without re-implementing the conversion. Includes per-task skip rows
+// so a single GET answers "what's the control state of this schedule?"
+// completely.
 func scheduleStateFromStore(st *state.Store, name string) scheduleStateResponse {
 	out := scheduleStateResponse{Name: name}
 	row, err := st.GetScheduleState(name)
@@ -373,6 +469,25 @@ func scheduleStateFromStore(st *state.Store, name string) scheduleStateResponse 
 	}
 	if !row.UpdatedAt.IsZero() {
 		out.UpdatedAt = row.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if skipped, err := st.ListSkippedTasksForSchedule(name); err == nil && len(skipped) > 0 {
+		out.SkippedTasks = make([]taskStateResponse, 0, len(skipped))
+		for _, ts := range skipped {
+			entry := taskStateResponse{
+				Schedule:  ts.Schedule,
+				Task:      ts.Task,
+				Skipped:   true,
+				SkippedBy: ts.SkippedBy,
+				Reason:    ts.Reason,
+			}
+			if !ts.SkippedAt.IsZero() {
+				entry.SkippedAt = ts.SkippedAt.UTC().Format(time.RFC3339Nano)
+			}
+			if !ts.UpdatedAt.IsZero() {
+				entry.UpdatedAt = ts.UpdatedAt.UTC().Format(time.RFC3339Nano)
+			}
+			out.SkippedTasks = append(out.SkippedTasks, entry)
+		}
 	}
 	return out
 }

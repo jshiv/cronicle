@@ -76,6 +76,21 @@ func (schedule Schedule) ExecuteTasks() {
 
 	walkErr := walkDAG(deps, func(name string) error {
 		task := taskMap[name]
+		// Per-task skip gate. Operators set the flag via
+		// POST /v1/schedules/{name}/tasks/{task}/skip; the DAG walker
+		// records a task_skipped event and treats the node as a
+		// vacuous success so dependents still run. Failing open on
+		// store errors mirrors the schedule-pause gate.
+		if skipped, why := taskIsSkipped(schedule.Name, name); skipped {
+			slog.Info("task skipped",
+				"entry_type", "task_skipped",
+				"run_id", schedule.RunID,
+				"schedule", schedule.Name,
+				"task", name,
+				"reason", why,
+			)
+			return nil
+		}
 		_, err := task.Execute(now)
 		return err
 	})

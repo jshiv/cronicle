@@ -187,4 +187,31 @@ CREATE TABLE IF NOT EXISTS schedule_state (
 );
 `
 
-const targetSchemaVersion = 5
+// schemaSQL_v6 adds task_state — per-task control rows that flag a task
+// as "skipped" so the DAG walker treats it as a no-op success without
+// executing the body. Definition-independent (operators can skip without
+// editing HCL), persists across runs, and survives runner restart.
+//
+// Composite key (schedule, task): the same task name may exist in
+// multiple schedules and shouldn't share skip state. Sparse — only
+// skipped tasks have rows.
+//
+// Dependency semantics: a skipped task's dependents still run; their
+// depends_on edge is satisfied "vacuously". An operator who wants to
+// halt the chain should pause the schedule, not skip the head task.
+// Cascade-skip (mark dependents skipped too) is reserved for a future
+// verb so the default remains predictable.
+const schemaSQL_v6 = `
+CREATE TABLE IF NOT EXISTS task_state (
+    schedule    TEXT NOT NULL,
+    task        TEXT NOT NULL,
+    skipped     INTEGER NOT NULL DEFAULT 0,
+    skipped_at  TEXT NOT NULL DEFAULT '',
+    skipped_by  TEXT NOT NULL DEFAULT '',
+    reason      TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (schedule, task)
+);
+`
+
+const targetSchemaVersion = 6
