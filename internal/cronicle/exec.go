@@ -108,7 +108,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 
 		if FileLoggingEnabled {
 			commit, email := task.gitMeta()
-			if path, err := writeShellTranscript(task.ScheduleName, task.Name, task.Path,
+			if path, err := writeShellTranscript(task.RunID, task.ScheduleName, task.Name, task.Path,
 				task.Env, startedAt, finishedAt, result, commit, email); err == nil {
 				task.lastTranscript = path
 			}
@@ -141,7 +141,16 @@ func (task *Task) gitMeta() (commit, email string) {
 // fields stay on one line. task.Log is skipped for agent tasks because this
 // function owns the agent's logging end-to-end.
 func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
-	runID := fmt.Sprintf("%s-%s-%s", t.UTC().Format("20060102T150405Z"), task.ScheduleName, task.Name)
+	// Prefer the listener-assigned per-fire run_id so the transcript filename
+	// is findable from /v1/runs/{id} ({run_id}-{task}.jsonl). Fall back to the
+	// timestamp-derived form when running outside the listener (e.g. direct
+	// `cronicle exec` against a local file).
+	var runID string
+	if task.RunID != "" {
+		runID = fmt.Sprintf("%s-%s", task.RunID, task.Name)
+	} else {
+		runID = fmt.Sprintf("%s-%s-%s", t.UTC().Format("20060102T150405Z"), task.ScheduleName, task.Name)
+	}
 
 	// Skills: load all listed SKILL.md files up-front so a misconfigured
 	// skill (missing file, bad frontmatter) fails the run before any API
