@@ -23,7 +23,7 @@ func runsHarness(t *testing.T) (*listenServer, *state.Store) {
 	t.Cleanup(func() { _ = store.Close() })
 	return &listenServer{
 		token:    "secret",
-		stateSrc: func() *state.Store { return store },
+		stateSrc: func() state.Backend { return store },
 	}, store
 }
 
@@ -178,7 +178,7 @@ func TestRuns_GetRun(t *testing.T) {
 func TestRuns_ServiceUnavailable(t *testing.T) {
 	srv := &listenServer{
 		token:    "secret",
-		stateSrc: func() *state.Store { return nil },
+		stateSrc: func() state.Backend { return nil },
 	}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs", nil)

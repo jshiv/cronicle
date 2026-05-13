@@ -57,7 +57,7 @@ func taskRetryHarness(t *testing.T) (*listenServer, *state.Store) {
 	srv := &listenServer{
 		token:    "secret",
 		confSrc:  func() *Config { return conf },
-		stateSrc: func() *state.Store { return store },
+		stateSrc: func() state.Backend { return store },
 	}
 	return srv, store
 }

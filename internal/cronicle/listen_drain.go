@@ -102,7 +102,7 @@ func (s *listenServer) handleRunnerUndrain(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, runnerStateFromStore(st))
 }
 
-func runnerStateFromStore(st *state.Store) runnerStateResponse {
+func runnerStateFromStore(st state.Backend) runnerStateResponse {
 	out := runnerStateResponse{}
 	row, err := st.GetRunnerState()
 	if err != nil {

@@ -40,7 +40,7 @@ func triggerFromHarness(t *testing.T) (*listenServer, chan []byte) {
 		token:    "secret",
 		queue:    q,
 		confSrc:  func() *Config { return conf },
-		stateSrc: func() *state.Store { return store },
+		stateSrc: func() state.Backend { return store },
 	}
 	return srv, q
 }

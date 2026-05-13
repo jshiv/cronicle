@@ -170,10 +170,11 @@ var FileLoggingEnabled bool
 // .cronicle/runs) are rooted. Set by EnableFileLog.
 var CroniclePath string
 
-// stateStore is the process-wide projection store. nil when disabled
-// (tests, exec without state). Read by the listener / API endpoints.
-// Set by EnableStateStore; closed by CloseStateStore at shutdown.
-var stateStore *state.Store
+// stateStore is the process-wide projection store, typed as the
+// interface so cronicle-infra (and any other cluster runner) can
+// inject a non-SQLite implementation via SetStateStore. Default backing
+// is *state.Store opened by EnableStateStore.
+var stateStore state.Backend
 
 // liveSink is the process-wide live-stream pub/sub. Constructed by
 // EnableStateStore (paired with the projection store — same lifecycle).
@@ -181,9 +182,26 @@ var stateStore *state.Store
 // this via LiveSink() to subscribe per-run.
 var liveSink *state.LiveSink
 
-// StateStore returns the process-wide state.Store, or nil if not enabled.
-// Listener handlers and tests use this to issue queries.
-func StateStore() *state.Store { return stateStore }
+// StateStore returns the process-wide state backend, or nil if not
+// enabled. Listener handlers and the cron tick / DAG walker gates use
+// this to issue queries.
+func StateStore() state.Backend { return stateStore }
+
+// SetStateStore swaps in an external Backend implementation (e.g.,
+// cronicle-infra's PostgresStore). Closes the prior store if one was
+// open. The slog fan-out chain that EnableStateStore configures is
+// NOT reconfigured here — pair this with EnableStateStore-style wiring
+// in the embedding process if you need the projection-side ingest path.
+//
+// Intended for cluster deployments where the runtime-control rows
+// (pause/skip/cancel/drain) live in a shared Postgres instance instead
+// of the per-runner SQLite file.
+func SetStateStore(b state.Backend) {
+	if stateStore != nil && stateStore != b {
+		_ = stateStore.Close()
+	}
+	stateStore = b
+}
 
 // LiveSink returns the process-wide LiveSink, or nil if not enabled.
 // The /v1/runs/{id}/events SSE handler uses this to subscribe.

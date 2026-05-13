@@ -38,7 +38,7 @@ func pauseHarness(t *testing.T) (*listenServer, *state.Store, chan []byte) {
 		token:    "secret",
 		queue:    q,
 		confSrc:  func() *Config { return conf },
-		stateSrc: func() *state.Store { return store },
+		stateSrc: func() state.Backend { return store },
 	}
 	return srv, store, q
 }

@@ -51,7 +51,7 @@ import (
 // it via confPriorGlobal). The token is captured at construction; rotate
 // by restarting the process.
 //
-// stateSrc returns the current state.Store (or nil) so /v1/runs handlers
+// stateSrc returns the current state Backend (or nil) so /v1/runs handlers
 // can answer queries against the projection. Indirected through a
 // function so tests can inject a store without exporting a setter on
 // the listener.
@@ -59,7 +59,7 @@ type listenServer struct {
 	queue       chan<- []byte
 	token       string
 	confSrc     func() *Config
-	stateSrc    func() *state.Store
+	stateSrc    func() state.Backend
 	liveSinkSrc func() *state.LiveSink
 }
 
@@ -369,7 +369,7 @@ func (s *listenServer) handleUnskipTask(w http.ResponseWriter, r *http.Request, 
 }
 
 // taskStateFromStore reads the row and maps it to the wire shape.
-func taskStateFromStore(st *state.Store, schedule, task string) taskStateResponse {
+func taskStateFromStore(st state.Backend, schedule, task string) taskStateResponse {
 	out := taskStateResponse{Schedule: schedule, Task: task}
 	row, err := st.GetTaskState(schedule, task)
 	if err != nil {
@@ -494,7 +494,7 @@ func readPauseBody(r *http.Request) (string, string) {
 // without re-implementing the conversion. Includes per-task skip rows
 // so a single GET answers "what's the control state of this schedule?"
 // completely.
-func scheduleStateFromStore(st *state.Store, name string) scheduleStateResponse {
+func scheduleStateFromStore(st state.Backend, name string) scheduleStateResponse {
 	out := scheduleStateResponse{Name: name}
 	row, err := st.GetScheduleState(name)
 	if err != nil {
@@ -810,7 +810,7 @@ func (s *listenServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 
 // currentStore is a small indirection to handle the test path where
 // stateSrc may be nil and the global StateStore is what we want.
-func (s *listenServer) currentStore() *state.Store {
+func (s *listenServer) currentStore() state.Backend {
 	if s == nil {
 		return nil
 	}

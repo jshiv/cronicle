@@ -89,7 +89,7 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 // Cascade is computed from the schedule's loaded HCL; if the schedule
 // can't be resolved we fall back to a singleton keep set (just the
 // head task), trusting the operator's intent over a stale cache.
-func (s *listenServer) taskRetry(w http.ResponseWriter, store *state.Store, runID, taskName string) {
+func (s *listenServer) taskRetry(w http.ResponseWriter, store state.Backend, runID, taskName string) {
 	run, err := store.GetRun(runID)
 	if err != nil {
 		if isNoRows(err) {
@@ -142,7 +142,7 @@ type runStateResponse struct {
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
-func runStateFromStore(store *state.Store, runID string) runStateResponse {
+func runStateFromStore(store state.Backend, runID string) runStateResponse {
 	out := runStateResponse{RunID: runID}
 	row, err := store.GetRunState(runID)
 	if err != nil {
@@ -169,7 +169,7 @@ func runStateFromStore(store *state.Store, runID string) runStateResponse {
 //
 // Body shape mirrors schedule-pause: optional {actor, reason} JSON or
 // X-Actor / X-Reason headers.
-func (s *listenServer) runPause(w http.ResponseWriter, r *http.Request, store *state.Store, runID string) {
+func (s *listenServer) runPause(w http.ResponseWriter, r *http.Request, store state.Backend, runID string) {
 	// Verify the run exists. A 404 here surfaces "you pasted a run_id
 	// that doesn't match a real run" before any state row is created.
 	if _, err := store.GetRun(runID); err != nil {
@@ -198,7 +198,7 @@ func (s *listenServer) runPause(w http.ResponseWriter, r *http.Request, store *s
 // runResume clears the in-flight pause flag — the natural partner to
 // /pause. Distinct from /retry-failed which targets terminal
 // runs; resume only affects an actively-paused walker.
-func (s *listenServer) runResume(w http.ResponseWriter, r *http.Request, store *state.Store, runID string) {
+func (s *listenServer) runResume(w http.ResponseWriter, r *http.Request, store state.Backend, runID string) {
 	actor, _ := readPauseBody(r)
 	if err := store.ResumeRun(runID, actor); err != nil {
 		slog.Error("resume run failed", "run_id", runID, "error", err.Error())
@@ -222,7 +222,7 @@ func (s *listenServer) runResume(w http.ResponseWriter, r *http.Request, store *
 // already-running task is NOT preempted (no per-task ctx yet) but its
 // terminal event lands as canceled thanks to the sticky-cancel rule in
 // applyTaskTerminal.
-func (s *listenServer) taskCancel(w http.ResponseWriter, store *state.Store, runID, taskName string) {
+func (s *listenServer) taskCancel(w http.ResponseWriter, store state.Backend, runID, taskName string) {
 	// Look up the run to find its schedule name; needed to compute the
 	// cascade set against the loaded HCL.
 	run, err := store.GetRun(runID)
@@ -415,7 +415,7 @@ func writeSSEFrame(w io.Writer, payload []byte) {
 
 // runGet is what handleGetRun used to do — kept here so all run-route
 // behavior is co-located.
-func (s *listenServer) runGet(w http.ResponseWriter, store *state.Store, runID string) {
+func (s *listenServer) runGet(w http.ResponseWriter, store state.Backend, runID string) {
 	run, err := store.GetRun(runID)
 	if err != nil {
 		if isNoRows(err) {
@@ -433,7 +433,7 @@ func (s *listenServer) runGet(w http.ResponseWriter, store *state.Store, runID s
 // a cancel message via SSE so it preempts the in-flight execute. If
 // the worker has no SSE subscription the heartbeat-based detection
 // path still works (next /heartbeat returns 409).
-func (s *listenServer) runCancel(w http.ResponseWriter, store *state.Store, runID string) {
+func (s *listenServer) runCancel(w http.ResponseWriter, store state.Backend, runID string) {
 	res, err := store.Cancel(runID)
 	if err != nil {
 		if errors.Is(err, state.ErrNotCancelable) {
@@ -464,7 +464,7 @@ func (s *listenServer) runCancel(w http.ResponseWriter, store *state.Store, runI
 // runRetry re-enqueues a terminal run. A fresh run_id is minted on the
 // producer side so the new run is distinguishable in /v1/runs and
 // transcripts.
-func (s *listenServer) runRetry(w http.ResponseWriter, store *state.Store, runID string) {
+func (s *listenServer) runRetry(w http.ResponseWriter, store state.Backend, runID string) {
 	newID := newRunID()
 	res, err := store.Retry(runID, newID)
 	if err != nil {
@@ -486,7 +486,7 @@ func (s *listenServer) runRetry(w http.ResponseWriter, store *state.Store, runID
 // is the original DAG minus already-succeeded nodes, with depends
 // stripped of references to those nodes. Distinct from runResume,
 // which unpauses an in-flight DAG walker.
-func (s *listenServer) runRetryFailed(w http.ResponseWriter, store *state.Store, runID string) {
+func (s *listenServer) runRetryFailed(w http.ResponseWriter, store state.Backend, runID string) {
 	newID := newRunID()
 	res, err := store.RetryFailed(runID, newID)
 	if err != nil {
@@ -564,7 +564,7 @@ func (s *listenServer) handleWorkerRoute(w http.ResponseWriter, r *http.Request)
 // also send a `ping` every 30s so intermediaries (load balancers,
 // reverse proxies) don't kill the conn for inactivity, and so the
 // worker can detect a dead producer via read-side timeout.
-func (s *listenServer) serveControlSSE(w http.ResponseWriter, r *http.Request, store *state.Store, workerID string) {
+func (s *listenServer) serveControlSSE(w http.ResponseWriter, r *http.Request, store state.Backend, workerID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)

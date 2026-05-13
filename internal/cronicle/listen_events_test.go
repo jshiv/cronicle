@@ -25,7 +25,7 @@ func eventsHarness(t *testing.T) (*listenServer, *state.Store) {
 	t.Cleanup(func() { _ = store.Close() })
 	return &listenServer{
 		token:    "secret",
-		stateSrc: func() *state.Store { return store },
+		stateSrc: func() state.Backend { return store },
 	}, store
 }
 
@@ -179,7 +179,7 @@ func TestIngest_FanoutsToLiveSink(t *testing.T) {
 	ls := state.NewLiveSink(newLiveEncoder(LiveFormatPretty))
 	srv := &listenServer{
 		token:       "secret",
-		stateSrc:    func() *state.Store { return store },
+		stateSrc:    func() state.Backend { return store },
 		liveSinkSrc: func() *state.LiveSink { return ls },
 	}
 	mux := http.NewServeMux()
@@ -290,7 +290,7 @@ func TestIngest_AgentDeltaRendersPretty(t *testing.T) {
 	ls := state.NewLiveSink(newLiveEncoder(LiveFormatPretty))
 	srv := &listenServer{
 		token:       "secret",
-		stateSrc:    func() *state.Store { return store },
+		stateSrc:    func() state.Backend { return store },
 		liveSinkSrc: func() *state.LiveSink { return ls },
 	}
 	mux := http.NewServeMux()
@@ -360,7 +360,7 @@ func TestIngest_AgentDeltaRendersPretty(t *testing.T) {
 func TestIngest_ServiceUnavailable(t *testing.T) {
 	srv := &listenServer{
 		token:    "secret",
-		stateSrc: func() *state.Store { return nil },
+		stateSrc: func() state.Backend { return nil },
 	}
 	rr := httptest.NewRecorder()
 	srv.handleIngestEvents(rr, ingestRequest(`{"entry_type":"schedule_start","run_id":"R","schedule":"x"}`))
