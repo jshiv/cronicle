@@ -14,6 +14,8 @@
 //   GET  /v1/schedules/{name}/state                      report paused + drained + skipped-tasks
 //   POST /v1/schedules/{name}/tasks/{task}/skip          flag task as skipped on next run
 //   POST /v1/schedules/{name}/tasks/{task}/unskip        clear the skip flag
+//   POST /v1/schedules/{name}/tasks/{task}/trigger-from  fire the schedule starting at this task
+//                                                        (task + DAG dependents only)
 //
 // Auth is bearer-token. The listener refuses to start without a token —
 // this is an unattended cron service, hostile-by-default is the right
@@ -261,6 +263,27 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		s.handleUnskipTask(w, r, schedName, taskName)
+	case len(parts) == 4 && parts[1] == "tasks" && parts[3] == "trigger-from":
+		taskName := parts[2]
+		if !hasTask(*sch, taskName) {
+			http.Error(w, fmt.Sprintf("task %q not in schedule %q", taskName, schedName), http.StatusNotFound)
+			return
+		}
+		if s.isPaused(schedName) {
+			http.Error(w, "schedule is paused", http.StatusConflict)
+			return
+		}
+		runID, ok := s.triggerSubgraph(*sch, taskName)
+		if !ok {
+			http.Error(w, "queue unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"queued":   schedName + "/" + taskName + " (subgraph)",
+			"schedule": schedName,
+			"task":     taskName,
+			"run_id":   runID,
+		})
 	case len(parts) == 2 && parts[1] == "pause":
 		s.handlePauseSchedule(w, r, schedName)
 	case len(parts) == 2 && parts[1] == "resume":
@@ -565,6 +588,51 @@ func (s *listenServer) triggerTask(sch Schedule, taskName string) bool {
 	sub.RunID = newRunID()
 	sub.Source = "http"
 	return s.send(sub.JSON(), sch.Name, taskName)
+}
+
+// triggerSubgraph fires a fresh run of the schedule containing the named
+// task plus its transitive DAG dependents. Predecessors are dropped;
+// depends pointing at dropped tasks are stripped so the head task
+// becomes a fresh entry point.
+//
+// The schedule-side analog of POST /v1/runs/{id}/tasks/{task}/retry —
+// same payload-narrowing semantics, but launched from the live schedule
+// definition rather than a prior run's payload. Returns the new run_id
+// (caller minted; the queued payload carries it) so operators can
+// follow the live SSE for the new run.
+func (s *listenServer) triggerSubgraph(sch Schedule, taskName string) (string, bool) {
+	keep := map[string]bool{taskName: true}
+	for _, name := range sch.downstreamTasks(taskName) {
+		keep[name] = true
+	}
+	sub := sch
+	sub.Tasks = nil
+	for _, t := range sch.Tasks {
+		if !keep[t.Name] {
+			continue
+		}
+		// Strip depends pointing at filtered-out predecessors so the
+		// head task launches without waiting on phantom upstream nodes.
+		filtered := t.Depends[:0:0] // fresh allocation
+		for _, dep := range t.Depends {
+			if keep[dep] {
+				filtered = append(filtered, dep)
+			}
+		}
+		if len(filtered) == 0 {
+			t.Depends = nil
+		} else {
+			t.Depends = filtered
+		}
+		sub.Tasks = append(sub.Tasks, t)
+	}
+	sub.Now = nowInScheduleZone(sub)
+	sub.RunID = newRunID()
+	sub.Source = "http"
+	if !s.send(sub.JSON(), sch.Name, taskName) {
+		return "", false
+	}
+	return sub.RunID, true
 }
 
 // isPaused consults the state store. Returns false when the store is
