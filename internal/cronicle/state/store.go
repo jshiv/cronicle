@@ -164,6 +164,12 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("state.migrate v7: %w", err)
 		}
 	}
+	// v8: runner_state (runner-wide drain flag, singleton)
+	if current < 8 {
+		if _, err := s.db.Exec(schemaSQL_v8); err != nil {
+			return fmt.Errorf("state.migrate v8: %w", err)
+		}
+	}
 	if current >= targetSchemaVersion {
 		return nil
 	}

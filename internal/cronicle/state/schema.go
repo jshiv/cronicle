@@ -236,4 +236,25 @@ CREATE TABLE IF NOT EXISTS run_state (
 );
 `
 
-const targetSchemaVersion = 7
+// schemaSQL_v8 adds runner_state — a singleton row holding runner-wide
+// control flags. Today it carries `drained`: a global "stop accepting
+// new work" verb that gates the cron tick, the listener triggers, and
+// the DAG walker's task launches. In-flight tasks finish normally;
+// once drained is cleared, work resumes from where each gate stopped.
+//
+// CHECK (id = 1) enforces the singleton: there's at most one row, and
+// upsert always targets it. Future runner-wide flags (max_concurrency,
+// scheduler_offset, etc.) layer in here without a fresh migration.
+const schemaSQL_v8 = `
+CREATE TABLE IF NOT EXISTS runner_state (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    drained     INTEGER NOT NULL DEFAULT 0,
+    drained_at  TEXT NOT NULL DEFAULT '',
+    drained_by  TEXT NOT NULL DEFAULT '',
+    reason      TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO runner_state(id) VALUES (1);
+`
+
+const targetSchemaVersion = 8

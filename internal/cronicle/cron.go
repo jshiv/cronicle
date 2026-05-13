@@ -273,6 +273,20 @@ func ConsumeSchedule(queue <-chan []byte, path string, wg *sync.WaitGroup) {
 //schdule to the message queue for consumption
 func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 	return func() {
+		// Runner-wide drain gate takes precedence: when the runner is
+		// drained no schedules tick, regardless of per-schedule state.
+		if st := StateStore(); st != nil {
+			if drained, err := st.IsDrained(); err != nil {
+				slog.Warn("drain check failed; proceeding with schedule",
+					"schedule", schedule.Name, "error", err.Error())
+			} else if drained {
+				slog.Info("Skipping tick: runner drained",
+					"entry_type", "schedule_skipped",
+					"schedule", schedule.Name,
+					"reason", "drained")
+				return
+			}
+		}
 		// Pause gate: a schedule with an active schedule_state.paused=1
 		// row is silently skipped at tick time. This is independent of
 		// the HCL definition — operators can pause without round-tripping

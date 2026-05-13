@@ -111,6 +111,45 @@ func TestAwaitRunPauseClear_AbortsOnCtxCancel(t *testing.T) {
 	}
 }
 
+// TestAwaitRunPauseClear_BlocksOnDrain: the runner-wide drain flag
+// blocks task launches the same way per-run pause does. Undraining
+// releases the gate.
+func TestAwaitRunPauseClear_BlocksOnDrain(t *testing.T) {
+	store, _ := openState(t)
+	prev := stateStore
+	stateStore = store
+	t.Cleanup(func() { stateStore = prev })
+
+	prevInterval := runPausePollInterval
+	runPausePollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { runPausePollInterval = prevInterval })
+
+	if err := store.SetDrained("test", "global"); err != nil {
+		t.Fatalf("SetDrained: %v", err)
+	}
+
+	released := make(chan struct{})
+	go func() {
+		awaitRunPauseClear(context.Background(), "R_DRAIN", "a", "daily")
+		close(released)
+	}()
+
+	select {
+	case <-released:
+		t.Fatalf("gate released while drained")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := store.ClearDrained("test"); err != nil {
+		t.Fatalf("ClearDrained: %v", err)
+	}
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatalf("gate did not release within 1s of undrain")
+	}
+}
+
 // TestAwaitRunPauseClear_NoStoreFailsOpen: with stateStore nil the
 // gate returns immediately so a missing projection doesn't freeze
 // every run.

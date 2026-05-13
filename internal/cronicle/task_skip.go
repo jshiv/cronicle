@@ -12,16 +12,18 @@ import (
 // the projection store under load.
 var runPausePollInterval = 500 * time.Millisecond
 
-// awaitRunPauseClear blocks while run_state.paused = 1 for the given
-// run. Returns immediately when:
-//   - the flag is clear (typical fast path; no allocation, single SQL read)
-//   - ctx is canceled (run was canceled while paused — caller proceeds
+// awaitRunPauseClear blocks while either the per-run pause flag or the
+// runner-wide drain flag is set. Returns immediately when:
+//   - both flags are clear (typical fast path; two single-PK SQL reads)
+//   - ctx is canceled (run was canceled while waiting — caller proceeds
 //     and downstream cancel/skip gates take over)
 //   - the projection store is unavailable (fail open, mirrors other gates)
 //
-// Logs a one-shot info entry the first time it observes paused=1 so the
+// Logs a one-shot info entry the first time it observes a block so the
 // operator can correlate "why isn't the next task launching?" in
-// transcripts without flooding the log every poll.
+// transcripts without flooding the log every poll. The block reason
+// (pause vs drain) is included so the operator knows which verb to
+// reverse.
 func awaitRunPauseClear(ctx context.Context, runID, task, schedule string) {
 	if runID == "" {
 		return
@@ -30,23 +32,16 @@ func awaitRunPauseClear(ctx context.Context, runID, task, schedule string) {
 	if st == nil {
 		return
 	}
-	paused, err := st.IsRunPaused(runID)
-	if err != nil {
-		slog.Warn("run pause check failed; launching task",
-			"run_id", runID, "task", task, "error", err.Error())
+	blocked, reason := launchBlockedReason(st, runID)
+	if !blocked {
 		return
 	}
-	if !paused {
-		return
-	}
-	// Emit a single "blocked on pause" entry per (task, pause-epoch).
-	// Repeated polls don't re-log; the next pause epoch will re-log on
-	// its first poll thanks to the StateStore round-trip.
-	slog.Info("task launch blocked by run pause",
+	slog.Info("task launch blocked",
 		"entry_type", "task_pause_blocked",
 		"run_id", runID,
 		"task", task,
 		"schedule", schedule,
+		"reason", reason,
 	)
 	ticker := time.NewTicker(runPausePollInterval)
 	defer ticker.Stop()
@@ -57,7 +52,7 @@ func awaitRunPauseClear(ctx context.Context, runID, task, schedule string) {
 		if ctx != nil {
 			select {
 			case <-ctx.Done():
-				slog.Info("run pause aborted by cancel",
+				slog.Info("run launch wait aborted by cancel",
 					"entry_type", "task_pause_aborted",
 					"run_id", runID,
 					"task", task,
@@ -68,14 +63,9 @@ func awaitRunPauseClear(ctx context.Context, runID, task, schedule string) {
 		} else {
 			<-ticker.C
 		}
-		paused, err := st.IsRunPaused(runID)
-		if err != nil {
-			slog.Warn("run pause re-check failed; launching task",
-				"run_id", runID, "task", task, "error", err.Error())
-			return
-		}
-		if !paused {
-			slog.Info("run unpaused; launching task",
+		blocked, _ = launchBlockedReason(st, runID)
+		if !blocked {
+			slog.Info("run launch wait cleared",
 				"entry_type", "task_pause_cleared",
 				"run_id", runID,
 				"task", task,
@@ -83,6 +73,29 @@ func awaitRunPauseClear(ctx context.Context, runID, task, schedule string) {
 			return
 		}
 	}
+}
+
+// launchBlockedReason returns (blocked, reason) — true when either the
+// run is paused or the runner is drained. Drain takes precedence in the
+// reason string because it's the more global signal. Read-only; the
+// gate calls this on the hot path.
+func launchBlockedReason(st storeWithGates, runID string) (bool, string) {
+	if drained, err := st.IsDrained(); err == nil && drained {
+		return true, "drained"
+	}
+	if paused, err := st.IsRunPaused(runID); err == nil && paused {
+		return true, "paused"
+	}
+	return false, ""
+}
+
+// storeWithGates is the narrow interface awaitRunPauseClear needs. Pulled
+// out so the gate is testable without a real *state.Store and so future
+// gate flags (per-schedule pause? cancel?) can be added without churning
+// every call site.
+type storeWithGates interface {
+	IsDrained() (bool, error)
+	IsRunPaused(runID string) (bool, error)
 }
 
 // taskCanceledInRun returns true when the projection has the (run, task)

@@ -16,6 +16,9 @@
 //   POST /v1/schedules/{name}/tasks/{task}/unskip        clear the skip flag
 //   POST /v1/schedules/{name}/tasks/{task}/trigger-from  fire the schedule starting at this task
 //                                                        (task + DAG dependents only)
+//   GET  /v1/runner/state                                runner-wide control state (drained, ...)
+//   POST /v1/runner/drain                                stop accepting new triggers + new task launches
+//   POST /v1/runner/undrain                              clear the drain flag
 //
 // Auth is bearer-token. The listener refuses to start without a token —
 // this is an unattended cron service, hostile-by-default is the right
@@ -92,6 +95,9 @@ func startListener(addr, token string, queue chan<- []byte) {
 	mux.HandleFunc("/v1/workers", s.handleListWorkers)
 	mux.HandleFunc("/v1/workers/", s.handleWorkerRoute)
 	mux.HandleFunc("/v1/runs/", s.handleRunRoute)
+	mux.HandleFunc("/v1/runner/state", s.handleRunnerState)
+	mux.HandleFunc("/v1/runner/drain", s.handleRunnerDrain)
+	mux.HandleFunc("/v1/runner/undrain", s.handleRunnerUndrain)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -216,6 +222,10 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 
 	switch {
 	case len(parts) == 2 && parts[1] == "trigger":
+		if s.isDrained() {
+			http.Error(w, "runner is drained", http.StatusServiceUnavailable)
+			return
+		}
 		if s.isPaused(schedName) {
 			http.Error(w, "schedule is paused", http.StatusConflict)
 			return
@@ -233,6 +243,10 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 		taskName := parts[2]
 		if !hasTask(*sch, taskName) {
 			http.Error(w, fmt.Sprintf("task %q not in schedule %q", taskName, schedName), http.StatusNotFound)
+			return
+		}
+		if s.isDrained() {
+			http.Error(w, "runner is drained", http.StatusServiceUnavailable)
 			return
 		}
 		if s.isPaused(schedName) {
@@ -267,6 +281,10 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 		taskName := parts[2]
 		if !hasTask(*sch, taskName) {
 			http.Error(w, fmt.Sprintf("task %q not in schedule %q", taskName, schedName), http.StatusNotFound)
+			return
+		}
+		if s.isDrained() {
+			http.Error(w, "runner is drained", http.StatusServiceUnavailable)
 			return
 		}
 		if s.isPaused(schedName) {
@@ -633,6 +651,26 @@ func (s *listenServer) triggerSubgraph(sch Schedule, taskName string) (string, b
 		return "", false
 	}
 	return sub.RunID, true
+}
+
+// isDrained consults the runner-wide drain flag. Returns false when
+// the store is unavailable — fail open mirrors the per-schedule
+// pause gate. Trigger handlers reject with 503 when this returns true,
+// matching the "no new work" intent of drain.
+func (s *listenServer) isDrained() bool {
+	if s.stateSrc == nil {
+		return false
+	}
+	st := s.stateSrc()
+	if st == nil {
+		return false
+	}
+	drained, err := st.IsDrained()
+	if err != nil {
+		slog.Warn("drain check failed; treating as active", "error", err.Error())
+		return false
+	}
+	return drained
 }
 
 // isPaused consults the state store. Returns false when the store is
