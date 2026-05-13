@@ -24,7 +24,7 @@ import (
 // even if SQLite is briefly busy. At our load (sub-100 events/min)
 // the buffer is essentially never used, but it bounds the worst-case
 // blocking on the cron goroutine.
-func enqueueAdapter(in <-chan []byte, store *state.Store) {
+func enqueueAdapter(in <-chan []byte, store state.Backend) {
 	for payload := range in {
 		var sch Schedule
 		if err := json.Unmarshal(payload, &sch); err != nil {
@@ -56,7 +56,7 @@ func enqueueAdapter(in <-chan []byte, store *state.Store) {
 // rarely needs it because the worker IS the producer (no network
 // partition can preempt), but if a panic kills the goroutine the
 // reaper will recover the job.
-func selfWorker(store *state.Store, croniclePath string, wg *sync.WaitGroup) {
+func selfWorker(store state.Backend, croniclePath string, wg *sync.WaitGroup) {
 	workerID := SelfWorkerID()
 	slog.Info("self-worker started", "worker_id", workerID)
 
@@ -108,7 +108,7 @@ func selfWorker(store *state.Store, croniclePath string, wg *sync.WaitGroup) {
 //
 // Logs only when something is actually reaped — quiet when the queue
 // is healthy.
-func reaperLoop(store *state.Store) {
+func reaperLoop(store state.Backend) {
 	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
 	for range t.C {

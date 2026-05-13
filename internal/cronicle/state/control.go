@@ -196,28 +196,31 @@ func (s *Store) Retry(runID, newRunID string) (RetryResult, error) {
 	}, nil
 }
 
-// Resume re-enqueues a terminal run with only the tasks that did NOT
-// succeed in the original. The common operator workflow this serves:
+// RetryFailed re-enqueues a terminal run with only the tasks that
+// did NOT succeed in the original. The common operator workflow this
+// serves:
 //
 //  1. A scheduled run lights up; some early tasks succeed.
 //  2. A later task gets stuck / runs away / emits bad output.
 //  3. Operator hits POST /v1/runs/{id}/cancel — the canceled status is
 //     sticky in the projection, including per-task succeed/fail/cancel.
 //  4. Operator investigates, fixes whatever was wrong.
-//  5. Operator hits POST /v1/runs/{id}/resume — the new run skips the
-//     tasks that already succeeded and re-runs the rest.
+//  5. Operator hits POST /v1/runs/{id}/retry-failed — the new run
+//     skips the tasks that already succeeded and re-runs the rest.
 //
 // Implementation detail: depends pointing at skipped (succeeded)
 // tasks are stripped from the remaining tasks, so a task whose only
 // upstream had already succeeded becomes a fresh DAG entry point.
-// This matches the cancel/resume semantics most operators expect from
-// CI pipeline restarts ("re-run failed jobs only").
+// This matches the retry-failed semantics most operators expect
+// from CI pipeline restarts ("re-run failed jobs only").
 //
 // Like Retry, the original run row is preserved as audit trail and a
-// fresh run_id is minted for the resumed work.
-func (s *Store) Resume(runID, newRunID string) (RetryResult, error) {
+// fresh run_id is minted for the resumed work. Distinct from
+// /v1/runs/{id}/resume which UNPAUSES an in-flight run — that operates
+// on a non-terminal run via run_state.paused.
+func (s *Store) RetryFailed(runID, newRunID string) (RetryResult, error) {
 	if runID == "" || newRunID == "" {
-		return RetryResult{}, errors.New("Resume: empty run_id or new_run_id")
+		return RetryResult{}, errors.New("RetryFailed: empty run_id or new_run_id")
 	}
 
 	s.mu.Lock()
@@ -232,12 +235,12 @@ func (s *Store) Resume(runID, newRunID string) (RetryResult, error) {
 		Scan(&schedule, &payload, &status)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return RetryResult{}, fmt.Errorf("Resume: run %q not in queue", runID)
+			return RetryResult{}, fmt.Errorf("RetryFailed: run %q not in queue", runID)
 		}
-		return RetryResult{}, fmt.Errorf("Resume: read job: %w", err)
+		return RetryResult{}, fmt.Errorf("RetryFailed: read job: %w", err)
 	}
 	if status == JobPending || status == JobClaimed {
-		return RetryResult{}, fmt.Errorf("Resume: run %q is still in flight (status=%s)", runID, status)
+		return RetryResult{}, fmt.Errorf("RetryFailed: run %q is still in flight (status=%s)", runID, status)
 	}
 
 	// Walk the original run's per-task status to identify which tasks
@@ -247,7 +250,7 @@ func (s *Store) Resume(runID, newRunID string) (RetryResult, error) {
 	// reads local for clarity).
 	rows, err := s.db.Query(`SELECT name, status FROM tasks WHERE run_id = ?`, runID)
 	if err != nil {
-		return RetryResult{}, fmt.Errorf("Resume: read tasks: %w", err)
+		return RetryResult{}, fmt.Errorf("RetryFailed: read tasks: %w", err)
 	}
 	skipped := make(map[string]bool)
 	var skippedList []string
@@ -255,7 +258,7 @@ func (s *Store) Resume(runID, newRunID string) (RetryResult, error) {
 		var name, taskStatus string
 		if err := rows.Scan(&name, &taskStatus); err != nil {
 			rows.Close()
-			return RetryResult{}, fmt.Errorf("Resume: scan task: %w", err)
+			return RetryResult{}, fmt.Errorf("RetryFailed: scan task: %w", err)
 		}
 		if taskStatus == StatusSucceeded {
 			skipped[name] = true
@@ -273,7 +276,7 @@ func (s *Store) Resume(runID, newRunID string) (RetryResult, error) {
 	// If every task was already succeeded, there's nothing to do —
 	// surface a 400-friendly error so the operator notices.
 	if jsonHasEmptyTasks(newPayload) {
-		return RetryResult{}, fmt.Errorf("Resume: every task in run %q already succeeded; nothing to resume", runID)
+		return RetryResult{}, fmt.Errorf("RetryFailed: every task in run %q already succeeded; nothing to retry", runID)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -282,7 +285,7 @@ func (s *Store) Resume(runID, newRunID string) (RetryResult, error) {
 		VALUES (?, ?, ?, ?, ?)`,
 		newRunID, schedule, string(newPayload), JobPending, now,
 	); err != nil {
-		return RetryResult{}, fmt.Errorf("Resume: enqueue: %w", err)
+		return RetryResult{}, fmt.Errorf("RetryFailed: enqueue: %w", err)
 	}
 	w := s.waiters()
 	w.mu.Lock()
@@ -295,6 +298,130 @@ func (s *Store) Resume(runID, newRunID string) (RetryResult, error) {
 		Schedule:      schedule,
 		SkippedTasks:  skippedList,
 	}, nil
+}
+
+// RetryTask re-enqueues a terminal run that contains a specific task,
+// but with the payload narrowed to ONLY that task plus its DAG
+// dependents (passed in by the caller via the `keep` set — typically
+// computed at the listener layer from Schedule.downstreamTasks).
+//
+// Workflow: a multi-task run finished with task T failed. The operator
+// wants to retry T without re-running upstream predecessors that
+// already succeeded. RetryTask produces a fresh run_id whose Tasks
+// slice contains T and its downstream — depends pointing at filtered-
+// out predecessors are stripped so T becomes a fresh DAG entry point.
+//
+// Like RetryFailed, only terminal runs are accepted. The original
+// run row stays as audit. Distinct from RetryFailed (which skips
+// already-succeeded tasks) — RetryTask is asymmetric: even succeeded
+// predecessors of T are dropped if they aren't downstream of T.
+func (s *Store) RetryTask(runID, taskName string, keep map[string]bool, newRunID string) (RetryResult, error) {
+	if runID == "" || newRunID == "" {
+		return RetryResult{}, errors.New("RetryTask: empty run_id or new_run_id")
+	}
+	if taskName == "" {
+		return RetryResult{}, errors.New("RetryTask: empty task name")
+	}
+	if !keep[taskName] {
+		// Defensive: the target task must be in the keep set; callers
+		// should always include it but we double-check rather than
+		// produce a payload that excludes the very task we're retrying.
+		if keep == nil {
+			keep = map[string]bool{}
+		}
+		keep[taskName] = true
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var (
+		schedule string
+		payload  string
+		status   string
+	)
+	err := s.db.QueryRow(`SELECT schedule, payload, status FROM jobs WHERE run_id = ?`, runID).
+		Scan(&schedule, &payload, &status)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RetryResult{}, fmt.Errorf("RetryTask: run %q not in queue", runID)
+		}
+		return RetryResult{}, fmt.Errorf("RetryTask: read job: %w", err)
+	}
+	if status == JobPending || status == JobClaimed {
+		return RetryResult{}, fmt.Errorf("RetryTask: run %q is still in flight (status=%s)", runID, status)
+	}
+
+	// Verify the head task actually existed in this run's projection.
+	// Surfaces a clear error if the operator typo'd a task name.
+	var existed int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE run_id = ? AND name = ?`, runID, taskName).Scan(&existed); err != nil {
+		return RetryResult{}, fmt.Errorf("RetryTask: probe task: %w", err)
+	}
+	if existed == 0 {
+		return RetryResult{}, fmt.Errorf("RetryTask: task %q not found in run %q", taskName, runID)
+	}
+
+	// Build the skip set from the original payload: anything NOT in
+	// the keep set is filtered out. filterScheduleTasks already handles
+	// the depends-strip pass.
+	skip, droppedList, err := buildSkipFromKeep([]byte(payload), keep)
+	if err != nil {
+		return RetryResult{}, err
+	}
+	newPayload, err := filterScheduleTasks([]byte(payload), skip, newRunID)
+	if err != nil {
+		return RetryResult{}, err
+	}
+	if jsonHasEmptyTasks(newPayload) {
+		return RetryResult{}, fmt.Errorf("RetryTask: payload narrowed to empty task list")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.Exec(`
+		INSERT OR IGNORE INTO jobs(run_id, schedule, payload, status, enqueued_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		newRunID, schedule, string(newPayload), JobPending, now,
+	); err != nil {
+		return RetryResult{}, fmt.Errorf("RetryTask: enqueue: %w", err)
+	}
+	w := s.waiters()
+	w.mu.Lock()
+	w.cond.Broadcast()
+	w.mu.Unlock()
+
+	return RetryResult{
+		OriginalRunID: runID,
+		NewRunID:      newRunID,
+		Schedule:      schedule,
+		SkippedTasks:  droppedList,
+	}, nil
+}
+
+// buildSkipFromKeep returns a skip set = (all task names in payload) -
+// (keep). Also returns the list of dropped names for the RetryResult's
+// SkippedTasks field so the API caller can audit what got filtered.
+func buildSkipFromKeep(payload []byte, keep map[string]bool) (map[string]bool, []string, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, nil, fmt.Errorf("buildSkipFromKeep: decode: %w", err)
+	}
+	tasksAny, _ := raw["Tasks"].([]any)
+	skip := make(map[string]bool, len(tasksAny))
+	var dropped []string
+	for _, t := range tasksAny {
+		tm, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := tm["Name"].(string)
+		if name == "" || keep[name] {
+			continue
+		}
+		skip[name] = true
+		dropped = append(dropped, name)
+	}
+	return skip, dropped, nil
 }
 
 // filterScheduleTasks decodes a serialized Schedule payload, drops the
@@ -367,10 +494,14 @@ func jsonHasEmptyTasks(payload []byte) bool {
 // (heartbeat-based detection picks it up next cycle).
 
 // ControlMsg is the wire shape of the SSE control stream. Type is
-// "cancel" or "ping" today; future verbs (pause, drain) layer in here.
+// "cancel", "cancel_task", or "ping" today; future verbs (pause, drain)
+// layer in here. Task is populated only for "cancel_task" messages —
+// a hint to the worker to preempt just the named task; the load-bearing
+// path remains the projection's sticky cancel + walker gate.
 type ControlMsg struct {
 	Type  string `json:"type"`
 	RunID string `json:"run_id,omitempty"`
+	Task  string `json:"task,omitempty"`
 }
 
 // controlRegistry is process-local — reset on producer restart, which

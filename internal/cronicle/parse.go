@@ -91,8 +91,31 @@ func ParseFile(cronicleFile string, parser *hclparse.Parser) (*Config, hcl.Diagn
 		return nil, diags
 	}
 
+	return decodeConfigBody(file.Body)
+}
+
+// ParseBytes parses an in-memory HCL document into a Config. Used by
+// the non-file ConfigSources (http, s3, postgres) which load bytes
+// rather than file paths. The filename arg is used in parser diagnostics
+// only — typically "cronicle.hcl" or the source's String() output.
+func ParseBytes(src []byte, filename string, parser *hclparse.Parser) (*Config, hcl.Diagnostics) {
+	var diags hcl.Diagnostics
+
+	file, parseDiags := parser.ParseHCL(src, filename)
+	diags = append(diags, parseDiags...)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	return decodeConfigBody(file.Body)
+}
+
+// decodeConfigBody is the common gohcl-decode + AgentTasks-fold path
+// shared by ParseFile and ParseBytes. Keeps the schema-evolution
+// surface in one place.
+func decodeConfigBody(body hcl.Body) (*Config, hcl.Diagnostics) {
+	var diags hcl.Diagnostics
 	var conf Config
-	decodeDiags := gohcl.DecodeBody(file.Body, &CommandEvalContext, &conf)
+	decodeDiags := gohcl.DecodeBody(body, &CommandEvalContext, &conf)
 	diags = append(diags, decodeDiags...)
 	if diags.HasErrors() {
 		return &conf, diags
@@ -109,7 +132,6 @@ func ParseFile(cronicleFile string, parser *hclparse.Parser) (*Config, hcl.Diagn
 		}
 		s.AgentTasks = nil
 	}
-
 	return &conf, nil
 }
 

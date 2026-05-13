@@ -76,6 +76,45 @@ func (schedule Schedule) ExecuteTasks() {
 
 	walkErr := walkDAG(deps, func(name string) error {
 		task := taskMap[name]
+		// Run-pause gate: a POST /v1/runs/{id}/pause may land mid-walk.
+		// Block here before launching the task body. Resume (POST
+		// /v1/runs/{id}/unpause) clears the flag; the poll loop picks
+		// up on its next tick. Cancel of the whole run (via ctx) takes
+		// precedence — a paused run that's then canceled exits the
+		// loop immediately rather than waiting for unpause.
+		awaitRunPauseClear(schedule.RunCtx, schedule.RunID, name, schedule.Name)
+		// Per-task cancel gate: a POST /v1/runs/{id}/tasks/{task}/cancel
+		// landed against this run before the walker reached this node.
+		// The projection already shows status='canceled' for this task
+		// (sticky); the walker emits the matching event and returns nil
+		// so downstream cascade entries are also walked-and-skipped.
+		// Cancel takes precedence over skip — if both flags are set,
+		// the cancel record wins.
+		if taskCanceledInRun(schedule.RunID, name) {
+			slog.Info("task canceled",
+				"entry_type", "task_canceled",
+				"run_id", schedule.RunID,
+				"schedule", schedule.Name,
+				"task", name,
+				"reason", "canceled via API before launch",
+			)
+			return nil
+		}
+		// Per-task skip gate. Operators set the flag via
+		// POST /v1/schedules/{name}/tasks/{task}/skip; the DAG walker
+		// records a task_skipped event and treats the node as a
+		// vacuous success so dependents still run. Failing open on
+		// store errors mirrors the schedule-pause gate.
+		if skipped, why := taskIsSkipped(schedule.Name, name); skipped {
+			slog.Info("task skipped",
+				"entry_type", "task_skipped",
+				"run_id", schedule.RunID,
+				"schedule", schedule.Name,
+				"task", name,
+				"reason", why,
+			)
+			return nil
+		}
 		_, err := task.Execute(now)
 		return err
 	})
@@ -174,6 +213,41 @@ func (schedule *Schedule) scratchDirFor(now time.Time) string {
 	}
 	runID := now.UTC().Format("20060102T150405Z")
 	return filepath.Join(croniclePath, ".cronicle", "scratch", schedule.Name, runID)
+}
+
+// downstreamTasks returns the transitive set of tasks that depend on
+// `root` within the schedule's DAG. Used by the task-cancel listener
+// endpoint to compute the cascade set — every downstream task of the
+// canceled task is also marked canceled in the projection so the DAG
+// walker skips them at launch time.
+//
+// Returned in deterministic insertion order (BFS layer-by-layer) so
+// downstream consumers (logs, audit lines) see a stable ordering.
+// `root` itself is NOT included; callers prepend it explicitly when
+// they want the full target set.
+func (schedule Schedule) downstreamTasks(root string) []string {
+	dependents := make(map[string][]string)
+	for _, t := range schedule.Tasks {
+		for _, dep := range t.Depends {
+			dependents[dep] = append(dependents[dep], t.Name)
+		}
+	}
+	var out []string
+	seen := map[string]bool{root: true}
+	queue := []string{root}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, child := range dependents[cur] {
+			if seen[child] {
+				continue
+			}
+			seen[child] = true
+			out = append(out, child)
+			queue = append(queue, child)
+		}
+	}
+	return out
 }
 
 // dagString produces a human-readable representation of the DAG for logging.

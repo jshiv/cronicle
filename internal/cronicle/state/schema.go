@@ -159,4 +159,102 @@ CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_events_ts  ON events(ts);
 `
 
-const targetSchemaVersion = 4
+// schemaSQL_v5 adds the schedule_state table — the control-plane row
+// that lives alongside the HCL definition. The HCL says "what to run";
+// schedule_state says "is it currently allowed to run?"
+//
+// This is the first piece of true runtime control state: the cron loop
+// consults schedule_state.paused on every tick to decide whether to
+// enqueue the run, and operators flip it via the listener (POST
+// /v1/schedules/{name}/pause). Hot-reloading the HCL to set cron=""
+// is too rudimentary (it conflates definition and control) and round-
+// trips through the config source; this row is authoritative state
+// inside the runner.
+//
+// Rows are sparse: only paused/drained schedules need rows. The cron
+// loop's pause check is LEFT JOIN, so unknown schedules default to
+// "active". Drained semantics (Phase 4) are reserved here so we don't
+// re-migrate later.
+const schemaSQL_v5 = `
+CREATE TABLE IF NOT EXISTS schedule_state (
+    name       TEXT PRIMARY KEY,
+    paused     INTEGER NOT NULL DEFAULT 0,   -- 0|1
+    paused_at  TEXT NOT NULL DEFAULT '',
+    paused_by  TEXT NOT NULL DEFAULT '',
+    reason     TEXT NOT NULL DEFAULT '',
+    drained    INTEGER NOT NULL DEFAULT 0,   -- 0|1, reserved for Phase 4
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`
+
+// schemaSQL_v6 adds task_state — per-task control rows that flag a task
+// as "skipped" so the DAG walker treats it as a no-op success without
+// executing the body. Definition-independent (operators can skip without
+// editing HCL), persists across runs, and survives runner restart.
+//
+// Composite key (schedule, task): the same task name may exist in
+// multiple schedules and shouldn't share skip state. Sparse — only
+// skipped tasks have rows.
+//
+// Dependency semantics: a skipped task's dependents still run; their
+// depends_on edge is satisfied "vacuously". An operator who wants to
+// halt the chain should pause the schedule, not skip the head task.
+// Cascade-skip (mark dependents skipped too) is reserved for a future
+// verb so the default remains predictable.
+const schemaSQL_v6 = `
+CREATE TABLE IF NOT EXISTS task_state (
+    schedule    TEXT NOT NULL,
+    task        TEXT NOT NULL,
+    skipped     INTEGER NOT NULL DEFAULT 0,
+    skipped_at  TEXT NOT NULL DEFAULT '',
+    skipped_by  TEXT NOT NULL DEFAULT '',
+    reason      TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (schedule, task)
+);
+`
+
+// schemaSQL_v7 adds run_state — per-run-instance pause flag. Distinct
+// from schedule_state (which pauses *future* ticks) and task_state
+// (which skips tasks at definition time). run_state is the "freeze the
+// DAG walker mid-execution" verb: in-flight tasks finish, but the
+// walker blocks before launching the next layer until the run is
+// unpaused.
+//
+// Composite key not needed: run_id is globally unique. Sparse rows.
+// The runs projection table is left untouched so the read model for
+// "what's the status of run X" stays event-derived; control state
+// lives here.
+const schemaSQL_v7 = `
+CREATE TABLE IF NOT EXISTS run_state (
+    run_id      TEXT PRIMARY KEY,
+    paused      INTEGER NOT NULL DEFAULT 0,
+    paused_at   TEXT NOT NULL DEFAULT '',
+    paused_by   TEXT NOT NULL DEFAULT '',
+    reason      TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`
+
+// schemaSQL_v8 adds runner_state — a singleton row holding runner-wide
+// control flags. Today it carries `drained`: a global "stop accepting
+// new work" verb that gates the cron tick, the listener triggers, and
+// the DAG walker's task launches. In-flight tasks finish normally;
+// once drained is cleared, work resumes from where each gate stopped.
+//
+// CHECK (id = 1) enforces the singleton: there's at most one row, and
+// upsert always targets it. Future runner-wide flags (max_concurrency,
+// scheduler_offset, etc.) layer in here without a fresh migration.
+const schemaSQL_v8 = `
+CREATE TABLE IF NOT EXISTS runner_state (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    drained     INTEGER NOT NULL DEFAULT 0,
+    drained_at  TEXT NOT NULL DEFAULT '',
+    drained_by  TEXT NOT NULL DEFAULT '',
+    reason      TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO runner_state(id) VALUES (1);
+`
+
+const targetSchemaVersion = 8

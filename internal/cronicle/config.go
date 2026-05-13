@@ -15,8 +15,18 @@ import (
 type Config struct {
 	// Repo repository containing version controlled cronicle.hcl
 	Repo *Repo `hcl:"repo,block"`
-	// Cron expression that specifies the cronicle heartbeat and cronicle.hcl refresh
+	// Heartbeat is the cron expression for the runner's "I'm alive"
+	// signal. Originally this also controlled HCL reload cadence; that
+	// duty has moved to ConfigRefresh so observers can keep a slow
+	// heartbeat (e.g. 30s) while config reloads sub-second.
+	// Default: "@every 30s" (set in cron.go's StartCron when empty).
 	Heartbeat string `hcl:"heartbeat,optional"`
+	// ConfigRefresh is the cron expression for polling the config
+	// source (file / http / s3 / postgres) for new content. Decoupled
+	// from Heartbeat so the visual builder feels snappy without
+	// flooding the heartbeat log. Default: "@every 1s" (set in cron.go's
+	// StartCron when empty).
+	ConfigRefresh string `hcl:"config_refresh,optional"`
 	// Repos points at external dependent repos that maintain their own schedules remotly.
 	Repos []string `hcl:"repos,optional"`
 	// Timezone Location to run cron in. i.e. "America/New_York" [IANA Time Zone database]

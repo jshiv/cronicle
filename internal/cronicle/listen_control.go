@@ -30,10 +30,15 @@ import (
 
 // handleRunRoute dispatches under /v1/runs/. Shapes:
 //
-//	GET  /v1/runs/{id}         → run + tasks (Phase 1)
-//	GET  /v1/runs/{id}/events  → SSE: live-only stream of slog records for this run
-//	POST /v1/runs/{id}/cancel  → cancel a running or pending run
-//	POST /v1/runs/{id}/retry   → re-enqueue a terminal run with a new id
+//	GET  /v1/runs/{id}                       → run + tasks (Phase 1)
+//	GET  /v1/runs/{id}/events                → SSE: live-only stream of slog records for this run
+//	POST /v1/runs/{id}/cancel                → cancel a running or pending run
+//	POST /v1/runs/{id}/retry                 → re-enqueue a terminal run with a new id
+//	POST /v1/runs/{id}/retry-failed    → re-enqueue with already-succeeded tasks skipped
+//	POST /v1/runs/{id}/pause                 → block the DAG walker before launching new tasks
+//	POST /v1/runs/{id}/resume                → clear the in-flight pause flag
+//	POST /v1/runs/{id}/tasks/{task}/cancel   → cancel one task + cascade to dependents
+//	POST /v1/runs/{id}/tasks/{task}/retry    → re-enqueue with only task + DAG dependents
 func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 	if !s.authed(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -61,11 +66,233 @@ func (s *listenServer) handleRunRoute(w http.ResponseWriter, r *http.Request) {
 		s.runCancel(w, store, runID)
 	case len(parts) == 2 && parts[1] == "retry" && r.Method == http.MethodPost:
 		s.runRetry(w, store, runID)
+	case len(parts) == 2 && parts[1] == "retry-failed" && r.Method == http.MethodPost:
+		s.runRetryFailed(w, store, runID)
+	case len(parts) == 2 && parts[1] == "pause" && r.Method == http.MethodPost:
+		s.runPause(w, r, store, runID)
 	case len(parts) == 2 && parts[1] == "resume" && r.Method == http.MethodPost:
-		s.runResume(w, store, runID)
+		s.runResume(w, r, store, runID)
+	case len(parts) == 4 && parts[1] == "tasks" && parts[3] == "cancel" && r.Method == http.MethodPost:
+		s.taskCancel(w, store, runID, parts[2])
+	case len(parts) == 4 && parts[1] == "tasks" && parts[3] == "retry" && r.Method == http.MethodPost:
+		s.taskRetry(w, store, runID, parts[2])
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// taskRetry re-enqueues the run as a fresh run_id containing only the
+// named task and its DAG dependents. Predecessor tasks (even succeeded
+// ones) are dropped from the new payload because the operator is
+// explicitly asking "re-run from this task forward."
+//
+// Cascade is computed from the schedule's loaded HCL; if the schedule
+// can't be resolved we fall back to a singleton keep set (just the
+// head task), trusting the operator's intent over a stale cache.
+func (s *listenServer) taskRetry(w http.ResponseWriter, store state.Backend, runID, taskName string) {
+	run, err := store.GetRun(runID)
+	if err != nil {
+		if isNoRows(err) {
+			http.Error(w, fmt.Sprintf("run %q not found", runID), http.StatusNotFound)
+			return
+		}
+		slog.Error("task retry: get run failed", "run_id", runID, "error", err.Error())
+		http.Error(w, "retry failed", http.StatusInternalServerError)
+		return
+	}
+	cascade := s.computeCascade(run.Schedule, taskName)
+	keep := map[string]bool{taskName: true}
+	for _, name := range cascade {
+		keep[name] = true
+	}
+
+	newID := newRunID()
+	res, err := store.RetryTask(runID, taskName, keep, newID)
+	if err != nil {
+		// Distinguish operator errors from server faults.
+		msg := err.Error()
+		if strings.Contains(msg, "not found") || strings.Contains(msg, "still in flight") || strings.Contains(msg, "empty task list") {
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
+		slog.Error("task retry failed", "run_id", runID, "task", taskName, "error", msg)
+		http.Error(w, "retry failed", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("task retry enqueued",
+		"entry_type", "task_retry",
+		"original_run_id", runID,
+		"new_run_id", newID,
+		"schedule", res.Schedule,
+		"task", taskName,
+		"kept", append([]string{taskName}, cascade...),
+		"dropped", res.SkippedTasks,
+	)
+	writeJSON(w, http.StatusAccepted, res)
+}
+
+// runStateResponse is the public shape of the in-flight pause row.
+// Distinct from scheduleStateResponse (which describes future ticks).
+type runStateResponse struct {
+	RunID     string `json:"run_id"`
+	Paused    bool   `json:"paused"`
+	PausedAt  string `json:"paused_at,omitempty"`
+	PausedBy  string `json:"paused_by,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+func runStateFromStore(store state.Backend, runID string) runStateResponse {
+	out := runStateResponse{RunID: runID}
+	row, err := store.GetRunState(runID)
+	if err != nil {
+		slog.Warn("get run state failed", "run_id", runID, "error", err.Error())
+		return out
+	}
+	out.Paused = row.Paused
+	out.PausedBy = row.PausedBy
+	out.Reason = row.Reason
+	if !row.PausedAt.IsZero() {
+		out.PausedAt = row.PausedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !row.UpdatedAt.IsZero() {
+		out.UpdatedAt = row.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return out
+}
+
+// runPause flags an in-flight run as paused. The DAG walker reads the
+// flag at every task-launch boundary and blocks until cleared. The run
+// must exist in the projection — pausing a not-yet-queued run would
+// race the projection writer; refuse with 404 to keep the surface
+// honest.
+//
+// Body shape mirrors schedule-pause: optional {actor, reason} JSON or
+// X-Actor / X-Reason headers.
+func (s *listenServer) runPause(w http.ResponseWriter, r *http.Request, store state.Backend, runID string) {
+	// Verify the run exists. A 404 here surfaces "you pasted a run_id
+	// that doesn't match a real run" before any state row is created.
+	if _, err := store.GetRun(runID); err != nil {
+		if isNoRows(err) {
+			http.Error(w, fmt.Sprintf("run %q not found", runID), http.StatusNotFound)
+			return
+		}
+		slog.Error("run pause: get run failed", "run_id", runID, "error", err.Error())
+		http.Error(w, "pause failed", http.StatusInternalServerError)
+		return
+	}
+	actor, reason := readPauseBody(r)
+	if err := store.PauseRun(runID, actor, reason); err != nil {
+		slog.Error("pause run failed", "run_id", runID, "error", err.Error())
+		http.Error(w, "pause failed", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("run paused",
+		"entry_type", "run_paused",
+		"run_id", runID,
+		"actor", actor,
+		"reason", reason)
+	writeJSON(w, http.StatusOK, runStateFromStore(store, runID))
+}
+
+// runResume clears the in-flight pause flag — the natural partner to
+// /pause. Distinct from /retry-failed which targets terminal
+// runs; resume only affects an actively-paused walker.
+func (s *listenServer) runResume(w http.ResponseWriter, r *http.Request, store state.Backend, runID string) {
+	actor, _ := readPauseBody(r)
+	if err := store.ResumeRun(runID, actor); err != nil {
+		slog.Error("resume run failed", "run_id", runID, "error", err.Error())
+		http.Error(w, "resume failed", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("run resumed",
+		"entry_type", "run_resumed",
+		"run_id", runID,
+		"actor", actor)
+	writeJSON(w, http.StatusOK, runStateFromStore(store, runID))
+}
+
+// taskCancel marks the named task and its transitive dependents in this
+// run as canceled. The cascade set is computed from the schedule's
+// loaded HCL (via confSrc); falling back to a degree-zero cascade if
+// the schedule isn't found, so the head task at least gets canceled.
+//
+// MVP semantics: the projection is updated immediately and the DAG
+// walker's per-task gate honors the canceled state at launch. An
+// already-running task is NOT preempted (no per-task ctx yet) but its
+// terminal event lands as canceled thanks to the sticky-cancel rule in
+// applyTaskTerminal.
+func (s *listenServer) taskCancel(w http.ResponseWriter, store state.Backend, runID, taskName string) {
+	// Look up the run to find its schedule name; needed to compute the
+	// cascade set against the loaded HCL.
+	run, err := store.GetRun(runID)
+	if err != nil {
+		if isNoRows(err) {
+			http.Error(w, fmt.Sprintf("run %q not found", runID), http.StatusNotFound)
+			return
+		}
+		slog.Error("task cancel: get run failed", "run_id", runID, "error", err.Error())
+		http.Error(w, "cancel failed", http.StatusInternalServerError)
+		return
+	}
+	cascade := s.computeCascade(run.Schedule, taskName)
+
+	res, err := store.CancelTask(runID, taskName, cascade)
+	if err != nil {
+		if errors.Is(err, state.ErrTaskNotCancelable) {
+			http.Error(w, "task is already terminal", http.StatusConflict)
+			return
+		}
+		// Surface NotFound for missing head task.
+		if strings.Contains(err.Error(), "not found in run") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		slog.Error("task cancel failed", "run_id", runID, "task", taskName, "error", err.Error())
+		http.Error(w, "cancel failed", http.StatusInternalServerError)
+		return
+	}
+	// Best-effort SSE hint so a future per-task preemption can wire in
+	// without API churn. Today the worker has no handler for this msg;
+	// the projection-based gate is the load-bearing path.
+	if res.WasClaimed && res.WorkerID != "" {
+		_ = store.PushControl(res.WorkerID, state.ControlMsg{
+			Type:  "cancel_task",
+			RunID: runID,
+			Task:  taskName,
+		})
+	}
+	slog.Info("task canceled (cascade)",
+		"entry_type", "task_cancel_set",
+		"run_id", runID,
+		"task", taskName,
+		"canceled_tasks", res.CanceledTasks,
+		"skipped_terminal", res.SkippedTerminal,
+		"worker_id", res.WorkerID,
+	)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// computeCascade walks the schedule's DAG to find every transitive
+// dependent of `task`. Returns an empty slice if the schedule isn't in
+// the loaded config — the head task still gets canceled, but downstream
+// blocking falls back to "whatever the worker does next." A missing
+// schedule typically means the operator edited the HCL since the run
+// was queued; we don't want to refuse the cancel for that.
+func (s *listenServer) computeCascade(scheduleName, task string) []string {
+	if s.confSrc == nil {
+		return nil
+	}
+	conf := s.confSrc()
+	if conf == nil {
+		return nil
+	}
+	for i := range conf.Schedules {
+		if conf.Schedules[i].Name == scheduleName {
+			return conf.Schedules[i].downstreamTasks(task)
+		}
+	}
+	return nil
 }
 
 // runEvents streams the events of one specific run. Drill-in case —
@@ -188,7 +415,7 @@ func writeSSEFrame(w io.Writer, payload []byte) {
 
 // runGet is what handleGetRun used to do — kept here so all run-route
 // behavior is co-located.
-func (s *listenServer) runGet(w http.ResponseWriter, store *state.Store, runID string) {
+func (s *listenServer) runGet(w http.ResponseWriter, store state.Backend, runID string) {
 	run, err := store.GetRun(runID)
 	if err != nil {
 		if isNoRows(err) {
@@ -206,7 +433,7 @@ func (s *listenServer) runGet(w http.ResponseWriter, store *state.Store, runID s
 // a cancel message via SSE so it preempts the in-flight execute. If
 // the worker has no SSE subscription the heartbeat-based detection
 // path still works (next /heartbeat returns 409).
-func (s *listenServer) runCancel(w http.ResponseWriter, store *state.Store, runID string) {
+func (s *listenServer) runCancel(w http.ResponseWriter, store state.Backend, runID string) {
 	res, err := store.Cancel(runID)
 	if err != nil {
 		if errors.Is(err, state.ErrNotCancelable) {
@@ -237,7 +464,7 @@ func (s *listenServer) runCancel(w http.ResponseWriter, store *state.Store, runI
 // runRetry re-enqueues a terminal run. A fresh run_id is minted on the
 // producer side so the new run is distinguishable in /v1/runs and
 // transcripts.
-func (s *listenServer) runRetry(w http.ResponseWriter, store *state.Store, runID string) {
+func (s *listenServer) runRetry(w http.ResponseWriter, store state.Backend, runID string) {
 	newID := newRunID()
 	res, err := store.Retry(runID, newID)
 	if err != nil {
@@ -253,20 +480,21 @@ func (s *listenServer) runRetry(w http.ResponseWriter, store *state.Store, runID
 	writeJSON(w, http.StatusAccepted, res)
 }
 
-// runResume re-enqueues a terminal run with only the tasks that didn't
-// succeed in the original. Intended workflow: cancel → investigate →
-// fix → resume from where it stopped. The new run's DAG is the
-// original DAG minus already-succeeded nodes, with depends stripped
-// of references to those nodes.
-func (s *listenServer) runResume(w http.ResponseWriter, store *state.Store, runID string) {
+// runRetryFailed re-enqueues a terminal run with only the tasks
+// that didn't succeed in the original. Intended workflow: cancel →
+// investigate → fix → re-fire from where it broke. The new run's DAG
+// is the original DAG minus already-succeeded nodes, with depends
+// stripped of references to those nodes. Distinct from runResume,
+// which unpauses an in-flight DAG walker.
+func (s *listenServer) runRetryFailed(w http.ResponseWriter, store state.Backend, runID string) {
 	newID := newRunID()
-	res, err := store.Resume(runID, newID)
+	res, err := store.RetryFailed(runID, newID)
 	if err != nil {
-		slog.Warn("resume failed", "run_id", runID, "error", err.Error())
+		slog.Warn("retry-failed failed", "run_id", runID, "error", err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	slog.Info("run resumed",
+	slog.Info("run retry-failed",
 		"original_run_id", runID,
 		"new_run_id", newID,
 		"schedule", res.Schedule,
@@ -336,7 +564,7 @@ func (s *listenServer) handleWorkerRoute(w http.ResponseWriter, r *http.Request)
 // also send a `ping` every 30s so intermediaries (load balancers,
 // reverse proxies) don't kill the conn for inactivity, and so the
 // worker can detect a dead producer via read-side timeout.
-func (s *listenServer) serveControlSSE(w http.ResponseWriter, r *http.Request, store *state.Store, workerID string) {
+func (s *listenServer) serveControlSSE(w http.ResponseWriter, r *http.Request, store state.Backend, workerID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)

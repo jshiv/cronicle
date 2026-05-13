@@ -16,9 +16,13 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
+	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/jshiv/cronicle/internal/cronicle"
 	"github.com/spf13/cobra"
@@ -38,6 +42,8 @@ The run command will log schedule information to stdout including git commit inf
 	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
 		path, _ := cmd.Flags().GetString("path")
+		configSource, _ := cmd.Flags().GetString("config-source")
+		workdir, _ := cmd.Flags().GetString("workdir")
 
 		runWorker, _ := cmd.Flags().GetBool("worker")
 		cron, _ := cmd.Flags().GetString("cron")
@@ -56,13 +62,36 @@ The run command will log schedule information to stdout including git commit inf
 			ListenToken: listenToken,
 		}
 
+		// One-shot mode: --cron + --command bootstraps a synthetic
+		// schedule into the on-disk HCL. Only meaningful for file-based
+		// runs; with --config-source the user is opting into a remote
+		// config and the one-shot wouldn't have a destination.
 		if cron != "" && command != "" {
+			if configSource != "" {
+				slog.Error("--cron/--command bootstrap is incompatible with --config-source",
+					"hint", "edit the source's HCL directly or drop --config-source")
+				os.Exit(2)
+			}
 			conf := cronicle.Default()
 			conf.Schedules[0].Name = "schedule1"
 			conf.Schedules[0].Cron = cron
 			conf.Schedules[0].Tasks[0].Name = "task1"
 			conf.Schedules[0].Tasks[0].Command = strings.Split(command, " ")
 			cronicle.Init(filepath.Dir(path), "", "", conf)
+		}
+
+		if configSource != "" {
+			// Source-aware dispatch: open the source (file/http/s3/pg),
+			// boot the scheduler against it, register heartbeat +
+			// config_refresh entries.
+			ctx, stop := signal.NotifyContext(context.Background(),
+				syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			if err := cronicle.RunFromSource(ctx, configSource, workdir, runOptions); err != nil {
+				slog.Error("cronicle run --config-source failed", "err", err.Error())
+				os.Exit(1)
+			}
+			return
 		}
 
 		cronicle.Run(path, runOptions)
@@ -72,7 +101,13 @@ The run command will log schedule information to stdout including git commit inf
 
 func init() {
 	rootCmd.AddCommand(runCmd)
-	runCmd.Flags().String("path", "./cronicle.hcl", "Path to a cronicle.hcl file")
+	runCmd.Flags().String("path", "./cronicle.hcl", "Path to a cronicle.hcl file (file-source mode; ignored when --config-source is set)")
+	runCmd.Flags().String("config-source", "",
+		"pluggable config source URL — file:///abs/path, http(s)://host/cfg, s3://bucket/key, postgres://user@host/db?table=...&key=... "+
+			"(no scheme treated as a local file path; takes precedence over --path)")
+	runCmd.Flags().String("workdir", ".",
+		"working directory for .cronicle/state.db, .cronicle/log/*.jsonl, scratch dirs. "+
+			"File-source mode derives this from --path; required for non-file sources")
 	runCmd.Flags().Bool("worker", true, "start a worker thread to consume tasks in distributed mode")
 	runCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
 	runCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")

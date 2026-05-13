@@ -39,7 +39,7 @@ func TestRunEvents_LivePrettyStream(t *testing.T) {
 
 	srv := &listenServer{
 		token:       "secret",
-		stateSrc:    func() *state.Store { return store },
+		stateSrc:    func() state.Backend { return store },
 		liveSinkSrc: func() *state.LiveSink { return ls },
 	}
 	mux := http.NewServeMux()
@@ -124,7 +124,7 @@ func TestRunEvents_NoLiveSinkReturnsServiceUnavailable(t *testing.T) {
 	defer store.Close()
 	srv := &listenServer{
 		token:       "secret",
-		stateSrc:    func() *state.Store { return store },
+		stateSrc:    func() state.Backend { return store },
 		liveSinkSrc: func() *state.LiveSink { return nil },
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs/R1/events", nil)
@@ -154,7 +154,7 @@ func TestScheduleEvents_LiveStream(t *testing.T) {
 	srv := &listenServer{
 		token:       "secret",
 		confSrc:     func() *Config { return conf },
-		stateSrc:    func() *state.Store { return store },
+		stateSrc:    func() state.Backend { return store },
 		liveSinkSrc: func() *state.LiveSink { return ls },
 	}
 	mux := http.NewServeMux()

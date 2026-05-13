@@ -139,9 +139,9 @@ func TestResume_OnlyNonSucceededTasksReQueued(t *testing.T) {
 		t.Fatalf("Cancel: %v", err)
 	}
 
-	res, err := s.Resume("R1", "R1-resume")
+	res, err := s.RetryFailed("R1", "R1-resume")
 	if err != nil {
-		t.Fatalf("Resume: %v", err)
+		t.Fatalf("RetryFailed: %v", err)
 	}
 	if res.NewRunID != "R1-resume" || res.Schedule != "daily" {
 		t.Fatalf("resume result: %+v", res)
@@ -190,7 +190,7 @@ func TestResume_NothingLeft(t *testing.T) {
 	applyLine(t, s, `{"time":"2026-05-10T12:00:01Z","entry_type":"shell_run","run_id":"R1","schedule":"x","task":"only","exit":0,"duration_ms":5,"success":true}`)
 	applyLine(t, s, `{"time":"2026-05-10T12:00:02Z","entry_type":"schedule_complete","run_id":"R1","schedule":"x","task_count":1,"duration_ms":10,"success":true}`)
 
-	_, err := s.Resume("R1", "R1-resume")
+	_, err := s.RetryFailed("R1", "R1-resume")
 	if err == nil {
 		t.Fatalf("expected error when every task already succeeded")
 	}
@@ -202,7 +202,7 @@ func TestResume_StillInFlight(t *testing.T) {
 	_ = s.Enqueue("R1", "x", []byte(`{"Name":"x","RunID":"R1","Tasks":[]}`))
 	_, _ = s.Claim("W_A", time.Minute)
 
-	if _, err := s.Resume("R1", "R1-resume"); err == nil {
+	if _, err := s.RetryFailed("R1", "R1-resume"); err == nil {
 		t.Fatalf("expected error for in-flight resume")
 	}
 }

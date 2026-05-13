@@ -21,7 +21,7 @@ func jobsHarness(t *testing.T) (*listenServer, *state.Store) {
 	t.Cleanup(func() { _ = store.Close() })
 	return &listenServer{
 		token:    "secret",
-		stateSrc: func() *state.Store { return store },
+		stateSrc: func() state.Backend { return store },
 	}, store
 }
 
