@@ -15,7 +15,17 @@ limitations under the License.
 */
 package main
 
-import "github.com/jshiv/cronicle/cmd"
+import (
+	"github.com/jshiv/cronicle/cmd"
+
+	// Embed the IANA tz database into the binary. Without this, schedules
+	// like `timezone = "America/Los_Angeles"` fail to load on any system
+	// without tzdata installed (notably minimal alpine containers), and
+	// the config reload aborts — keeping the previous schedule set in
+	// memory and silently dropping newly-PUT schedules. Adds ~450KB to
+	// the binary in exchange for making it self-contained.
+	_ "time/tzdata"
+)
 
 func main() {
 	cmd.Execute()
