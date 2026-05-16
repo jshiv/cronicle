@@ -2,6 +2,7 @@ package cronicle
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +67,32 @@ func TestRehydrateRecord_StringSliceKind(t *testing.T) {
 func TestRehydrateRecord_MalformedReturnsFalse(t *testing.T) {
 	if _, ok := rehydrateRecord([]byte(`{not valid`)); ok {
 		t.Fatal("expected ok=false for malformed JSON")
+	}
+}
+
+// TestRenderAgentRunFooter_IntCostUsd: regression — when an agent
+// failed before any token usage (e.g. missing API key), cost_usd lands
+// on the wire as JSON `0`, which rehydrate decodes as Int64. The footer
+// renderer previously called a.Value.Float64() unconditionally and
+// panicked, aborting the rest of the worker→producer ingest batch and
+// leaving the run row stuck on status=running. valueFloat64 must tolerate
+// either kind.
+func TestRenderAgentRunFooter_IntCostUsd(t *testing.T) {
+	line := []byte(`{"time":"2026-05-16T17:04:00Z","level":"ERROR","msg":"agent run failed","entry_type":"agent_run","run_id":"R1","schedule":"s","task":"t","cost_usd":0,"duration_ms":1318,"input_tokens":0,"output_tokens":0,"cache_read":0,"stop_reason":"","success":false,"error":"no creds"}`)
+	rec, ok := rehydrateRecord(line)
+	if !ok {
+		t.Fatal("rehydrate: ok=false")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("renderAgentRunFooter panicked: %v", r)
+		}
+	}()
+	var buf strings.Builder
+	if err := renderAgentRunFooter(&buf, rec); err != nil {
+		t.Fatalf("renderAgentRunFooter: %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Fatal("renderAgentRunFooter produced no output")
 	}
 }

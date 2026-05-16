@@ -657,12 +657,40 @@ func attrInt64(r slog.Record, key string) int64 {
 	var n int64
 	r.Attrs(func(a slog.Attr) bool {
 		if a.Key == key {
-			n = a.Value.Int64()
+			n = valueInt64(a.Value)
 			return false
 		}
 		return true
 	})
 	return n
+}
+
+// valueInt64 reads a slog.Value as int64, tolerating Float64 (e.g. when an
+// integer attr round-tripped through JSON and arrived as float). Falls
+// back to 0 for unhandled kinds. Used in place of a bare a.Value.Int64()
+// so a kind mismatch (which would otherwise panic) silently degrades.
+func valueInt64(v slog.Value) int64 {
+	switch v.Kind() {
+	case slog.KindInt64, slog.KindUint64:
+		return v.Int64()
+	case slog.KindFloat64:
+		return int64(v.Float64())
+	}
+	return 0
+}
+
+// valueFloat64 mirrors valueInt64 for float-typed attrs (e.g. cost_usd).
+// Worker→producer event shipping JSON-encodes Float64(0) as `0`, which
+// the rehydrate path then reads as Int64 (json.Number prefers integer
+// when it parses cleanly); reading as Float64() would panic.
+func valueFloat64(v slog.Value) float64 {
+	switch v.Kind() {
+	case slog.KindFloat64:
+		return v.Float64()
+	case slog.KindInt64, slog.KindUint64:
+		return float64(v.Int64())
+	}
+	return 0
 }
 
 // attrBool fetches a bool-valued attribute by key, returning false if missing.
@@ -733,15 +761,20 @@ func renderAgentRunFooter(out io.Writer, r slog.Record) error {
 	r.Attrs(func(a slog.Attr) bool {
 		switch a.Key {
 		case "cost_usd":
-			costStr = fmt.Sprintf("%.6f", a.Value.Float64())
+			// Worker-shipped events round-trip through JSON; a float value
+			// of 0 (or any whole number) arrives as Int64 after the
+			// rehydrate path (ingest_rehydrate.go:jsonValueToAttr prefers
+			// Int64 when json.Number parses cleanly). Reading it as
+			// Float64() would panic. Use the resilient reader.
+			costStr = fmt.Sprintf("%.6f", valueFloat64(a.Value))
 		case "duration_ms":
-			durationMs = a.Value.Int64()
+			durationMs = valueInt64(a.Value)
 		case "input_tokens":
-			in = a.Value.Int64()
+			in = valueInt64(a.Value)
 		case "output_tokens":
-			outTokens = a.Value.Int64()
+			outTokens = valueInt64(a.Value)
 		case "cache_read":
-			cacheRead = a.Value.Int64()
+			cacheRead = valueInt64(a.Value)
 		case "stop_reason":
 			stop = a.Value.String()
 		case "transcript":
