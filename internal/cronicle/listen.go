@@ -921,7 +921,23 @@ func (s *listenServer) handleIngestEvents(w http.ResponseWriter, r *http.Request
 		// runs where the user expects the same ANSI-rendered output as
 		// a local run.
 		if rec, ok := rehydrateRecord(line); ok {
-			_ = liveSink.Handle(r.Context(), rec)
+			// liveSink.Handle dispatches into the pretty/JSON encoders;
+			// a kind mismatch in one of the renderers (historically a
+			// JSON-roundtripped Float64 cost_usd arriving as Int64)
+			// would panic and abort the entire batch — including the
+			// schedule_complete event that finalizes the run row,
+			// leaving the run stuck on "running" forever. Recover so
+			// one bad frame degrades to "live SSE skips that frame"
+			// rather than "state.db loses the rest of the batch".
+			func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						slog.Error("live sink panic on ingested event",
+							"error", fmt.Sprint(rec))
+					}
+				}()
+				_ = liveSink.Handle(r.Context(), rec)
+			}()
 		}
 		accepted++
 	}
