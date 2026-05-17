@@ -58,6 +58,12 @@ func Run(cronicleFile string, runOptions RunOptions) {
 		slog.Warn("state store open failed; projection disabled", "error", err.Error())
 	}
 
+	if runOptions.PostStateStoreHook != nil {
+		if err := runOptions.PostStateStoreHook(); err != nil {
+			Fatal(err)
+		}
+	}
+
 	//TODO: WaitGroup is currently only used for testing, could be used in Producer
 	var wg sync.WaitGroup
 	wg.Add(1) //Ensure WaitGroup counter > 0
@@ -116,6 +122,13 @@ type RunOptions struct {
 	// (the listener refuses to bind otherwise — see internal/cronicle/listen.go).
 	ListenAddr  string
 	ListenToken string
+	// PostStateStoreHook fires after EnableStateStore returns
+	// (successfully or not — caller can check StateStore() != nil) and
+	// before the cron loop, listener, or queue start. Lets the cmd
+	// layer bind the secret-source pump to the state.Backend without
+	// requiring cronicle.Run to know about secretsource internals.
+	// Errors abort startup.
+	PostStateStoreHook func() error
 }
 
 //StartCron pushes all schedules in the given config to the cron scheduler

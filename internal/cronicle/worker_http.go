@@ -50,6 +50,11 @@ type HTTPWorkerOptions struct {
 	// for its currently-claimed job. Default visibility/3 = ~100s
 	// when the producer's visibility is 5 minutes.
 	HeartbeatEvery time.Duration
+	// PostStateStoreHook fires after the worker's local state store is
+	// open and before the long-poll loop starts. Used by the cmd layer
+	// to bind the secret-source pump (which writes into state.Backend)
+	// without coupling cronicle.StartHTTPWorker to secretsource details.
+	PostStateStoreHook func() error
 }
 
 // StartHTTPWorker runs the long-poll consumer loop. Blocks until ctx
@@ -91,6 +96,11 @@ func StartHTTPWorker(ctx context.Context, opts HTTPWorkerOptions) error {
 	// chain.
 	if err := EnableStateStore(":memory:"); err != nil {
 		return fmt.Errorf("StartHTTPWorker: state store: %w", err)
+	}
+	if opts.PostStateStoreHook != nil {
+		if err := opts.PostStateStoreHook(); err != nil {
+			return fmt.Errorf("StartHTTPWorker: post-state-store hook: %w", err)
+		}
 	}
 	// Ship event records back to the producer so its projection sees
 	// what really happened (schedule_start, shell_run, agent_run,

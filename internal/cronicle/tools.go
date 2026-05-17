@@ -74,7 +74,13 @@ func (b *BashTool) Execute(ctx context.Context, input json.RawMessage) (string, 
 	}
 
 	cmd := []string{"/bin/sh", "-c", args.Command}
-	res := exec.ExecuteWithStreamContext(ctx, cmd, b.Workspace, b.Env, b.StdoutW, b.StderrW)
+	// Scrubbed env: an agent-emitted `env`/`printenv` must not be able to
+	// read worker-process state. The bash subprocess sees only the
+	// allowlisted parent vars (PATH/HOME/USER/locale/SHELL) plus b.Env —
+	// which the task dispatch path has already populated with task.Env
+	// after $secret.NAME expansion. Secrets the task didn't explicitly
+	// list never reach this process.
+	res := exec.ExecuteScrubbedStreamContext(ctx, cmd, b.Workspace, b.Env, b.StdoutW, b.StderrW)
 
 	stdout := stripANSI(res.Stdout)
 	stderr := stripANSI(res.Stderr)

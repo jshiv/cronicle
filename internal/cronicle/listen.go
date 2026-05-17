@@ -98,6 +98,8 @@ func startListener(addr, token string, queue chan<- []byte) {
 	mux.HandleFunc("/v1/runner/state", s.handleRunnerState)
 	mux.HandleFunc("/v1/runner/drain", s.handleRunnerDrain)
 	mux.HandleFunc("/v1/runner/undrain", s.handleRunnerUndrain)
+	mux.HandleFunc("/v1/secrets", s.handleSecretsRoot)
+	mux.HandleFunc("/v1/secrets/", s.handleSecretByName)
 
 	srv := &http.Server{
 		Addr:              addr,

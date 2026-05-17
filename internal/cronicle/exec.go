@@ -9,10 +9,59 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/jshiv/cronicle/internal/cronicle/secretstore"
 	"github.com/jshiv/cronicle/pkg/agent"
 	"github.com/jshiv/cronicle/pkg/exec"
 	"gopkg.in/matryer/try.v1"
 )
+
+// splitAPIKey pulls an ANTHROPIC_API_KEY entry out of the env slice
+// and returns (value, remainder). Used by the agent dispatch path so
+// the Anthropic API key flows to cfg.APIKey (which is passed to the
+// SDK via option.WithAPIKey) without ever needing to be in any
+// subprocess's env. Returns ("", env) when no such entry is present
+// — the agent then falls back to whatever the SDK's own env lookup
+// finds, which is fine for direct-run scenarios where the operator
+// set ANTHROPIC_API_KEY on cronicle's own process.
+func splitAPIKey(env []string) (apiKey string, rest []string) {
+	const prefix = "ANTHROPIC_API_KEY="
+	rest = make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) && apiKey == "" {
+			apiKey = entry[len(prefix):]
+			continue
+		}
+		rest = append(rest, entry)
+	}
+	return apiKey, rest
+}
+
+// resolveEnv expands $secret.NAME references in env using the
+// process-wide secret store. Behavior matrix:
+//
+//	store not configured → env passed through unchanged (no expansion
+//	                       attempted). Lets a cronicle run without a
+//	                       --secret-source flag keep working — values
+//	                       that happen to contain "$secret.X" pass
+//	                       through as literals, same as today.
+//	store configured     → expansion required; any unresolved reference
+//	                       fails the task before subprocesses spawn.
+//
+// The second mode is the right default once secrets are wired —
+// dispensing a stale literal "$secret.X" string to a tool would
+// silently produce broken behavior (auth failure, etc.), and the
+// store-configured signal is the operator's commitment that
+// references should resolve.
+func resolveEnv(env []string) ([]string, error) {
+	if len(env) == 0 {
+		return env, nil
+	}
+	store := secretstore.Default()
+	if !store.Configured() {
+		return env, nil
+	}
+	return store.ExpandEnv(env)
+}
 
 //Exec executes task.Command at task.Path and returns the exec.Result struct
 //prior to execution, the command will replace any ${date}, ${datetime}, ${timestamp}
@@ -99,10 +148,26 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			runCtx = context.Background()
 		}
 		startedAt := time.Now()
+		// Resolve $secret.NAME references against the live secret store
+		// before handing env to the subprocess. With no secret source
+		// configured this is a passthrough; with one configured, the
+		// secret values are substituted in-place. Either way, the
+		// task.Env stored on the Task struct stays unchanged so HCL
+		// serialization round-trips cleanly.
+		shellEnv, secretErr := resolveEnv(task.Env)
+		if secretErr != nil {
+			result = exec.Result{
+				Command:    cmd,
+				Error:      secretErr,
+				Stderr:     secretErr.Error(),
+				ExitStatus: 1,
+			}
+			return result
+		}
 		// Always use the streaming entry point so per-line slog records
 		// fire; pkg/exec captures stdout/stderr into the Result either
 		// way, so the shell_run terminal event payload is unchanged.
-		result = exec.ExecuteWithStreamContext(runCtx, cmd, task.Path, task.Env, stdoutEmitter, stderrEmitter)
+		result = exec.ExecuteWithStreamContext(runCtx, cmd, task.Path, shellEnv, stdoutEmitter, stderrEmitter)
 		finishedAt := time.Now()
 		task.lastDurationMs = finishedAt.Sub(startedAt).Milliseconds()
 
@@ -260,7 +325,32 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 			gitAuth = a
 		}
 	}
-	cfg.Tools = buildAgentTools(task.Agent.Tools, task.Path, task.Env, gitAuth, task.ScratchDir, toolWriter)
+	// Resolve $secret.NAME references in the task's env array before
+	// any subprocess sees it. resolvedEnv carries plaintext secret
+	// values — it's passed to bash/MCP subprocesses via the existing
+	// per-tool wiring; it's also where we pull cfg.APIKey from for
+	// the agent's API client. The unmodified task.Env stays on the
+	// Task struct so HCL round-trips and so audit logging never gets
+	// plaintext values via that field.
+	resolvedEnv, secretErr := resolveEnv(task.Env)
+	if secretErr != nil {
+		return exec.Result{
+			Command:    []string{"agent", task.Agent.Model},
+			Error:      secretErr,
+			Stderr:     secretErr.Error(),
+			ExitStatus: 1,
+		}
+	}
+	// Pull ANTHROPIC_API_KEY (if present in resolved env) out and into
+	// cfg.APIKey explicitly. This means we DON'T have to put it in the
+	// agent process's env to make the SDK happy, and we DON'T leak it
+	// into the bash tool / MCP children that get resolvedEnv passed
+	// through. Other env entries continue to flow to subprocesses.
+	if apiKey, restEnv := splitAPIKey(resolvedEnv); apiKey != "" {
+		cfg.APIKey = apiKey
+		resolvedEnv = restEnv
+	}
+	cfg.Tools = buildAgentTools(task.Agent.Tools, task.Path, resolvedEnv, gitAuth, task.ScratchDir, toolWriter)
 	if skillTool != nil {
 		cfg.Tools = append(cfg.Tools, skillTool)
 	}
@@ -298,7 +388,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 			mcps[i].Command[j] = r.Replace(c)
 		}
 	}
-	mcpHandles, mcpTools, mcpErr := LaunchMCPServers(runCtx, mcps, task.Env, toolWriter)
+	mcpHandles, mcpTools, mcpErr := LaunchMCPServers(runCtx, mcps, resolvedEnv, toolWriter)
 	if mcpErr != nil {
 		return exec.Result{
 			Command:    []string{"agent", task.Agent.Model},

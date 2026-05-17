@@ -257,4 +257,42 @@ CREATE TABLE IF NOT EXISTS runner_state (
 INSERT OR IGNORE INTO runner_state(id) VALUES (1);
 `
 
-const targetSchemaVersion = 8
+// schemaSQL_v9 adds the secrets table — the in-tree key/value store
+// the SecretStore role on Backend reads + writes. Storage matches the
+// rest of the runtime-control state plane (one common pathway) rather
+// than sitting alongside in a sibling subsystem.
+//
+// `version` is a monotonic per-row counter, bumped on every upsert.
+// SecretsEtag() returns max(version) over the table; HTTP serves it as
+// the ETag so workers' If-None-Match short-circuits unchanged
+// responses. Deletes also bump version (via a marker row? no — see
+// below): the SQLite implementation uses a separate `secrets_version`
+// singleton that's incremented on every mutation, so deletes are
+// visible to etag-based observers without needing tombstones.
+//
+// `value` is plaintext at the row level. File mode on state.db is
+// 0600, mirroring how cronicle handles transcripts. AEAD-at-rest
+// (XChaCha20-Poly1305 with a DEK from env, mirroring cronicle-infra's
+// pipeline) is a follow-up — adding it later is an in-place column
+// swap, the SecretStore API surface doesn't change.
+//
+// Audit columns (updated_at, updated_by) are minimal on purpose; the
+// rich audit trail flows through slog → events table → Loki, same as
+// the rest of the runtime-control surface.
+const schemaSQL_v9 = `
+CREATE TABLE IF NOT EXISTS secrets (
+    name        TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    version     INTEGER NOT NULL DEFAULT 1,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by  TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS secrets_meta (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    etag_counter    INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO secrets_meta(id) VALUES (1);
+`
+
+const targetSchemaVersion = 9

@@ -170,6 +170,13 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("state.migrate v8: %w", err)
 		}
 	}
+	// v9: secrets table + secrets_meta(etag_counter) — the in-tree
+	// store backing the SecretStore role on Backend.
+	if current < 9 {
+		if _, err := s.db.Exec(schemaSQL_v9); err != nil {
+			return fmt.Errorf("state.migrate v9: %w", err)
+		}
+	}
 	if current >= targetSchemaVersion {
 		return nil
 	}

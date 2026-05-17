@@ -25,6 +25,7 @@ type Backend interface {
 	WorkerRegistry
 	RetryAPI
 	ControlChannel
+	SecretStore
 
 	// Close releases the underlying connection. Implementations must be
 	// safe to call multiple times; the in-tree *Store guards against it.
@@ -120,6 +121,54 @@ type RetryAPI interface {
 type ControlChannel interface {
 	Subscribe(workerID string) (<-chan ControlMsg, func())
 	PushControl(workerID string, msg ControlMsg) bool
+}
+
+// SecretStore is the in-tree key/value store backing $secret.NAME
+// resolution at task dispatch. Lives on Backend so a swap of the
+// state backend (sqlite → Postgres → any future implementation)
+// carries the secrets layer automatically — no parallel configuration.
+//
+// Values are plaintext at the API level; the implementation decides
+// at-rest encoding. The in-tree sqlite *Store keeps them in `secrets`
+// rows alongside the rest of the state plane; cronicle-infra's
+// PostgresStore satisfies the same interface against its existing
+// AEAD-encrypted `secrets` table (so the platform path retains
+// envelope encryption).
+//
+// Concurrency: implementations must be safe for concurrent calls —
+// the ingestion pump (refresh loop) writes, the listener's GET
+// handler reads, task dispatch reads, all potentially overlapping.
+type SecretStore interface {
+	// PutSecret upserts (name, value). version bumps on every call;
+	// updated_by is captured for audit. Empty actor is permitted.
+	PutSecret(name, value, actor string) error
+
+	// GetSecret returns the current value for name. ok=false when no
+	// such row exists; err is non-nil only on real I/O failure.
+	GetSecret(name string) (value string, ok bool, err error)
+
+	// ListSecrets returns the full name → value map. Callers SHOULD
+	// avoid logging the returned map; the listener's GET handler is
+	// the only path that hands plaintext over the wire (bearer-auth
+	// gated).
+	ListSecrets() (map[string]string, error)
+
+	// ListSecretNames returns only the names, sorted. Used by the
+	// audit-friendly inspection paths (`cronicle secret list`, the
+	// listener's HEAD-style metadata, etc.) that should never see
+	// plaintext.
+	ListSecretNames() ([]string, error)
+
+	// DeleteSecret removes a row by name. Not-found is a no-op (no
+	// error) — idempotency makes the CLI/HTTP paths simpler. ok
+	// reports whether a row actually existed; bumps the etag counter
+	// either way so HTTP observers learn about deletes.
+	DeleteSecret(name, actor string) (ok bool, err error)
+
+	// SecretsEtag returns an opaque monotonic version covering the
+	// whole secrets table. Increments on every Put/Delete. Used by
+	// the listener's GET to serve If-None-Match-aware responses.
+	SecretsEtag() (string, error)
 }
 
 // Compile-time guarantee that the in-tree *Store satisfies Backend.
