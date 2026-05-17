@@ -148,7 +148,7 @@ func startSchedulerFromSource(ctx context.Context, src configsource.Source, conf
 
 	heartbeat := conf.Heartbeat
 	if heartbeat == "" {
-		heartbeat = "@every 30s"
+		heartbeat = "@every 5m"
 	}
 	refresh := conf.ConfigRefresh
 	if refresh == "" {
@@ -232,7 +232,7 @@ func StartCronFromSource(ctx context.Context, src configsource.Source, queue cha
 
 	heartbeat := conf.Heartbeat
 	if heartbeat == "" {
-		heartbeat = "@every 30s"
+		heartbeat = "@every 5m"
 	}
 	refresh := conf.ConfigRefresh
 	if refresh == "" {

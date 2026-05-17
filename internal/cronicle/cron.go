@@ -168,7 +168,7 @@ func StartCron(cronicleFile string, queue chan<- []byte) {
 	c := cron.New(cron.WithLocation(loc))
 	c.Start()
 	if conf.Heartbeat == "" {
-		conf.Heartbeat = "@every 30s"
+		conf.Heartbeat = "@every 5m"
 	}
 	// Heartbeat is now purely an observability signal — it emits a log
 	// line at its cadence so monitors can confirm the runner is alive.

@@ -16,16 +16,10 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 
 	"github.com/jshiv/cronicle/internal/cronicle"
-	homedir "github.com/mitchellh/go-homedir"
-	"github.com/spf13/viper"
 )
-
-var cfgFile string
 
 // logFormat is bound to the --log-format persistent flag and resolved by
 // PersistentPreRun before any subcommand executes.
@@ -82,44 +76,8 @@ func Execute() {
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
-
-	// Here you will define your flags and configuration settings.
-	// Cobra supports persistent flags, which, if defined here,
-	// will be global for your application.
-
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.cronicle.yaml)")
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "auto",
 		"stdout log format: auto (pretty if TTY, text if piped), pretty, text, or json")
 	rootCmd.PersistentFlags().StringVar(&liveFormat, "live-format", "pretty",
 		"wire format for the live SSE event stream (GET /v1/runs/{id}/events): pretty (ANSI, default), json, or text")
-
-	// Cobra also supports local flags, which will only run
-	// when this action is called directly.
-	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-}
-
-// initConfig reads in config file and ENV variables if set.
-func initConfig() {
-	if cfgFile != "" {
-		// Use config file from the flag.
-		viper.SetConfigFile(cfgFile)
-	} else {
-		// Find home directory.
-		home, err := homedir.Dir()
-		if err != nil {
-			panic(err)
-		}
-
-		// Search config in home directory with name ".cronicle" (without extension).
-		viper.AddConfigPath(home)
-		viper.SetConfigName(".cronicle")
-	}
-
-	viper.AutomaticEnv() // read in environment variables that match
-
-	// If a config file is found, read it in.
-	if err := viper.ReadInConfig(); err == nil {
-		fmt.Println("Using config file:", viper.ConfigFileUsed())
-	}
 }
