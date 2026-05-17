@@ -60,6 +60,87 @@ type Store struct {
 	wait        *jobWaiters
 	controlOnce sync.Once
 	controlReg2 *controlRegistry
+
+	// aead is the at-rest cipher for the secrets table. nil keeps the
+	// historical plaintext-column behavior; setting it via WithAEAD
+	// flips PutSecret/GetSecret/ListSecrets to seal/open through
+	// value_ct/value_nonce instead. The transition is forward-only —
+	// once any row is encrypted, the store must keep its AEAD bound
+	// or those rows become unreadable.
+	aead *AEAD
+}
+
+// WithAEAD binds the at-rest cipher and returns the receiver so
+// callers can chain immediately after Open:
+//
+//	s, _ := state.Open(dsn)
+//	s.WithAEAD(aead)
+//	_, _ = s.BackfillSecrets()
+//
+// Idempotent — a second call replaces the prior key, which is the
+// intended path for a controlled DEK rotation (operator does a
+// re-encrypt pass via PutSecret of every name after swapping).
+func (s *Store) WithAEAD(a *AEAD) *Store {
+	s.aead = a
+	return s
+}
+
+// BackfillSecrets re-seals any plaintext rows under the bound AEAD,
+// in a single transaction. Returns the number of rows it touched.
+//
+// Run this once at api startup after WithAEAD. Idempotent: rows that
+// already have a non-empty value_ct are skipped, so a redeploy that
+// re-invokes the helper is free. With no AEAD bound the call is a
+// no-op (returns 0, nil) — operators who haven't opted in keep the
+// historical plaintext column behavior with no surprise.
+func (s *Store) BackfillSecrets() (int, error) {
+	if s == nil || s.aead == nil {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("state.BackfillSecrets: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.Query(`
+		SELECT name, value FROM secrets
+		WHERE value_ct IS NULL AND value != ''`)
+	if err != nil {
+		return 0, fmt.Errorf("state.BackfillSecrets: scan: %w", err)
+	}
+	type pair struct{ name, value string }
+	var todo []pair
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.name, &p.value); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("state.BackfillSecrets: row: %w", err)
+		}
+		todo = append(todo, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("state.BackfillSecrets: rows: %w", err)
+	}
+	n := 0
+	for _, p := range todo {
+		ct, nonce, err := s.aead.Seal([]byte(p.value), p.name)
+		if err != nil {
+			return n, fmt.Errorf("state.BackfillSecrets: seal %s: %w", p.name, err)
+		}
+		if _, err := tx.Exec(`
+			UPDATE secrets SET value_ct = ?, value_nonce = ?, value = ''
+			WHERE name = ?`, ct, nonce, p.name); err != nil {
+			return n, fmt.Errorf("state.BackfillSecrets: update %s: %w", p.name, err)
+		}
+		n++
+	}
+	if err := tx.Commit(); err != nil {
+		return n, fmt.Errorf("state.BackfillSecrets: commit: %w", err)
+	}
+	return n, nil
 }
 
 // Open returns a Store backed by the given DSN. Use ":memory:" for an
@@ -175,6 +256,15 @@ func (s *Store) migrate() error {
 	if current < 9 {
 		if _, err := s.db.Exec(schemaSQL_v9); err != nil {
 			return fmt.Errorf("state.migrate v9: %w", err)
+		}
+	}
+	// v10: at-rest envelope encryption columns on the secrets table.
+	// Backfill of pre-existing plaintext rows happens in Go via
+	// BackfillSecrets after WithAEAD — schema-level migration just
+	// adds the columns.
+	if current < 10 {
+		if _, err := s.db.Exec(schemaSQL_v10); err != nil {
+			return fmt.Errorf("state.migrate v10: %w", err)
 		}
 	}
 	if current >= targetSchemaVersion {

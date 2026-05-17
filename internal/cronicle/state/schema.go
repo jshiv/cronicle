@@ -295,4 +295,20 @@ CREATE TABLE IF NOT EXISTS secrets_meta (
 INSERT OR IGNORE INTO secrets_meta(id) VALUES (1);
 `
 
-const targetSchemaVersion = 9
+// schemaSQL_v10 adds at-rest envelope encryption to the secrets table.
+// Two new columns hold the ciphertext and per-row nonce; the existing
+// `value` column is kept (and written as the empty string for new rows)
+// for one release as a rollback path — a prior cronicle binary that
+// hasn't learned about ct/nonce will read empty plaintexts rather than
+// crash. A follow-up migration will DROP COLUMN once rollout settles.
+//
+// The seal/open round-trip is performed in Go by the Store when an
+// AEAD has been bound via WithAEAD; without it the table works exactly
+// as before (plaintext column only). This keeps local-dev runs free of
+// any DEK ceremony.
+const schemaSQL_v10 = `
+ALTER TABLE secrets ADD COLUMN value_ct    BLOB;
+ALTER TABLE secrets ADD COLUMN value_nonce BLOB;
+`
+
+const targetSchemaVersion = 10
