@@ -230,6 +230,24 @@ func EnableStateStore(dsn string) error {
 	if err != nil {
 		return err
 	}
+	// At-rest secrets encryption is opt-in via CRONICLE_DEK_HEX. When
+	// the env is set, bind the AEAD and run a backfill of any pre-v10
+	// plaintext rows once. The DEK is held in process memory; an
+	// attacker with read-only access to state.db sees only ct/nonce.
+	if dek := strings.TrimSpace(os.Getenv("CRONICLE_DEK_HEX")); dek != "" {
+		aead, err := state.NewAEAD(dek)
+		if err != nil {
+			_ = s.Close()
+			return fmt.Errorf("CRONICLE_DEK_HEX: %w", err)
+		}
+		s.WithAEAD(aead)
+		if n, err := s.BackfillSecrets(); err != nil {
+			_ = s.Close()
+			return fmt.Errorf("secrets backfill: %w", err)
+		} else if n > 0 {
+			slog.Info("secrets: at-rest backfill complete", "rows", n)
+		}
+	}
 	stateStore = s
 	liveSink = state.NewLiveSink(newLiveEncoder(currentLiveFormat))
 

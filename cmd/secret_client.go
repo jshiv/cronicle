@@ -109,6 +109,19 @@ func openLocalClient(cmd *cobra.Command) (secretClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Mirror EnableStateStore's opt-in: when CRONICLE_DEK_HEX is set
+	// the CLI must bind the same AEAD so reads decrypt and writes
+	// seal. Without this, `cronicle secret get` on an encrypted
+	// state.db would error and `cronicle secret set` would write a
+	// fresh plaintext row that future reads couldn't trust.
+	if dek := strings.TrimSpace(os.Getenv("CRONICLE_DEK_HEX")); dek != "" {
+		aead, err := state.NewAEAD(dek)
+		if err != nil {
+			_ = s.Close()
+			return nil, fmt.Errorf("CRONICLE_DEK_HEX: %w", err)
+		}
+		s.WithAEAD(aead)
+	}
 	return &localClient{s: s}, nil
 }
 
