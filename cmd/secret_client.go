@@ -158,6 +158,36 @@ func newRemoteClient(base, token string) (*remoteClient, error) {
 
 func (c *remoteClient) Close() error { return nil }
 
+// secretsURL builds the absolute URL for the secrets endpoints. Two
+// base shapes are supported transparently:
+//
+//   cronicle listener         base = http://producer:8765
+//                             → http://producer:8765/v1/secrets[/{name}]
+//
+//   cronicle-infra api        base = https://api/v1/deployments/{id}
+//                             → https://api/v1/deployments/{id}/secrets[/{name}]
+//
+// The discriminator is whether the base path already contains "/v1/" —
+// if it does, the operator is pointing at an api with a scoped prefix
+// (cronicle-infra), and we just append "/secrets...". Otherwise we
+// assume a bare cronicle listener and stack the standard "/v1/secrets..."
+// suffix on. Cheap, predictable, no special flags.
+func (c *remoteClient) secretsURL(name string) string {
+	u, err := url.Parse(c.base)
+	var prefix string
+	if err == nil && strings.Contains(u.Path, "/v1/") {
+		// base already includes /v1/<something>/, just append /secrets...
+		prefix = c.base + "/secrets"
+	} else {
+		// bare base (no /v1/ in path) — listener shape.
+		prefix = c.base + "/v1/secrets"
+	}
+	if name == "" {
+		return prefix
+	}
+	return prefix + "/" + name
+}
+
 // auth applies Authorization + X-Cronicle-Actor headers.
 func (c *remoteClient) auth(req *http.Request, actor string) {
 	if c.token != "" {
@@ -187,7 +217,7 @@ func (c *remoteClient) Put(name, value, actor string) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPut, c.base+"/v1/secrets/"+name, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPut, c.secretsURL(name), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -233,7 +263,7 @@ func (c *remoteClient) List() ([]string, string, error) {
 }
 
 func (c *remoteClient) fetchAll() (map[string]string, string, error) {
-	req, err := http.NewRequest(http.MethodGet, c.base+"/v1/secrets", nil)
+	req, err := http.NewRequest(http.MethodGet, c.secretsURL(""), nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -260,7 +290,7 @@ func (c *remoteClient) fetchAll() (map[string]string, string, error) {
 }
 
 func (c *remoteClient) Delete(name, actor string) (bool, error) {
-	req, err := http.NewRequest(http.MethodDelete, c.base+"/v1/secrets/"+name, nil)
+	req, err := http.NewRequest(http.MethodDelete, c.secretsURL(name), nil)
 	if err != nil {
 		return false, err
 	}
