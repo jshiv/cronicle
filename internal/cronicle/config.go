@@ -18,8 +18,10 @@ type Config struct {
 	// Heartbeat is the cron expression for the runner's "I'm alive"
 	// signal. Originally this also controlled HCL reload cadence; that
 	// duty has moved to ConfigRefresh so observers can keep a slow
-	// heartbeat (e.g. 30s) while config reloads sub-second.
-	// Default: "@every 30s" (set in cron.go's StartCron when empty).
+	// heartbeat (e.g. 5m) while config reloads sub-second.
+	// Default: "@every 5m" (set in cron.go's StartCron when empty).
+	// Override in HCL with `heartbeat = "@every 30s"` for snappy
+	// local-dev observability.
 	Heartbeat string `hcl:"heartbeat,optional"`
 	// ConfigRefresh is the cron expression for polling the config
 	// source (file / http / s3 / postgres) for new content. Decoupled
@@ -554,7 +556,7 @@ func Default() Config {
 	schedule.Tasks = []Task{task}
 
 	var conf Config
-	conf.Heartbeat = "@every 30s"
+	conf.Heartbeat = "@every 5m"
 	conf.Schedules = []Schedule{schedule}
 
 	return conf
