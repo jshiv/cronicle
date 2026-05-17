@@ -55,11 +55,20 @@ The run command will log schedule information to stdout including git commit inf
 			listenToken = os.Getenv("CRONICLE_LISTEN_TOKEN")
 		}
 
+		ctx, stop := signal.NotifyContext(context.Background(),
+			syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+
 		runOptions := cronicle.RunOptions{
 			RunWorker:   runWorker,
 			LogToFile:   logToFile,
 			ListenAddr:  listenAddr,
 			ListenToken: listenToken,
+			// Defer secret-source startup until AFTER cronicle has opened
+			// state.db — the secretstore binds to that backend, so it has
+			// to land in the right order. The hook closes over `cmd` so
+			// flag lookups continue to work.
+			PostStateStoreHook: func() error { return startSecretSource(ctx, cmd) },
 		}
 
 		// One-shot mode: --cron + --command bootstraps a synthetic
@@ -83,10 +92,8 @@ The run command will log schedule information to stdout including git commit inf
 		if configSource != "" {
 			// Source-aware dispatch: open the source (file/http/s3/pg),
 			// boot the scheduler against it, register heartbeat +
-			// config_refresh entries.
-			ctx, stop := signal.NotifyContext(context.Background(),
-				syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
+			// config_refresh entries. PostStateStoreHook (set above) wires
+			// the secret-source pump after state.db is open.
 			if err := cronicle.RunFromSource(ctx, configSource, workdir, runOptions); err != nil {
 				slog.Error("cronicle run --config-source failed", "err", err.Error())
 				os.Exit(1)
@@ -94,6 +101,9 @@ The run command will log schedule information to stdout including git commit inf
 			return
 		}
 
+		// File-source path. cronicle.Run opens state.db, then fires the
+		// PostStateStoreHook (which binds the secret-source pump), then
+		// blocks running the scheduler.
 		cronicle.Run(path, runOptions)
 
 	},
@@ -114,6 +124,7 @@ func init() {
 	runCmd.Flags().Bool("log-to-file", false, "mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); stdout is unaffected and remains controlled by --log-format")
 	runCmd.Flags().String("listen", "", "host:port to expose the remote-trigger HTTP API (e.g. :8765). Empty disables. Requires --listen-token.")
 	runCmd.Flags().String("listen-token", "", "bearer token for the remote-trigger HTTP API (or env CRONICLE_LISTEN_TOKEN). Required when --listen is set.")
+	addSecretSourceFlags(runCmd)
 
 	// Here you will define your flags and configuration settings.
 

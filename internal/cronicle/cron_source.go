@@ -93,6 +93,12 @@ func RunFromSource(ctx context.Context, spec, workdir string, runOptions RunOpti
 		slog.Warn("state store open failed; projection disabled", "error", err.Error())
 	}
 
+	if runOptions.PostStateStoreHook != nil {
+		if err := runOptions.PostStateStoreHook(); err != nil {
+			return fmt.Errorf("post-state-store hook: %w", err)
+		}
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(1) // hold the goroutine open
 

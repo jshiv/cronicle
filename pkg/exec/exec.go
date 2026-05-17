@@ -33,6 +33,35 @@ type runOptions struct {
 	stdoutW      io.Writer
 	stderrW      io.Writer
 	useProcGroup bool // when true, child runs in its own pgid so cancellation kills its subprocesses
+	// scrubEnv selects the env policy:
+	//   false (default) — child inherits the entire parent env (os.Environ())
+	//                     plus opts.env. Long-standing behavior; callers that
+	//                     run user-defined commands (shell tasks) rely on it.
+	//   true            — child inherits only a small benign allowlist (PATH,
+	//                     HOME, USER, LANG, LC_ALL, TZ) plus opts.env. Used
+	//                     by the bash tool so an agent-emitted `env`/`set`
+	//                     command can't read worker-process state.
+	scrubEnv bool
+}
+
+// scrubbedInheritKeys is the env var allowlist that ExecuteScrubbed*
+// passes through from the parent process. Kept intentionally short:
+// only the variables a typical interactive shell command needs to
+// behave normally. Anything else must come in via opts.env.
+//
+// Notably absent: ANTHROPIC_API_KEY, GITHUB_TOKEN, CRONICLE_* — the
+// whole point of scrubbed mode is to NOT leak these into agent-
+// controlled subprocesses. cronicle's secretstore dispenses these
+// per-task instead, gated by what the task's HCL env array declares.
+var scrubbedInheritKeys = []string{
+	"PATH",
+	"HOME",
+	"USER",
+	"LANG",
+	"LC_ALL",
+	"LC_CTYPE",
+	"TZ",
+	"SHELL",
 }
 
 // run is the canonical implementation. All four public entry points
@@ -61,8 +90,19 @@ func run(command []string, opts runOptions) Result {
 		cmd = goexec.CommandContext(ctx, command[0], command[1:]...)
 	}
 	cmd.Dir = opts.dir
-	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env, opts.env...)
+	if opts.scrubEnv {
+		// Scrubbed mode: only the allowlisted parent vars pass through.
+		base := make([]string, 0, len(scrubbedInheritKeys)+len(opts.env))
+		for _, k := range scrubbedInheritKeys {
+			if v, ok := os.LookupEnv(k); ok {
+				base = append(base, k+"="+v)
+			}
+		}
+		cmd.Env = append(base, opts.env...)
+	} else {
+		cmd.Env = os.Environ()
+		cmd.Env = append(cmd.Env, opts.env...)
+	}
 
 	if opts.useProcGroup {
 		configureProcessGroup(cmd)
@@ -162,6 +202,26 @@ func ExecuteWithStreamContext(ctx context.Context, command []string, dir string,
 		stdoutW:      stdoutW,
 		stderrW:      stderrW,
 		useProcGroup: true,
+	})
+}
+
+// ExecuteScrubbedStreamContext is ExecuteWithStreamContext but with a
+// scrubbed parent env: the child inherits only the PATH/HOME/USER/
+// LANG/LC_ALL/LC_CTYPE/TZ/SHELL allowlist from os.Environ. Everything
+// else comes from env. Use this for subprocesses driven by untrusted
+// or semi-trusted callers — the agent's bash tool, future MCP-driven
+// shells — so the worker-process env (which may have been hardened
+// against secret leakage, but may still carry CRONICLE_* deployment
+// metadata) doesn't leak through.
+func ExecuteScrubbedStreamContext(ctx context.Context, command []string, dir string, env []string, stdoutW, stderrW io.Writer) Result {
+	return run(command, runOptions{
+		ctx:          ctx,
+		dir:          dir,
+		env:          env,
+		stdoutW:      stdoutW,
+		stderrW:      stderrW,
+		useProcGroup: true,
+		scrubEnv:     true,
 	})
 }
 

@@ -84,6 +84,10 @@ job claims so only one worker executes any given run.
 			WorkerID:    workerID,
 			Path:        path,
 			LogToFile:   logToFile,
+			// Bind the secret-source pump AFTER state.db is open inside
+			// StartHTTPWorker. Smart-defaults will derive `http://<producer>/v1/secrets`
+			// from --producer/--producer-token when --secret-source is unset.
+			PostStateStoreHook: func() error { return startSecretSource(ctx, cmd) },
 		})
 		if err != nil && err != context.Canceled {
 			slog.Error("worker exited", "error", err.Error())
@@ -99,4 +103,5 @@ func init() {
 	workerCmd.Flags().String("producer-token", "", "Bearer token for the producer's HTTP API. Falls back to $CRONICLE_LISTEN_TOKEN.")
 	workerCmd.Flags().String("worker-id", "", "Stable identifier for this worker in the producer's claim/ack records. Default: <hostname>-<pid>.")
 	workerCmd.Flags().Bool("log-to-file", false, "Mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); per-run agent transcripts go to path/.cronicle/runs/.")
+	addSecretSourceFlags(workerCmd)
 }
