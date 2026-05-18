@@ -1,0 +1,37 @@
+name: ci
+
+# PR-time validation: go vet + go test ./...
+# Runs on every PR and on push to master (catches direct merges).
+#
+# gofmt is intentionally not enforced here — Go 1.26 reflows godoc lists
+# differently than earlier versions, so re-enabling it requires a one-time
+# `gofmt -w .` sweep first.
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race -count=1 -timeout=5m ./...
