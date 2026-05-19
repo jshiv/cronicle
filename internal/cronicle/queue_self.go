@@ -56,20 +56,35 @@ func enqueueAdapter(in <-chan []byte, store state.Backend) {
 // rarely needs it because the worker IS the producer (no network
 // partition can preempt), but if a panic kills the goroutine the
 // reaper will recover the job.
-func selfWorker(store state.Backend, croniclePath string, wg *sync.WaitGroup) {
+func selfWorker(ctx context.Context, store state.Backend, croniclePath string, wg *sync.WaitGroup) {
 	workerID := SelfWorkerID()
 	slog.Info("self-worker started", "worker_id", workerID)
 
 	for {
+		// Bail before each Claim attempt so a cancel signal observed
+		// between WaitForJob returning and the next Claim still ends
+		// the loop promptly.
+		if ctx.Err() != nil {
+			slog.Info("self-worker: shutting down", "worker_id", workerID)
+			return
+		}
 		job, err := store.Claim(workerID, 5*time.Minute)
 		if errors.Is(err, state.ErrNoJobs) {
-			// Park until a wakeup or 30s elapses, then re-Claim.
-			store.WaitForJob(context.Background(), 30*time.Second)
+			// Park until a wakeup or 30s elapses, then re-Claim. Passing
+			// ctx here lets cancellation interrupt the park immediately
+			// instead of waiting for the 30s ceiling.
+			store.WaitForJob(ctx, 30*time.Second)
 			continue
 		}
 		if err != nil {
 			slog.Error("self-worker: claim failed", "error", err.Error())
-			time.Sleep(time.Second)
+			// Sleep through cancel — return early on ctx.Done so shutdown
+			// isn't blocked by the back-off.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
 			continue
 		}
 		wg.Add(1)
@@ -108,17 +123,22 @@ func selfWorker(store state.Backend, croniclePath string, wg *sync.WaitGroup) {
 //
 // Logs only when something is actually reaped — quiet when the queue
 // is healthy.
-func reaperLoop(store state.Backend) {
+func reaperLoop(ctx context.Context, store state.Backend) {
 	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
-	for range t.C {
-		moved, err := store.ReapExpired()
-		if err != nil {
-			slog.Error("reaper: ReapExpired failed", "error", err.Error())
-			continue
-		}
-		if moved > 0 {
-			slog.Warn("reaper: moved expired claims back to pending", "count", moved)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			moved, err := store.ReapExpired()
+			if err != nil {
+				slog.Error("reaper: ReapExpired failed", "error", err.Error())
+				continue
+			}
+			if moved > 0 {
+				slog.Warn("reaper: moved expired claims back to pending", "count", moved)
+			}
 		}
 	}
 }

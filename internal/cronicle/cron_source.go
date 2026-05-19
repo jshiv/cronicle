@@ -100,34 +100,58 @@ func RunFromSource(ctx context.Context, spec, workdir string, runOptions RunOpti
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1) // hold the goroutine open
-
-	// Queue mode mirrors Run(): listener+token+stateStore → SQLite-backed
-	// queue with workers long-polling /v1/jobs; otherwise in-memory chan
-	// with an in-process consumer.
-	var triggerQueue chan<- []byte
+	var (
+		triggerQueue chan<- []byte
+		closeQueue   func()
+	)
 	if runOptions.ListenAddr != "" && runOptions.ListenToken != "" && stateStore != nil {
 		enqueueChan := make(chan []byte, 64)
 		triggerQueue = enqueueChan
+		closeQueue = func() { close(enqueueChan) }
 		go enqueueAdapter(enqueueChan, stateStore)
 		if err := startSchedulerFromSource(ctx, src, conf, etag, enqueueChan); err != nil {
 			return fmt.Errorf("scheduler start: %w", err)
 		}
 		if runOptions.RunWorker {
-			go selfWorker(stateStore, workdirAbs, &wg)
+			go selfWorker(ctx, stateStore, workdirAbs, &wg)
 		}
-		go reaperLoop(stateStore)
+		go reaperLoop(ctx, stateStore)
 	} else {
 		queue := make(chan []byte)
 		triggerQueue = queue
+		closeQueue = func() { close(queue) }
 		if err := startSchedulerFromSource(ctx, src, conf, etag, queue); err != nil {
 			return fmt.Errorf("scheduler start: %w", err)
 		}
 		go ConsumeSchedule(queue, workdirAbs, &wg)
 	}
 
-	startListener(runOptions.ListenAddr, runOptions.ListenToken, triggerQueue)
-	wg.Wait()
+	listenerDone := startListener(ctx, runOptions.ListenAddr, runOptions.ListenToken, triggerQueue)
+
+	// Same shutdown sequence as Run(): listener drains, trigger queue
+	// closes (consumers exit), wait up to 30s for in-flight tasks, then
+	// close the state store. See Run() for rationale.
+	<-ctx.Done()
+	slog.Info("shutdown: ctx canceled, draining")
+
+	<-listenerDone
+	closeQueue()
+
+	drained := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(30 * time.Second):
+		slog.Warn("shutdown: in-flight tasks did not finish within 30s, exiting anyway")
+	}
+
+	if err := CloseStateStore(); err != nil {
+		slog.Warn("shutdown: state store close failed", "error", err.Error())
+	}
+	slog.Info("shutdown: complete")
 	return nil
 }
 

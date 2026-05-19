@@ -1,6 +1,7 @@
 package cronicle
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,8 +13,15 @@ import (
 	cron "github.com/robfig/cron/v3"
 )
 
-// Run is the main function of the cron package
-func Run(cronicleFile string, runOptions RunOptions) {
+// Run is the main function of the cron package.
+//
+// Returns when ctx is canceled. On cancel: the HTTP listener stops
+// accepting new connections and drains in-flight handlers (30s grace),
+// the cron loop stops firing new ticks, the trigger queue is closed so
+// the consumer goroutines see EOF, then we wait up to 30s for in-flight
+// task goroutines to finish before closing the state store. context.Background()
+// is acceptable for tests / direct callers that don't need shutdown.
+func Run(ctx context.Context, cronicleFile string, runOptions RunOptions) {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
@@ -64,9 +72,7 @@ func Run(cronicleFile string, runOptions RunOptions) {
 		}
 	}
 
-	//TODO: WaitGroup is currently only used for testing, could be used in Producer
 	var wg sync.WaitGroup
-	wg.Add(1) //Ensure WaitGroup counter > 0
 	// triggerQueue is the same send-side queue StartCron pushes to on each
 	// cron tick. The listener (if enabled) writes to it for remote-trigger
 	// fires, so triggered and cron-fired runs are identical from the
@@ -79,27 +85,63 @@ func Run(cronicleFile string, runOptions RunOptions) {
 	// is off, it's a single-process operation — in-memory chan, in-process
 	// consumer. Same operator intent: "if I'm exposing HTTP, I need
 	// durable queueing; if I'm not, I don't."
-	var triggerQueue chan<- []byte
+	//
+	// Hold a reference to the writable end so we can close it during
+	// shutdown — closing signals enqueueAdapter / ConsumeSchedule that no
+	// more work is coming, letting their range loops exit cleanly.
+	var (
+		triggerQueue chan<- []byte
+		closeQueue   func()
+	)
 	if runOptions.ListenAddr != "" && runOptions.ListenToken != "" && stateStore != nil {
 		enqueueChan := make(chan []byte, 64)
 		triggerQueue = enqueueChan
+		closeQueue = func() { close(enqueueChan) }
 		go enqueueAdapter(enqueueChan, stateStore)
-		go StartCron(cronicleFileAbs, enqueueChan)
+		go StartCron(ctx, cronicleFileAbs, enqueueChan)
 		if runOptions.RunWorker {
-			go selfWorker(stateStore, croniclePath, &wg)
+			go selfWorker(ctx, stateStore, croniclePath, &wg)
 		}
-		go reaperLoop(stateStore)
+		go reaperLoop(ctx, stateStore)
 	} else {
 		queue := make(chan []byte)
 		triggerQueue = queue
-		go StartCron(cronicleFileAbs, queue)
+		closeQueue = func() { close(queue) }
+		go StartCron(ctx, cronicleFileAbs, queue)
 		go ConsumeSchedule(queue, croniclePath, &wg)
 	}
 
-	startListener(runOptions.ListenAddr, runOptions.ListenToken, triggerQueue)
+	listenerDone := startListener(ctx, runOptions.ListenAddr, runOptions.ListenToken, triggerQueue)
 
-	wg.Wait() //Wait forever
+	// Block until ctx is canceled, then run the shutdown sequence in
+	// order: listener (stops accepting), trigger queue (consumers exit
+	// their for-range loops), in-flight task drain (wg, capped at 30s
+	// so a stuck task doesn't keep cronicle from exiting), state store.
+	<-ctx.Done()
+	slog.Info("shutdown: ctx canceled, draining")
 
+	slog.Debug("shutdown: waiting for listener")
+	<-listenerDone
+	slog.Debug("shutdown: closing trigger queue")
+	closeQueue()
+
+	drained := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		slog.Debug("shutdown: drained ok")
+	case <-time.After(30 * time.Second):
+		slog.Warn("shutdown: in-flight tasks did not finish within 30s, exiting anyway")
+	}
+
+	slog.Debug("shutdown: closing state store")
+	if err := CloseStateStore(); err != nil {
+		slog.Warn("shutdown: state store close failed", "error", err.Error())
+	}
+	slog.Info("shutdown: complete")
 }
 
 // RunOptions controls cronicle run's process-level behavior. Queue mode
@@ -134,7 +176,11 @@ type RunOptions struct {
 //StartCron pushes all schedules in the given config to the cron scheduler
 //starts the cron scheduler which publishes the serialzied
 //schedules to the message queue for execution.
-func StartCron(cronicleFile string, queue chan<- []byte) {
+//
+//On ctx cancel the cron loop is stopped; in-flight tick handlers finish
+//but no new ticks fire. Caller is responsible for draining the queue
+//and any consumer goroutines.
+func StartCron(ctx context.Context, cronicleFile string, queue chan<- []byte) {
 
 	conf, err := GetConfig(cronicleFile)
 	if err != nil {
@@ -184,6 +230,16 @@ func StartCron(cronicleFile string, queue chan<- []byte) {
 	refreshID, _ := c.AddFunc(conf.ConfigRefresh, func() { LoadCron(cronicleFile, c, queue, false) })
 	staticEntryIDs = map[cron.EntryID]bool{hbID: true, refreshID: true}
 	LoadCron(cronicleFile, c, queue, true)
+
+	// Shut down the cron loop on ctx cancel. c.Stop() returns a context
+	// that signals when all in-flight tick handlers (heartbeat, refresh,
+	// per-schedule ProduceSchedule) have returned — but those handlers
+	// only push onto the queue, so the wait is short. Run() / caller is
+	// responsible for draining the queue and the consumer goroutines.
+	go func() {
+		<-ctx.Done()
+		c.Stop()
+	}()
 }
 
 // staticEntryIDs tracks the cron entry IDs registered at startup
