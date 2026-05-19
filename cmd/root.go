@@ -79,5 +79,5 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "auto",
 		"stdout log format: auto (pretty if TTY, text if piped), pretty, text, or json")
 	rootCmd.PersistentFlags().StringVar(&liveFormat, "live-format", "pretty",
-		"wire format for the live SSE event stream (GET /v1/runs/{id}/events): pretty (ANSI, default), json, or text")
+		"wire format for the live SSE event stream (GET /v1/runs/{id}/events): pretty (ANSI, default), pretty-color (force ANSI even when cronicled's stdout isn't a TTY), json, or text")
 }

@@ -42,8 +42,15 @@ type LiveFormat string
 
 const (
 	LiveFormatPretty LiveFormat = "pretty"
-	LiveFormatJSON   LiveFormat = "json"
-	LiveFormatText   LiveFormat = "text"
+	// LiveFormatPrettyColor is `pretty` but with ANSI color codes ALWAYS
+	// emitted, regardless of whether cronicled's own stdout is a TTY.
+	// Necessary for headless service deployments (systemd, docker, k8s)
+	// where fatih/color's global NoColor=true would otherwise strip the
+	// color codes before they reach the SSE wire — leaving the xterm.js
+	// frontend with monochrome text even though it can render ANSI fine.
+	LiveFormatPrettyColor LiveFormat = "pretty-color"
+	LiveFormatJSON        LiveFormat = "json"
+	LiveFormatText        LiveFormat = "text"
 )
 
 // currentLiveFormat is the format applied when NewLiveEncoder is called
@@ -280,6 +287,12 @@ func newLiveEncoder(format LiveFormat) state.Encoder {
 			h = slog.NewJSONHandler(&buf, nil)
 		case LiveFormatText:
 			h = slog.NewTextHandler(&buf, nil)
+		case LiveFormatPrettyColor:
+			h = &liveSinkPrettyHandler{
+				fallback:   newTintHandler(&buf),
+				out:        &buf,
+				forceColor: true,
+			}
 		default: // pretty (also the empty-string fallback)
 			h = &liveSinkPrettyHandler{
 				fallback: newTintHandler(&buf),
@@ -589,16 +602,44 @@ func (p *stdoutPrettyHandler) WithGroup(name string) slog.Handler {
 // liveSinkPrettyHandler renders to a per-call buffer for the SSE wire.
 // No pre-emption path exists for the SSE consumer, so every record gets
 // turned into visible bytes — header / footer / per-line / per-token.
+//
+// forceColor=true (set by LiveFormatPrettyColor) toggles fatih/color's
+// global NoColor=false for the duration of Handle. This is gated by a
+// process-wide mutex so concurrent stdout pretty renders aren't affected
+// mid-record. The mutex held window is one Handle call (typically a few
+// microseconds); LiveSink fanout is already serialized per subscriber so
+// contention is bounded by the number of subscribers, not by traffic.
 type liveSinkPrettyHandler struct {
-	fallback slog.Handler
-	out      io.Writer // the LiveSink encoder's per-Handle bytes.Buffer
+	fallback   slog.Handler
+	out        io.Writer // the LiveSink encoder's per-Handle bytes.Buffer
+	forceColor bool
 }
+
+// liveColorMu serializes color.NoColor flips for force-color live renders.
+// Without it, two concurrent live encoder calls could race-toggle the flag
+// while a stdout pretty handler is rendering, producing mid-record color
+// flipping. The cost is whole-process serialization of force-color renders,
+// which is fine: SSE volume isn't bounded by render throughput here.
+var liveColorMu sync.Mutex
 
 func (p *liveSinkPrettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
 	return p.fallback.Enabled(ctx, l)
 }
 
 func (p *liveSinkPrettyHandler) Handle(_ context.Context, r slog.Record) error {
+	if p.forceColor {
+		liveColorMu.Lock()
+		prev := color.NoColor
+		color.NoColor = false
+		defer func() {
+			color.NoColor = prev
+			liveColorMu.Unlock()
+		}()
+	}
+	return p.handle(r)
+}
+
+func (p *liveSinkPrettyHandler) handle(r slog.Record) error {
 	switch entryType(r) {
 	case "agent_run_start":
 		return renderAgentRunStart(p.out, r)
@@ -637,11 +678,19 @@ func (p *liveSinkPrettyHandler) Handle(_ context.Context, r slog.Record) error {
 }
 
 func (p *liveSinkPrettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &liveSinkPrettyHandler{fallback: p.fallback.WithAttrs(attrs), out: p.out}
+	return &liveSinkPrettyHandler{
+		fallback:   p.fallback.WithAttrs(attrs),
+		out:        p.out,
+		forceColor: p.forceColor,
+	}
 }
 
 func (p *liveSinkPrettyHandler) WithGroup(name string) slog.Handler {
-	return &liveSinkPrettyHandler{fallback: p.fallback.WithGroup(name), out: p.out}
+	return &liveSinkPrettyHandler{
+		fallback:   p.fallback.WithGroup(name),
+		out:        p.out,
+		forceColor: p.forceColor,
+	}
 }
 
 // entryType extracts the entry_type attr from a record, returning "" if absent.
@@ -743,23 +792,36 @@ func attrStrings(r slog.Record, key string) []string {
 // renderAgentRunStart writes the bordered header block for an agent run
 // to p.out — same shape WriteAgentRunHeader produces for the TTY's
 // StreamingWriter. Used by LiveSink (suppressChunks=false) so SSE
-// consumers see model/task/schedule context BEFORE the deltas stream.
+// consumers see model/task/schedule + the RESOLVED prompt/system/tools
+// BEFORE the deltas stream. Surfacing the resolved prompt lets operators
+// see exactly what `${date}`/`${path}` expanded to without digging into
+// the transcript.
 func renderAgentRunStart(out io.Writer, r slog.Record) error {
 	schedule := attrString(r, "schedule")
 	task := attrString(r, "task")
 	model := attrString(r, "model")
-	var skills []string
+	prompt := attrString(r, "prompt")
+	system := attrString(r, "system")
+	var skills, tools, mcpCommands []string
 	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == "skills_available" {
+		switch a.Key {
+		case "skills_available":
 			if v, ok := a.Value.Any().([]string); ok {
 				skills = v
 			}
-			return false
+		case "tools":
+			if v, ok := a.Value.Any().([]string); ok {
+				tools = v
+			}
+		case "mcp_commands":
+			if v, ok := a.Value.Any().([]string); ok {
+				mcpCommands = v
+			}
 		}
 		return true
 	})
 	var b bytes.Buffer
-	WriteAgentRunHeader(&b, schedule, task, model, skills)
+	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, tools, mcpCommands)
 	b.WriteByte('\n')
 	_, err := out.Write(b.Bytes())
 	return err
@@ -834,9 +896,10 @@ func renderAgentRun(out io.Writer, r slog.Record) error {
 	var (
 		schedule, task, model, response, costStr string
 		stop, transcript, errMsg                 string
+		prompt, system                           string
 		durationMs, in, outTokens, cacheRead     int64
 		success                                  bool
-		skills                                   []string
+		skills, tools, mcpCommands               []string
 	)
 	r.Attrs(func(a slog.Attr) bool {
 		switch a.Key {
@@ -848,6 +911,10 @@ func renderAgentRun(out io.Writer, r slog.Record) error {
 			model = a.Value.String()
 		case "response":
 			response = a.Value.String()
+		case "prompt":
+			prompt = a.Value.String()
+		case "system":
+			system = a.Value.String()
 		case "cost_usd":
 			// cost_usd is a Float64 attr (slog.Float64 in execAgent);
 			// fmt to a 6-decimal string for the pretty footer.
@@ -872,12 +939,20 @@ func renderAgentRun(out io.Writer, r slog.Record) error {
 			if v, ok := a.Value.Any().([]string); ok {
 				skills = v
 			}
+		case "tools":
+			if v, ok := a.Value.Any().([]string); ok {
+				tools = v
+			}
+		case "mcp_commands":
+			if v, ok := a.Value.Any().([]string); ok {
+				mcpCommands = v
+			}
 		}
 		return true
 	})
 
 	var b bytes.Buffer
-	WriteAgentRunHeader(&b, schedule, task, model, skills)
+	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, tools, mcpCommands)
 	b.WriteByte('\n')
 
 	footerColor := color.New(color.Faint).SprintFunc()
@@ -904,20 +979,67 @@ func renderAgentRun(out io.Writer, r slog.Record) error {
 // WriteAgentRunHeader writes the bordered header for an agent run block.
 // Shared by the slog renderAgentRun path and the streaming dispatch path.
 // `skills` is the available-skills list to surface in the header (empty/nil
-// omits the segment).
-func WriteAgentRunHeader(w io.Writer, schedule, task, model string, skills []string) {
+// omits the segment). `prompt` and `system` are the RESOLVED (post template
+// substitution) strings the agent will actually receive — surfacing them in
+// the header tells the whole story of what got dispatched, so operators can
+// debug `${date}`/`${path}` expansion at a glance. `tools` and `mcpCommands`
+// list the tool surface available for the run.
+func WriteAgentRunHeader(w io.Writer, schedule, task, model string, skills []string,
+	prompt, system string, tools []string, mcpCommands []string) {
 	header := color.New(color.FgCyan, color.Bold).SprintFunc()
 	rule := color.New(color.FgCyan).SprintFunc()
+	label := color.New(color.FgCyan, color.Faint).SprintFunc()
 
 	headerLine := fmt.Sprintf("agent run · schedule=%s · task=%s · model=%s",
 		schedule, task, model)
 	if len(skills) > 0 {
 		headerLine += " · skills=[" + strings.Join(skills, ",") + "]"
 	}
-	bar := strings.Repeat("━", len(headerLine)+8)
+	// Compose the meta lines first so the bar can width-match the widest
+	// line in the block — keeps the framing visually balanced when prompt
+	// or system is the longest line.
+	type metaLine struct {
+		key, val string
+	}
+	var meta []metaLine
+	if p := strings.TrimSpace(prompt); p != "" {
+		meta = append(meta, metaLine{"prompt", p})
+	}
+	if s := strings.TrimSpace(system); s != "" {
+		meta = append(meta, metaLine{"system", s})
+	}
+	if len(tools) > 0 {
+		meta = append(meta, metaLine{"tools", strings.Join(tools, ", ")})
+	}
+	for _, mc := range mcpCommands {
+		meta = append(meta, metaLine{"mcp", mc})
+	}
+
+	width := len(headerLine)
+	rendered := make([]string, 0, len(meta))
+	for _, m := range meta {
+		line := truncate(escapeControl(fmt.Sprintf("%s: %s", m.key, m.val)), 200)
+		if len(line) > width {
+			width = len(line)
+		}
+		rendered = append(rendered, line)
+	}
+	bar := strings.Repeat("━", width+8)
 
 	fmt.Fprintln(w, rule(bar))
 	fmt.Fprintln(w, header(headerLine))
+	for i, m := range meta {
+		// Color the key prefix only; keep the value plain so terminals
+		// without color still read naturally and so search-in-page finds
+		// the literal prompt/system text.
+		colon := strings.Index(rendered[i], ":")
+		if colon < 0 {
+			fmt.Fprintln(w, rendered[i])
+			continue
+		}
+		_ = m
+		fmt.Fprintln(w, label(rendered[i][:colon+1])+rendered[i][colon+1:])
+	}
 	fmt.Fprintln(w, rule(bar))
 }
 
@@ -948,16 +1070,31 @@ func WriteAgentRunFooter(w io.Writer, in, out, cacheRead int64, costStr string, 
 }
 
 // WriteShellRunHeader writes the bordered header for a shell task run block.
+// The resolved command (post ${date}/${path}/${scratch} substitution) is
+// emitted on its own `command: …` line so the full string is visible — the
+// header line stays compact for the schedule/task chip while the command
+// line tells the whole story of what got executed. Control chars in the
+// command are escaped (newlines for sh -c bodies); the line is capped at
+// 200 chars so an enormous shell payload doesn't blow out the framing.
 func WriteShellRunHeader(w io.Writer, schedule, task, command string) {
 	header := color.New(color.FgCyan, color.Bold).SprintFunc()
 	rule := color.New(color.FgCyan).SprintFunc()
+	label := color.New(color.FgCyan, color.Faint).SprintFunc()
 
-	headerLine := fmt.Sprintf("shell run · schedule=%s · task=%s · %s",
-		schedule, task, truncate(escapeControl(command), 60))
-	bar := strings.Repeat("━", len(headerLine)+8)
+	headerLine := fmt.Sprintf("shell run · schedule=%s · task=%s", schedule, task)
+	cmdLine := "command: " + truncate(escapeControl(command), 200)
+
+	width := len(headerLine)
+	if len(cmdLine) > width {
+		width = len(cmdLine)
+	}
+	bar := strings.Repeat("━", width+8)
 
 	fmt.Fprintln(w, rule(bar))
 	fmt.Fprintln(w, header(headerLine))
+	// Color the "command:" label only; keep the resolved string plain so
+	// users can search/copy the exact text without escape codes in the way.
+	fmt.Fprintln(w, label("command:")+cmdLine[len("command:"):])
 	fmt.Fprintln(w, rule(bar))
 }
 
@@ -1154,8 +1291,6 @@ func displayToolName(name string) string {
 // renderShellRun renders a shell task as a block with the same shape as
 // agent_run: header rule, header line, body (stdout or stderr), footer.
 func renderShellRun(out io.Writer, r slog.Record) error {
-	header := color.New(color.FgCyan, color.Bold).SprintFunc()
-	rule := color.New(color.FgCyan).SprintFunc()
 	footer := color.New(color.Faint).SprintFunc()
 	errc := color.New(color.FgRed, color.Bold).SprintFunc()
 
@@ -1169,17 +1304,9 @@ func renderShellRun(out io.Writer, r slog.Record) error {
 	exit := attrInt64(r, "exit")
 	success := attrBool(r, "success")
 
-	headerLine := fmt.Sprintf("shell run · schedule=%s · task=%s · %s",
-		schedule, task, truncate(escapeControl(command), 60))
-	bar := strings.Repeat("━", len(headerLine)+8)
-
 	var b bytes.Buffer
-	b.WriteString(rule(bar))
+	WriteShellRunHeader(&b, schedule, task, command)
 	b.WriteByte('\n')
-	b.WriteString(header(headerLine))
-	b.WriteByte('\n')
-	b.WriteString(rule(bar))
-	b.WriteString("\n\n")
 
 	if success {
 		body := strings.TrimRight(stdout, "\n")

@@ -273,6 +273,20 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	if skillTool != nil {
 		skillsAvailable = skillTool.Available()
 	}
+	// Resolve template vars in tools list (no-op today; future-proof) and
+	// in MCP command lines so the operator sees what actually got spawned.
+	// Mcp command expansion is repeated below for the LaunchMCPServers call;
+	// we compute it once for the header and reuse the resolved values.
+	resolvedTools := append([]string(nil), task.Agent.Tools...)
+	resolvedMCPCommands := make([]string, 0, len(task.Agent.MCPs))
+	for _, m := range task.Agent.MCPs {
+		expanded := make([]string, len(m.Command))
+		for j, c := range m.Command {
+			expanded[j] = r.Replace(c)
+		}
+		resolvedMCPCommands = append(resolvedMCPCommands,
+			fmt.Sprintf("%s: %s", m.Name, strings.Join(expanded, " ")))
+	}
 	var sw *StreamingWriter
 	var downstream agent.StreamHandler
 	if streaming {
@@ -282,7 +296,8 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		// concurrently.
 		sw = NewStreamingWriter()
 		defer sw.Close()
-		WriteAgentRunHeader(sw, task.ScheduleName, task.Name, effectiveModel, skillsAvailable)
+		WriteAgentRunHeader(sw, task.ScheduleName, task.Name, effectiveModel, skillsAvailable,
+			cfg.Prompt, system, resolvedTools, resolvedMCPCommands)
 		fmt.Fprintln(sw)
 		downstream = NewAgentStreamRenderer(sw)
 	}
@@ -307,6 +322,14 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		"task", task.Name,
 		"model", effectiveModel,
 		"skills_available", skillsAvailable,
+		// Resolved prompt/system: post-${date}/${path}/${scratch} substitution,
+		// so the operator can see the exact text the agent received. Same goes
+		// for mcp_commands — the launched argv post-expansion. Tools list is
+		// echoed as-is (no template expansion today, future-proofed).
+		"prompt", cfg.Prompt,
+		"system", system,
+		"tools", resolvedTools,
+		"mcp_commands", resolvedMCPCommands,
 	)
 
 	// Tools: bind to the task's workspace and stream writer so bash output
@@ -436,6 +459,16 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		slog.Int64("duration_ms", durationMs),
 		slog.String("stop_reason", res.StopReason),
 		slog.String("response", res.Stdout),
+		// Mirror the resolved prompt/system/tools/mcp_commands from the
+		// start event onto the terminal event. The non-streaming pretty
+		// renderer (renderAgentRun) consumes only the terminal event, so
+		// without these duplicates it would lose the resolved-prompt
+		// header line; for Loki/JSONL consumers it's a small redundancy
+		// that keeps the run summary self-contained.
+		slog.String("prompt", cfg.Prompt),
+		slog.String("system", system),
+		slog.Any("tools", resolvedTools),
+		slog.Any("mcp_commands", resolvedMCPCommands),
 	}
 	if skillTool != nil {
 		// skills_available: the catalog the agent saw.
