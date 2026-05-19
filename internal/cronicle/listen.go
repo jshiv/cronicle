@@ -34,6 +34,7 @@ package cronicle
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,17 +65,27 @@ type listenServer struct {
 }
 
 // startListener brings up the HTTP server in a background goroutine.
-// Returns immediately; failures are logged. Refuses to start when token
-// is empty — an open trigger endpoint on an unattended service is a
-// foot-cannon. Set --listen alone (no token) and you'll see a warning
-// log but the listener won't bind.
-func startListener(addr, token string, queue chan<- []byte) {
+// Returns a `done` channel that closes once the server has finished
+// shutting down (either via ctx cancel or a fatal listen error). Refuses
+// to start when token is empty — an open trigger endpoint on an
+// unattended service is a foot-cannon. Returns a pre-closed channel in
+// the disabled / refused cases so callers can <-done uniformly.
+//
+// Shutdown is graceful: on ctx cancel we call srv.Shutdown with a 30s
+// deadline, which stops accepting new conns and waits for in-flight
+// handlers (including long-poll /v1/jobs and SSE /v1/runs/{id}/events
+// subscribers) to finish. SSE consumers see EOF, which their EventSource
+// reconnect logic interprets as "producer restarted" — same as today.
+func startListener(ctx context.Context, addr, token string, queue chan<- []byte) <-chan struct{} {
+	done := make(chan struct{})
 	if addr == "" {
-		return
+		close(done)
+		return done
 	}
 	if token == "" {
 		slog.Warn("--listen ignored: --listen-token is required (refusing to expose unauthenticated trigger endpoint)", "addr", addr)
-		return
+		close(done)
+		return done
 	}
 	s := &listenServer{
 		queue:       queue,
@@ -114,12 +125,33 @@ func startListener(addr, token string, queue chan<- []byte) {
 		// match for the long-poll cadence.
 		IdleTimeout: 120 * time.Second,
 	}
+	servErr := make(chan struct{})
 	go func() {
 		slog.Info("Trigger listener up", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("trigger listener exited", "error", err.Error())
 		}
+		close(servErr)
 	}()
+
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			// Graceful shutdown: 30s is comfortably above WriteTimeout (90s
+			// cap covers long-poll), but bounded so a stuck SSE consumer
+			// doesn't keep cronicle from exiting forever. After the deadline
+			// remaining connections are slammed.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				slog.Warn("trigger listener shutdown timed out", "error", err.Error())
+			}
+		case <-servErr:
+			// Server died on its own (port in use, etc.); nothing to drain.
+		}
+	}()
+	return done
 }
 
 // authed returns true when the request carries a matching bearer token.

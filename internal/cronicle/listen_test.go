@@ -2,6 +2,7 @@ package cronicle
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -56,8 +57,14 @@ func sampleConf() *Config {
 // when no token is set, regardless of addr.
 func TestStartListener_RefusesEmptyToken(t *testing.T) {
 	// Should return immediately without panicking and without binding.
-	startListener(":0", "", make(chan []byte, 1))
-	// Implicit pass: no goroutine leak path; the function early-returns.
+	done := startListener(context.Background(), ":0", "", make(chan []byte, 1))
+	// Disabled path returns a pre-closed channel so callers can <-done
+	// uniformly. Confirm that contract.
+	select {
+	case <-done:
+	default:
+		t.Fatal("startListener with empty token should return a closed done channel")
+	}
 }
 
 // TestHealthz_NoAuth: liveness must work for load-balancer probes
@@ -293,7 +300,7 @@ func TestStartListener_AddrEmpty(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		startListener("", "tok", make(chan []byte, 1))
+		startListener(context.Background(), "", "tok", make(chan []byte, 1))
 	}()
 	wg.Wait()
 }

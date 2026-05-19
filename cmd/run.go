@@ -103,8 +103,10 @@ The run command will log schedule information to stdout including git commit inf
 
 		// File-source path. cronicle.Run opens state.db, then fires the
 		// PostStateStoreHook (which binds the secret-source pump), then
-		// blocks running the scheduler.
-		cronicle.Run(path, runOptions)
+		// blocks until ctx is canceled (SIGINT/SIGTERM) running the
+		// scheduler. Returns naturally after graceful shutdown so the
+		// cobra command exits cleanly.
+		cronicle.Run(ctx, path, runOptions)
 
 	},
 }
