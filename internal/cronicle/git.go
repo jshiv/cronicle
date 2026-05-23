@@ -130,8 +130,8 @@ func Commit(worktreeDir string, msg string) {
 //
 // Hosted URLs look like:
 //
-//	https://api.triggerflux.dev/git/{org}/{repo}.git
-//	https://x:$CRONICLE_PAT@api.triggerflux.dev/git/{org}/{repo}.git
+//	https://api.cronicle.dev/git/{org}/{repo}.git
+//	https://x:$CRONICLE_PAT@api.cronicle.dev/git/{org}/{repo}.git
 //
 // Rewritten to:
 //
