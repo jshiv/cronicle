@@ -122,6 +122,43 @@ func Commit(worktreeDir string, msg string) {
 	fmt.Println(obj)
 }
 
+// rewriteCronicleHostedURL maps a cronicle-hosted clone URL to the
+// cluster-internal cronicle-git Service URL when CRONICLE_INTERNAL_GIT_URL
+// is set. Lets the producer pod clone repos hosted on cronicle's own
+// git server without needing a PAT — the api proxy fronts external
+// traffic, but inside the cluster cronicle-git trusts requests directly.
+//
+// Hosted URLs look like:
+//
+//	https://api.cronicle.dev/git/{org}/{repo}.git
+//	https://x:$CRONICLE_PAT@api.cronicle.dev/git/{org}/{repo}.git
+//
+// Rewritten to:
+//
+//	http://cronicle-git.cronicle-platform.svc:8082/git/{org}/{repo}.git
+//
+// Recognition is path-based (contains "/git/" segment) rather than
+// host-pinned so dev / kind / future custom domains all work.
+func rewriteCronicleHostedURL(url string) string {
+	internal := os.Getenv("CRONICLE_INTERNAL_GIT_URL")
+	if internal == "" {
+		return url
+	}
+	// Strip scheme + userinfo to get host+path.
+	s := url
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if at := strings.LastIndex(s, "@"); at >= 0 {
+		s = s[at+1:]
+	}
+	// s is now "host/git/<org>/<repo>.git"
+	if i := strings.Index(s, "/git/"); i >= 0 {
+		return strings.TrimRight(internal, "/") + s[i:]
+	}
+	return url
+}
+
 //Clone checks for the existance of worktreeDir/.git and clones if it does not exist
 //then executes Git = GetGit(worktreeDir)
 //
@@ -132,6 +169,13 @@ func Commit(worktreeDir string, msg string) {
 func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, error) {
 
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
+		// In-cluster rewrite: when cronicled runs inside a cronicle
+		// platform pod, CRONICLE_INTERNAL_GIT_URL points at the
+		// cluster-internal cronicle-git Service (no PAT auth required —
+		// the api proxy in front of cronicle-git is what gates external
+		// traffic). For URLs hosted on cronicle itself, route directly
+		// to the Service so the producer doesn't need a PAT.
+		url = rewriteCronicleHostedURL(url)
 		slog.Info("git clone", "url", url, "path", worktreeDir)
 		cloneOptions := git.CloneOptions{URL: url, Auth: *auth}
 		// In pretty mode, route go-git's progress sideband straight to
