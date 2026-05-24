@@ -31,9 +31,19 @@ var logFormat string
 // frontend renders as a faithful TTY mirror.
 var liveFormat string
 
+// colorMode is bound to the --color persistent flag. auto (the default)
+// defers to context: stdout pretty honors TTY+NO_COLOR; live SSE pretty
+// defaults to color (consumers are terminal renderers). always/never are
+// explicit overrides that beat both TTY detection and NO_COLOR.
+var colorMode string
+
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Color policy must be applied BEFORE SetupLogging because the
+		// pretty stdout handler captures color.NoColor at construction
+		// time via fatih/color's SprintFunc closures.
+		cronicle.SetColorMode(cronicle.ColorMode(colorMode))
 		cronicle.SetupLogging(cronicle.LogFormat(logFormat))
 		cronicle.SetLiveFormat(cronicle.LiveFormat(liveFormat))
 	},
@@ -79,5 +89,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "auto",
 		"stdout log format: auto (pretty if TTY, text if piped), pretty, text, or json")
 	rootCmd.PersistentFlags().StringVar(&liveFormat, "live-format", "pretty",
-		"wire format for the live SSE event stream (GET /v1/runs/{id}/events): pretty (ANSI, default), pretty-color (force ANSI even when cronicled's stdout isn't a TTY), json, or text")
+		"wire format for the live SSE event stream (GET /v1/runs/{id}/events): pretty (ANSI; the default), json, or text. pretty-color is a deprecated alias for pretty (the live wire defaults to color regardless of TTY because consumers are xterm-class renderers).")
+	rootCmd.PersistentFlags().StringVar(&colorMode, "color", "auto",
+		"when to emit ANSI color in pretty output: auto (TTY+NO_COLOR for stdout; always-on for SSE wire), always (force on), never (force off). Honors the NO_COLOR convention from https://no-color.org in auto mode.")
 }

@@ -38,16 +38,19 @@ const (
 // emits ANSI-colored multi-line text identical to what a TTY would
 // show. Frontends consume via xterm.js. JSON / text are alternatives
 // for non-terminal clients.
+//
+// Color decision is independent of LiveFormat — controlled by the
+// --color flag and the NO_COLOR env var via the ColorMode/shouldColor
+// helpers below. The live wire defaults to color-on (xterm.js renders);
+// flip with --color=never or NO_COLOR=1.
 type LiveFormat string
 
 const (
 	LiveFormatPretty LiveFormat = "pretty"
-	// LiveFormatPrettyColor is `pretty` but with ANSI color codes ALWAYS
-	// emitted, regardless of whether cronicled's own stdout is a TTY.
-	// Necessary for headless service deployments (systemd, docker, k8s)
-	// where fatih/color's global NoColor=true would otherwise strip the
-	// color codes before they reach the SSE wire — leaving the xterm.js
-	// frontend with monochrome text even though it can render ANSI fine.
+	// LiveFormatPrettyColor is a deprecated alias for LiveFormatPretty
+	// kept for one release. The live wire's pretty format now emits
+	// color by default (no longer gated on TTY), so the distinction is
+	// gone. SetLiveFormat normalises it. Remove in v0.7+.
 	LiveFormatPrettyColor LiveFormat = "pretty-color"
 	LiveFormatJSON        LiveFormat = "json"
 	LiveFormatText        LiveFormat = "text"
@@ -60,10 +63,79 @@ var currentLiveFormat LiveFormat = LiveFormatPretty
 
 // SetLiveFormat changes the wire format the SSE live-stream will use.
 // Call before EnableStateStore. Empty string keeps the default (pretty).
+// pretty-color is normalised to pretty (the distinction is gone).
 func SetLiveFormat(format LiveFormat) {
-	if format != "" {
-		currentLiveFormat = format
+	if format == "" {
+		return
 	}
+	if format == LiveFormatPrettyColor {
+		format = LiveFormatPretty
+	}
+	currentLiveFormat = format
+}
+
+// ColorMode is the --color flag value: auto (default), always, or never.
+// auto defers to context — TTY+NO_COLOR for stdout, always-on for the SSE
+// wire. always/never are explicit overrides that beat both TTY and NO_COLOR.
+type ColorMode string
+
+const (
+	ColorModeAuto   ColorMode = "auto"
+	ColorModeAlways ColorMode = "always"
+	ColorModeNever  ColorMode = "never"
+)
+
+// currentColorMode is the effective --color setting. Initialised to auto;
+// SetColorMode replaces it before SetupLogging runs so the stdout pretty
+// handler's SprintFunc closures capture the right color.NoColor value.
+var currentColorMode ColorMode = ColorModeAuto
+
+// SetColorMode applies the --color flag value. Beyond storing the mode it
+// flips fatih/color's global NoColor and (for always/never) unsets the
+// env vars fatih/color re-checks at every color.New() call — without that
+// step, NO_COLOR=1 leaks through and stamps c.noColor=true on every
+// instance before our global flip can take effect.
+//
+// Precedence chosen: explicit --color flag beats env, matching git/grep.
+// Pure no-color.org behaviour (env always wins) lives at ColorModeAuto.
+func SetColorMode(mode ColorMode) {
+	if mode == "" {
+		mode = ColorModeAuto
+	}
+	currentColorMode = mode
+	switch mode {
+	case ColorModeAlways:
+		// fatih/color.New() does `if noColorIsSet() { c.noColor=true }`
+		// every call, reading the env directly. Unset it so the
+		// per-instance override can't trip.
+		_ = os.Unsetenv("NO_COLOR")
+		if os.Getenv("TERM") == "dumb" {
+			_ = os.Unsetenv("TERM")
+		}
+		color.NoColor = false
+	case ColorModeNever:
+		color.NoColor = true
+	}
+	// auto: leave color.NoColor at fatih/color's init-time default
+	// (TTY+NO_COLOR detection), which is exactly what we want for the
+	// stdout context.
+}
+
+// shouldColorLive reports whether the live SSE encoder should emit color.
+// The wire's default is color-on (consumers are terminal renderers); the
+// --color flag and NO_COLOR override that.
+func shouldColorLive() bool {
+	switch currentColorMode {
+	case ColorModeNever:
+		return false
+	case ColorModeAlways:
+		return true
+	}
+	// auto: honor NO_COLOR + TERM=dumb, then default to on for the wire.
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	return true
 }
 
 // resolvedLogFormat tracks what format SetupLogging settled on after auto-
@@ -287,13 +359,8 @@ func newLiveEncoder(format LiveFormat) state.Encoder {
 			h = slog.NewJSONHandler(&buf, nil)
 		case LiveFormatText:
 			h = slog.NewTextHandler(&buf, nil)
-		case LiveFormatPrettyColor:
-			h = &liveSinkPrettyHandler{
-				fallback:   newTintHandler(&buf),
-				out:        &buf,
-				forceColor: true,
-			}
-		default: // pretty (also the empty-string fallback)
+		default: // pretty (also the empty-string fallback and the
+			// pretty-color alias, which SetLiveFormat normalises).
 			h = &liveSinkPrettyHandler{
 				fallback: newTintHandler(&buf),
 				out:      &buf,
@@ -603,23 +670,23 @@ func (p *stdoutPrettyHandler) WithGroup(name string) slog.Handler {
 // No pre-emption path exists for the SSE consumer, so every record gets
 // turned into visible bytes — header / footer / per-line / per-token.
 //
-// forceColor=true (set by LiveFormatPrettyColor) toggles fatih/color's
-// global NoColor=false for the duration of Handle. This is gated by a
-// process-wide mutex so concurrent stdout pretty renders aren't affected
-// mid-record. The mutex held window is one Handle call (typically a few
-// microseconds); LiveSink fanout is already serialized per subscriber so
-// contention is bounded by the number of subscribers, not by traffic.
+// The SSE wire defaults to color-on regardless of TTY (consumers are
+// xterm.js — they always render). Each Handle call temporarily flips
+// fatih/color's global NoColor=false under a process-wide mutex, then
+// restores it. The mutex window is one Handle call (microseconds), and
+// LiveSink fanout already serializes per subscriber so contention is
+// bounded by subscriber count, not by traffic. --color=never (set by
+// the operator on the cronicle subprocess) opts out via shouldColorLive.
 type liveSinkPrettyHandler struct {
-	fallback   slog.Handler
-	out        io.Writer // the LiveSink encoder's per-Handle bytes.Buffer
-	forceColor bool
+	fallback slog.Handler
+	out      io.Writer // the LiveSink encoder's per-Handle bytes.Buffer
 }
 
-// liveColorMu serializes color.NoColor flips for force-color live renders.
+// liveColorMu serializes color.NoColor flips for the live-wire encoder.
 // Without it, two concurrent live encoder calls could race-toggle the flag
 // while a stdout pretty handler is rendering, producing mid-record color
-// flipping. The cost is whole-process serialization of force-color renders,
-// which is fine: SSE volume isn't bounded by render throughput here.
+// flipping. The cost is whole-process serialization of live renders, which
+// is fine: SSE volume isn't bounded by render throughput here.
 var liveColorMu sync.Mutex
 
 func (p *liveSinkPrettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
@@ -627,7 +694,7 @@ func (p *liveSinkPrettyHandler) Enabled(ctx context.Context, l slog.Level) bool 
 }
 
 func (p *liveSinkPrettyHandler) Handle(_ context.Context, r slog.Record) error {
-	if p.forceColor {
+	if shouldColorLive() {
 		liveColorMu.Lock()
 		prev := color.NoColor
 		color.NoColor = false
@@ -679,17 +746,15 @@ func (p *liveSinkPrettyHandler) handle(r slog.Record) error {
 
 func (p *liveSinkPrettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &liveSinkPrettyHandler{
-		fallback:   p.fallback.WithAttrs(attrs),
-		out:        p.out,
-		forceColor: p.forceColor,
+		fallback: p.fallback.WithAttrs(attrs),
+		out:      p.out,
 	}
 }
 
 func (p *liveSinkPrettyHandler) WithGroup(name string) slog.Handler {
 	return &liveSinkPrettyHandler{
-		fallback:   p.fallback.WithGroup(name),
-		out:        p.out,
-		forceColor: p.forceColor,
+		fallback: p.fallback.WithGroup(name),
+		out:      p.out,
 	}
 }
 

@@ -73,15 +73,21 @@ func TestWriteAgentRunHeader_OmitsEmpty(t *testing.T) {
 	}
 }
 
-// TestLiveSinkPrettyHandler_ForceColor: with the global color.NoColor=true
-// (the case when cronicled runs as a headless service — no TTY on stdout),
-// the default pretty handler emits monochrome bytes. PrettyColor mode must
-// emit ANSI escapes anyway so the xterm.js consumer can render them.
-func TestLiveSinkPrettyHandler_ForceColor(t *testing.T) {
+// TestLiveSinkPrettyHandler_ColorByDefault: the SSE wire emits ANSI for
+// pretty mode regardless of the producer's TTY state — the consumer is
+// xterm.js, which can always render color. This is the entire reason
+// the live wire's color decision is decoupled from stdout's. Used to
+// require the separate LiveFormatPrettyColor; now baked in.
+func TestLiveSinkPrettyHandler_ColorByDefault(t *testing.T) {
 	// Simulate headless (non-TTY) producer state.
 	prev := color.NoColor
 	color.NoColor = true
 	defer func() { color.NoColor = prev }()
+	// Default ColorMode is auto; shouldColorLive returns true unless
+	// NO_COLOR is in env. Tests don't set NO_COLOR so auto → color on.
+	prevMode := currentColorMode
+	currentColorMode = ColorModeAuto
+	defer func() { currentColorMode = prevMode }()
 
 	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "shell run start", 0)
 	rec.AddAttrs(
@@ -92,39 +98,58 @@ func TestLiveSinkPrettyHandler_ForceColor(t *testing.T) {
 		slog.String("command", "echo hello && rm -rf /tmp/cache"),
 	)
 
-	plainEnc := newLiveEncoder(LiveFormatPretty)
-	colorEnc := newLiveEncoder(LiveFormatPrettyColor)
+	pretty := newLiveEncoder(LiveFormatPretty)(rec)
+	// pretty-color is the deprecated alias — SetLiveFormat normalises it,
+	// but newLiveEncoder is called directly here; both should color.
+	alias := newLiveEncoder(LiveFormatPrettyColor)(rec)
 
-	plain := plainEnc(rec)
-	colored := colorEnc(rec)
-
-	if bytes.Contains(plain, []byte("\x1b[")) {
-		t.Fatalf("LiveFormatPretty should not emit ANSI when color.NoColor=true; got:\n%q", plain)
-	}
-	if !bytes.Contains(colored, []byte("\x1b[")) {
-		t.Fatalf("LiveFormatPrettyColor must emit ANSI even when color.NoColor=true; got:\n%q", colored)
-	}
-	// Both encodings should contain the resolved command — color choice
-	// changes the bytes around it, not the content.
-	if !bytes.Contains(plain, []byte("echo hello && rm -rf /tmp/cache")) ||
-		!bytes.Contains(colored, []byte("echo hello && rm -rf /tmp/cache")) {
-		t.Fatalf("resolved command missing from one of the encodings\nplain:\n%s\ncolored:\n%s", plain, colored)
+	for name, b := range map[string][]byte{"pretty": pretty, "pretty-color alias": alias} {
+		if !bytes.Contains(b, []byte("\x1b[")) {
+			t.Fatalf("%s: expected ANSI on the live wire; got:\n%q", name, b)
+		}
+		if !bytes.Contains(b, []byte("echo hello && rm -rf /tmp/cache")) {
+			t.Fatalf("%s: missing resolved command in output\n%s", name, b)
+		}
 	}
 }
 
-// TestLiveSinkPrettyHandler_ForceColor_RestoresGlobal: after a forced-
-// color render, the global color.NoColor must return to its prior value
-// so a stdout pretty handler that ran concurrently isn't permanently
-// flipped into color mode.
-func TestLiveSinkPrettyHandler_ForceColor_RestoresGlobal(t *testing.T) {
+// TestLiveSinkPrettyHandler_NoColorEnv: with NO_COLOR set, the live wire
+// emits monochrome — even though the wire-default is color-on. Matches
+// the no-color.org convention in auto mode.
+func TestLiveSinkPrettyHandler_NoColorEnv(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	prevMode := currentColorMode
+	currentColorMode = ColorModeAuto
+	defer func() { currentColorMode = prevMode }()
+
+	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "shell run start", 0)
+	rec.AddAttrs(
+		slog.String("entry_type", "shell_run_start"),
+		slog.String("run_id", "R1"),
+		slog.String("schedule", "daily"),
+		slog.String("task", "cleanup"),
+		slog.String("command", "echo hello"),
+	)
+	got := newLiveEncoder(LiveFormatPretty)(rec)
+	if bytes.Contains(got, []byte("\x1b[")) {
+		t.Fatalf("NO_COLOR set: expected monochrome on the live wire; got:\n%q", got)
+	}
+}
+
+// TestLiveSinkPrettyHandler_RestoresGlobal: after the handler returns,
+// the global color.NoColor must be restored so a concurrent stdout pretty
+// handler isn't permanently flipped into color mode.
+func TestLiveSinkPrettyHandler_RestoresGlobal(t *testing.T) {
 	prev := color.NoColor
 	color.NoColor = true
 	defer func() { color.NoColor = prev }()
+	prevMode := currentColorMode
+	currentColorMode = ColorModeAuto
+	defer func() { currentColorMode = prevMode }()
 
 	h := &liveSinkPrettyHandler{
-		fallback:   newTintHandler(&bytes.Buffer{}),
-		out:        &bytes.Buffer{},
-		forceColor: true,
+		fallback: newTintHandler(&bytes.Buffer{}),
+		out:      &bytes.Buffer{},
 	}
 	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "dim line", 0)
 	rec.AddAttrs(
