@@ -263,6 +263,21 @@ type Repo struct {
 	// DeployKey is the path to the rsa private key that enables pull access to a
 	// private remote repository.
 	DeployKey string `hcl:"key,optional"`
+	// Username + Password together produce HTTP Basic auth for the
+	// remote. Password supports the standard HCL eval context, so the
+	// idiomatic shape is to interpolate from the process env:
+	//
+	//   repo {
+	//     url      = "https://api.cronicle.dev/git/<org>/<repo>"
+	//     password = "${env.CRONICLE_TOKEN}"
+	//   }
+	//
+	// Username is optional and defaults to "x" — the conventional
+	// placeholder for git's HTTP Basic challenge. Every modern host
+	// (GitHub, GitLab, Gitea, cronicle-git) ignores the username and
+	// authenticates on the token in the password slot.
+	Username string `hcl:"username,optional"`
+	Password string `hcl:"password,optional"`
 	// Branch and Commit are mutually exclusive. ErrBranchAndCommitGiven
 	// rejects HCL that sets both. Historical bug: these fields had their
 	// HCL tags crossed (`branch` populated Commit and vice versa) — fixed

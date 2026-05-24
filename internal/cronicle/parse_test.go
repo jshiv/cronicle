@@ -9,7 +9,6 @@ import (
 
 	"github.com/jshiv/cronicle/internal/cronicle"
 
-	hcl "github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsimple"
 
@@ -20,18 +19,20 @@ import (
 
 var _ = Describe("Parse", func() {
 
-	It("cronicle.CommandEvalContext should contain date, datetime, timestamp, scratch, and path as arguments", func() {
-
-		expected := hcl.EvalContext{
-			Variables: map[string]cty.Value{
-				"date":      cty.StringVal("${date}"),
-				"datetime":  cty.StringVal("${datetime}"),
-				"timestamp": cty.StringVal("${timestamp}"),
-				"scratch":   cty.StringVal("${scratch}"),
-				"path":      cty.StringVal("${path}"),
-			},
+	It("cronicle.CommandEvalContext should contain date, datetime, timestamp, scratch, path, and env as arguments", func() {
+		// Check the time/path tokens are present and exact. The `env`
+		// namespace is dynamic (it snapshots os.Environ at parse time,
+		// which differs across machines) so we assert it exists and is
+		// an object type rather than pinning its contents.
+		ctx := cronicle.CommandEvalContext
+		for _, key := range []string{"date", "datetime", "timestamp", "scratch", "path"} {
+			want := cty.StringVal("${" + key + "}")
+			Expect(ctx.Variables[key]).To(Equal(want))
 		}
-		Expect(cronicle.CommandEvalContext).To(Equal(expected))
+		env, ok := ctx.Variables["env"]
+		Expect(ok).To(BeTrue(), "env namespace must be present in CommandEvalContext")
+		Expect(env.Type().IsObjectType() || env.Type().Equals(cty.EmptyObject)).To(BeTrue(),
+			"env must be a cty Object so ${env.FOO} attribute access works")
 	})
 
 	It("cronicle.Config should be parsable given a date argument", func() {

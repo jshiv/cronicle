@@ -32,7 +32,24 @@ type Git struct {
 	authMethod    *transport.AuthMethod
 }
 
-// Auth authroizes a repository if from a local rsa key
+// Auth returns the transport.AuthMethod implied by the repo block.
+// Branches, in order:
+//
+//  1. URL empty → no auth (local-path clone or no remote).
+//  2. DeployKey set → SSH public-key auth from the file at DeployKey.
+//  3. Password non-empty → HTTP Basic auth. Username defaults to "x"
+//     (git's HTTP Basic challenge requires SOME username; modern hosts
+//     ignore the value). The Password field is a parsed HCL string,
+//     so HCL like `password = "${env.CRONICLE_TOKEN}"` has already
+//     resolved to the env-var value by the time this runs. An empty
+//     Password skips this branch (anonymous), letting laptops without
+//     the env var still clone public repos cleanly.
+//  4. Otherwise → nil (anonymous).
+//
+// The Basic-auth branch is host-agnostic: GitHub, GitLab, Gitea, the
+// cronicle-hosted git server all accept "any-username + token-in-
+// password-slot" over HTTPS, so one shape covers every common case
+// without hardcoding a hostname or env-var name.
 func (repo *Repo) Auth() (transport.AuthMethod, error) {
 
 	if repo.URL == "" {
@@ -56,7 +73,14 @@ func (repo *Repo) Auth() (transport.AuthMethod, error) {
 		return auth, nil
 	}
 
-	// auth := http.BasicAuth{Username: repo.user, Password: repo.password}
+	if repo.Password != "" {
+		user := repo.Username
+		if user == "" {
+			user = "x"
+		}
+		return &http.BasicAuth{Username: user, Password: repo.Password}, nil
+	}
+
 	return nil, nil
 
 }
@@ -123,32 +147,6 @@ func Commit(worktreeDir string, msg string) {
 	fmt.Println(obj)
 }
 
-// cronicleHostedAuth returns BasicAuth set up with the
-// CRONICLE_BEARER_TOKEN env (the platform-level service credential
-// producer + worker pods carry) when the URL is a cronicle-hosted
-// clone URL — recognized by containing "/git/" in the path. Returns
-// nil when the env isn't set or the URL isn't cronicle-hosted, which
-// is the dev/non-platform path.
-//
-// The cronicle-git server (via the cronicle-api proxy in front of it)
-// accepts the infra-bearer in the Basic password slot as a valid auth
-// source for cronicle-hosted repos. The username is conventional only;
-// any non-empty string works.
-//
-// This replaces the earlier URL-rewrite approach (rewriteCronicleHostedURL +
-// CRONICLE_INTERNAL_GIT_URL) with the simpler "auth like a normal git
-// remote" model — same shape as GitHub, just with a different token.
-func cronicleHostedAuth(rawURL string) *http.BasicAuth {
-	if !strings.Contains(rawURL, "/git/") {
-		return nil
-	}
-	token := os.Getenv("CRONICLE_BEARER_TOKEN")
-	if token == "" {
-		return nil
-	}
-	return &http.BasicAuth{Username: "cronicle", Password: token}
-}
-
 //Clone checks for the existance of worktreeDir/.git and clones if it does not exist
 //then executes Git = GetGit(worktreeDir)
 //
@@ -158,15 +156,9 @@ func cronicleHostedAuth(rawURL string) *http.BasicAuth {
 //directory appearing on disk.
 func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, error) {
 
-	// When cronicled runs inside a cronicle platform pod and the URL is
-	// cronicle-hosted, auto-fill BasicAuth from CRONICLE_BEARER_TOKEN.
-	// The caller's auth wins if non-nil (e.g. SSH deploy key on a
-	// per-task repo block).
 	var effectiveAuth transport.AuthMethod
 	if auth != nil && *auth != nil {
 		effectiveAuth = *auth
-	} else if a := cronicleHostedAuth(url); a != nil {
-		effectiveAuth = a
 	}
 
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
