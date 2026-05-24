@@ -16,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -122,41 +123,30 @@ func Commit(worktreeDir string, msg string) {
 	fmt.Println(obj)
 }
 
-// rewriteCronicleHostedURL maps a cronicle-hosted clone URL to the
-// cluster-internal cronicle-git Service URL when CRONICLE_INTERNAL_GIT_URL
-// is set. Lets the producer pod clone repos hosted on cronicle's own
-// git server without needing a PAT — the api proxy fronts external
-// traffic, but inside the cluster cronicle-git trusts requests directly.
+// cronicleHostedAuth returns BasicAuth set up with the
+// CRONICLE_BEARER_TOKEN env (the platform-level service credential
+// producer + worker pods carry) when the URL is a cronicle-hosted
+// clone URL — recognized by containing "/git/" in the path. Returns
+// nil when the env isn't set or the URL isn't cronicle-hosted, which
+// is the dev/non-platform path.
 //
-// Hosted URLs look like:
+// The cronicle-git server (via the cronicle-api proxy in front of it)
+// accepts the infra-bearer in the Basic password slot as a valid auth
+// source for cronicle-hosted repos. The username is conventional only;
+// any non-empty string works.
 //
-//	https://api.cronicle.dev/git/{org}/{repo}.git
-//	https://x:$CRONICLE_PAT@api.cronicle.dev/git/{org}/{repo}.git
-//
-// Rewritten to:
-//
-//	http://cronicle-git.cronicle-platform.svc:8082/git/{org}/{repo}.git
-//
-// Recognition is path-based (contains "/git/" segment) rather than
-// host-pinned so dev / kind / future custom domains all work.
-func rewriteCronicleHostedURL(url string) string {
-	internal := os.Getenv("CRONICLE_INTERNAL_GIT_URL")
-	if internal == "" {
-		return url
+// This replaces the earlier URL-rewrite approach (rewriteCronicleHostedURL +
+// CRONICLE_INTERNAL_GIT_URL) with the simpler "auth like a normal git
+// remote" model — same shape as GitHub, just with a different token.
+func cronicleHostedAuth(rawURL string) *http.BasicAuth {
+	if !strings.Contains(rawURL, "/git/") {
+		return nil
 	}
-	// Strip scheme + userinfo to get host+path.
-	s := url
-	if i := strings.Index(s, "://"); i >= 0 {
-		s = s[i+3:]
+	token := os.Getenv("CRONICLE_BEARER_TOKEN")
+	if token == "" {
+		return nil
 	}
-	if at := strings.LastIndex(s, "@"); at >= 0 {
-		s = s[at+1:]
-	}
-	// s is now "host/git/<org>/<repo>.git"
-	if i := strings.Index(s, "/git/"); i >= 0 {
-		return strings.TrimRight(internal, "/") + s[i:]
-	}
-	return url
+	return &http.BasicAuth{Username: "cronicle", Password: token}
 }
 
 //Clone checks for the existance of worktreeDir/.git and clones if it does not exist
@@ -168,16 +158,20 @@ func rewriteCronicleHostedURL(url string) string {
 //directory appearing on disk.
 func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, error) {
 
+	// When cronicled runs inside a cronicle platform pod and the URL is
+	// cronicle-hosted, auto-fill BasicAuth from CRONICLE_BEARER_TOKEN.
+	// The caller's auth wins if non-nil (e.g. SSH deploy key on a
+	// per-task repo block).
+	var effectiveAuth transport.AuthMethod
+	if auth != nil && *auth != nil {
+		effectiveAuth = *auth
+	} else if a := cronicleHostedAuth(url); a != nil {
+		effectiveAuth = a
+	}
+
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
-		// In-cluster rewrite: when cronicled runs inside a cronicle
-		// platform pod, CRONICLE_INTERNAL_GIT_URL points at the
-		// cluster-internal cronicle-git Service (no PAT auth required —
-		// the api proxy in front of cronicle-git is what gates external
-		// traffic). For URLs hosted on cronicle itself, route directly
-		// to the Service so the producer doesn't need a PAT.
-		url = rewriteCronicleHostedURL(url)
 		slog.Info("git clone", "url", url, "path", worktreeDir)
-		cloneOptions := git.CloneOptions{URL: url, Auth: *auth}
+		cloneOptions := git.CloneOptions{URL: url, Auth: effectiveAuth}
 		// In pretty mode, route go-git's progress sideband straight to
 		// stdout so the user sees the live "Counting objects" / "Receiving
 		// objects" lines (the same UX as the host `git` CLI). In file/Loki
@@ -199,8 +193,18 @@ func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, err
 		slog.Info("git open", "path", worktreeDir, "note", "worktree already exists, skipping clone")
 	}
 
+	// Stash the effective auth (caller-supplied OR auto-filled cronicle-
+	// hosted bearer) so Checkout's fetch uses the same credentials the
+	// Clone used. Without this, Checkout would fall back to the caller's
+	// nil auth and the fetch against a cronicle-hosted repo would 401.
+	var stored transport.AuthMethod
+	if effectiveAuth != nil {
+		stored = effectiveAuth
+	} else if auth != nil {
+		stored = *auth
+	}
 	var g Git
-	g.authMethod = auth
+	g.authMethod = &stored
 	if err := g.Open(worktreeDir); err != nil {
 		return g, err
 	}
