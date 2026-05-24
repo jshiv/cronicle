@@ -16,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -31,7 +32,24 @@ type Git struct {
 	authMethod    *transport.AuthMethod
 }
 
-// Auth authroizes a repository if from a local rsa key
+// Auth returns the transport.AuthMethod implied by the repo block.
+// Branches, in order:
+//
+//  1. URL empty → no auth (local-path clone or no remote).
+//  2. DeployKey set → SSH public-key auth from the file at DeployKey.
+//  3. Password non-empty → HTTP Basic auth. Username defaults to "x"
+//     (git's HTTP Basic challenge requires SOME username; modern hosts
+//     ignore the value). The Password field is a parsed HCL string,
+//     so HCL like `password = "${env.CRONICLE_TOKEN}"` has already
+//     resolved to the env-var value by the time this runs. An empty
+//     Password skips this branch (anonymous), letting laptops without
+//     the env var still clone public repos cleanly.
+//  4. Otherwise → nil (anonymous).
+//
+// The Basic-auth branch is host-agnostic: GitHub, GitLab, Gitea, the
+// cronicle-hosted git server all accept "any-username + token-in-
+// password-slot" over HTTPS, so one shape covers every common case
+// without hardcoding a hostname or env-var name.
 func (repo *Repo) Auth() (transport.AuthMethod, error) {
 
 	if repo.URL == "" {
@@ -55,7 +73,14 @@ func (repo *Repo) Auth() (transport.AuthMethod, error) {
 		return auth, nil
 	}
 
-	// auth := http.BasicAuth{Username: repo.user, Password: repo.password}
+	if repo.Password != "" {
+		user := repo.Username
+		if user == "" {
+			user = "x"
+		}
+		return &http.BasicAuth{Username: user, Password: repo.Password}, nil
+	}
+
 	return nil, nil
 
 }
@@ -168,6 +193,11 @@ func rewriteCronicleHostedURL(url string) string {
 //directory appearing on disk.
 func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, error) {
 
+	var effectiveAuth transport.AuthMethod
+	if auth != nil && *auth != nil {
+		effectiveAuth = *auth
+	}
+
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
 		// In-cluster rewrite: when cronicled runs inside a cronicle
 		// platform pod, CRONICLE_INTERNAL_GIT_URL points at the
@@ -177,7 +207,7 @@ func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, err
 		// to the Service so the producer doesn't need a PAT.
 		url = rewriteCronicleHostedURL(url)
 		slog.Info("git clone", "url", url, "path", worktreeDir)
-		cloneOptions := git.CloneOptions{URL: url, Auth: *auth}
+		cloneOptions := git.CloneOptions{URL: url, Auth: effectiveAuth}
 		// In pretty mode, route go-git's progress sideband straight to
 		// stdout so the user sees the live "Counting objects" / "Receiving
 		// objects" lines (the same UX as the host `git` CLI). In file/Loki
@@ -199,8 +229,18 @@ func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, err
 		slog.Info("git open", "path", worktreeDir, "note", "worktree already exists, skipping clone")
 	}
 
+	// Stash the effective auth (caller-supplied OR auto-filled cronicle-
+	// hosted bearer) so Checkout's fetch uses the same credentials the
+	// Clone used. Without this, Checkout would fall back to the caller's
+	// nil auth and the fetch against a cronicle-hosted repo would 401.
+	var stored transport.AuthMethod
+	if effectiveAuth != nil {
+		stored = effectiveAuth
+	} else if auth != nil {
+		stored = *auth
+	}
 	var g Git
-	g.authMethod = auth
+	g.authMethod = &stored
 	if err := g.Open(worktreeDir); err != nil {
 		return g, err
 	}
