@@ -527,10 +527,22 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 			return exec.Result{}, err
 		}
 		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo.URL, &auth)
-		// var err error
-		// task.Git, err = Clone(task.CroniclePath, task.CronicleRepo.URL, task.CronicleRepo.DeployKey)
 		if err != nil {
 			slog.Error("clone failed", "error", err.Error())
+			return exec.Result{}, err
+		}
+		// Fetch + checkout on every task exec so the worker picks up
+		// new commits on the schedule's repo. Without this, Clone()
+		// short-circuits to "git open, skip clone" on second+ runs and
+		// the worker stays on whatever the initial clone captured —
+		// indefinitely, until the pod restarts. The producer keeps its
+		// /work fresh via its own config-refresh loop; the worker has
+		// no equivalent, so we do it here per-task.
+		//
+		// Symmetric with the task.Repo branch above. Branch/commit
+		// inherit from the schedule-level (CronicleRepo) block.
+		if err := task.Git.Checkout(task.CronicleRepo.Branch, task.CronicleRepo.Commit); err != nil {
+			slog.Error("checkout failed", "error", err.Error())
 			return exec.Result{}, err
 		}
 	}
