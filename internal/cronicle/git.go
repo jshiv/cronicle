@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
+	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
@@ -105,6 +106,7 @@ func (g *Git) Open(worktreePath string) error {
 		if err != nil {
 			return err
 		}
+		wt.Excludes = append(wt.Excludes, gitignore.ParsePattern(".cronicle", nil))
 		g.Worktree = wt
 
 		//Set head and Head and Commit state after opening worktree

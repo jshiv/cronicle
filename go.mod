@@ -3,7 +3,7 @@ module github.com/jshiv/cronicle
 go 1.26
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.41.0
+	github.com/anthropics/anthropic-sdk-go v1.45.0
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/config v1.27.27
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.101.0
@@ -86,7 +86,7 @@ require (
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/skeema/knownhosts v1.3.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/standard-webhooks/standard-webhooks/libraries v0.0.0-20260427160145-3afa6683f8b2 // indirect
+	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
@@ -108,3 +108,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/go-git/go-git/v5 => github.com/jshiv/go-git/v5 v5.19.1-0.20260525224750-92faf6f25f0b
