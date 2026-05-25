@@ -13,8 +13,9 @@ import (
 	url "github.com/whilp/git-urls"
 
 	"github.com/fatih/color"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/transport/ssh"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -29,7 +30,7 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 
 	//if remote is given, clone it to the cronicle path
 	if cloneRepo != "" {
-		var cloneOptions git.CloneOptions
+		var clientOpts []client.Option
 		if deployKey != "" {
 			auth, err := ssh.NewPublicKeysFromFile("git", deployKey, "")
 			// Same defensive ordering as (*Repo).Auth in git.go: check
@@ -39,13 +40,12 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 				Fatal(fmt.Errorf("load ssh deploy key %q: %w", deployKey, err))
 			}
 			auth.HostKeyCallback = gossh.InsecureIgnoreHostKey()
-			cloneOptions = git.CloneOptions{URL: cloneRepo, Auth: auth}
-		} else {
-			cloneOptions = git.CloneOptions{URL: cloneRepo}
+			clientOpts = []client.Option{client.WithSSHAuth(auth)}
 		}
+		cloneOptions := git.CloneOptions{URL: cloneRepo, ClientOptions: clientOpts}
 
 		slog.Info("cloning repo", "url", cloneRepo, "path", absCroniclePath)
-		_, err = git.PlainClone(absCroniclePath, false, &cloneOptions)
+		_, err = git.PlainClone(absCroniclePath, &cloneOptions)
 		if err != nil {
 			Fatal(fmt.Errorf("clone %s: %w", cloneRepo, err))
 		}
@@ -148,11 +148,11 @@ func (conf *Config) Init(croniclePath string) error {
 
 	//If conf.Repo is a given repo, clone and fetch
 	if conf.Repo != nil {
-		auth, err := conf.Repo.Auth()
+		opts, err := conf.Repo.Auth()
 		if err != nil {
 			return fmt.Errorf("config repo auth: %w", err)
 		}
-		g, err := Clone(croniclePath, conf.Repo.URL, &auth)
+		g, err := Clone(croniclePath, conf.Repo.URL, opts)
 		if err != nil {
 			return fmt.Errorf("clone config repo %s: %w", conf.Repo.URL, err)
 		}
@@ -167,12 +167,12 @@ func (conf *Config) Init(croniclePath string) error {
 				return err
 			}
 			if task.Repo != nil {
-				auth, err := task.Repo.Auth()
+				opts, err := task.Repo.Auth()
 				if err != nil {
 					return fmt.Errorf("schedule %q task %q repo auth: %w",
 						schedule.Name, task.Name, err)
 				}
-				if _, err := Clone(task.Path, task.Repo.URL, &auth); err != nil {
+				if _, err := Clone(task.Path, task.Repo.URL, opts); err != nil {
 					return fmt.Errorf("schedule %q task %q clone %s: %w",
 						schedule.Name, task.Name, task.Repo.URL, err)
 				}

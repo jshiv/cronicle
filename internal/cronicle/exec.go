@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/jshiv/cronicle/internal/cronicle/secretstore"
 	"github.com/jshiv/cronicle/pkg/agent"
 	"github.com/jshiv/cronicle/pkg/exec"
@@ -342,7 +342,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// git tool reuses the task's repo auth so push works against the same
 	// remote the clone came from. Errors here are non-fatal — read-only
 	// git operations (status, log, diff) work without auth.
-	var gitAuth transport.AuthMethod
+	var gitAuth []client.Option
 	if task.Repo != nil {
 		if a, err := task.Repo.Auth(); err == nil {
 			gitAuth = a
@@ -507,12 +507,11 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 
 	//If a repo is given, clone the repo and task.Git.Open(task.Path)
 	if task.Repo != nil {
-		auth, err := task.Repo.Auth()
+		opts, err := task.Repo.Auth()
 		if err != nil {
 			return exec.Result{}, err
 		}
-		g, err := Clone(task.Path, task.Repo.URL, &auth)
-		// g, err := Clone(task.Path, task.Repo.URL, task.Repo.DeployKey)
+		g, err := Clone(task.Path, task.Repo.URL, opts)
 		if err != nil {
 			return exec.Result{}, err
 		}
@@ -522,11 +521,11 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 			return exec.Result{}, err
 		}
 	} else if taskPathIsCroniclePathWithGit {
-		auth, err := task.CronicleRepo.Auth()
+		opts, err := task.CronicleRepo.Auth()
 		if err != nil {
 			return exec.Result{}, err
 		}
-		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo.URL, &auth)
+		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo.URL, opts)
 		if err != nil {
 			slog.Error("clone failed", "error", err.Error())
 			return exec.Result{}, err
