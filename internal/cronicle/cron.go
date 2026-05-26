@@ -1,6 +1,7 @@
 package cronicle
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -253,6 +254,14 @@ var staticEntryIDs = map[cron.EntryID]bool{}
 //confPrior stores a gloabal state of the previosly loaded config for diff checking
 var confPriorGlobal *Config
 
+// lastRawHCL holds the raw file bytes from the previous successful load.
+// Compared byte-for-byte against the current file to detect changes.
+// The previous approach used Hcl() round-trip (encode → bytes), which
+// is lossy — gohcl drops fields it doesn't model (repo block, comments)
+// and normalizes formatting, so two different files could produce
+// identical round-trip bytes and the reload would never trigger.
+var lastRawHCL []byte
+
 //LoadCron exeutes GetConfig(cronicleFile) to load the current config from file,
 //checks the given config against the global confPrior, and if there is a change,
 //stops the cron, removes all of the confPrior cron entries and adds the new conf
@@ -260,27 +269,27 @@ var confPriorGlobal *Config
 func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool) {
 
 	slog.Info("Loading config...", "cronicle", "heartbeat", "path", cronicleFile)
+
+	rawHCL, err := os.ReadFile(cronicleFile)
+	if err != nil {
+		slog.Error("config read failed; keeping previous schedules in place",
+			"path", cronicleFile, "error", err.Error())
+		return
+	}
+
 	conf, err := GetConfig(cronicleFile)
 	if err != nil {
-		// HCL parse / decode failed. ParseFile returns (nil, diags) on
-		// hard parse errors, so falling through to conf.Hcl() below
-		// would deref a nil pointer and crash the producer. Keep the
-		// previous good config in place; operator can fix the file and
-		// the next heartbeat picks up the change.
 		slog.Error("config reload failed; keeping previous schedules in place",
 			"path", cronicleFile, "error", err.Error())
 		return
 	}
 	if conf == nil {
-		// Defensive: GetConfig contract is (nil, err) on failure, but
-		// some future change might return (nil, nil). Treat that the
-		// same way as an explicit error.
 		slog.Error("config reload returned nil config; keeping previous schedules in place",
 			"path", cronicleFile)
 		return
 	}
 
-	if string(confPriorGlobal.Hcl().Bytes) != string(conf.Hcl().Bytes) || force {
+	if !bytes.Equal(lastRawHCL, rawHCL) || force {
 		slog.Info("Refreshing config...", "cronicle", "heartbeat", "path", cronicleFile)
 		c.Stop()
 		for _, entry := range c.Entries() {
@@ -310,6 +319,7 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 		}
 		c.Start()
 	}
+	lastRawHCL = rawHCL
 	confPriorGlobal = conf
 
 }
