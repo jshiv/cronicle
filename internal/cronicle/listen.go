@@ -179,9 +179,10 @@ func (s *listenServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 // intentionally NOT here — those live in slog and the file log; this
 // endpoint is for "what's available to trigger?", not "what happened?".
 type scheduleSummary struct {
-	Name  string   `json:"name"`
-	Cron  string   `json:"cron"`
-	Tasks []string `json:"tasks"`
+	Name     string   `json:"name"`
+	Cron     string   `json:"cron"`
+	Timezone string   `json:"timezone,omitempty"`
+	Tasks    []string `json:"tasks"`
 }
 
 func (s *listenServer) handleListSchedules(w http.ResponseWriter, r *http.Request) {
@@ -204,7 +205,7 @@ func (s *listenServer) handleListSchedules(w http.ResponseWriter, r *http.Reques
 		for i, t := range sch.Tasks {
 			ts[i] = t.Name
 		}
-		out = append(out, scheduleSummary{Name: sch.Name, Cron: sch.Cron, Tasks: ts})
+		out = append(out, scheduleSummary{Name: sch.Name, Cron: sch.Cron, Timezone: sch.Timezone, Tasks: ts})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
