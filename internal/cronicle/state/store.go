@@ -147,6 +147,15 @@ func (s *Store) BackfillSecrets() (int, error) {
 // ephemeral in-memory store (cronicle exec, tests). For on-disk usage,
 // pass a filesystem path; the parent directory must already exist.
 //
+// TODO(postgres): accept postgres:// DSNs to unify config source, secret
+// store, and state backend onto one database. Requires:
+//   - DSN scheme dispatch (file path → sqlite, postgres:// → pgx)
+//   - Schema dialect: AUTOINCREMENT → SERIAL, INSERT OR IGNORE →
+//     ON CONFLICT DO NOTHING (affects schema.go + store.go + queue.go +
+//     control.go — not just DDL but also runtime queries)
+//   - pgx/v5/stdlib driver registration
+//   - Integration test against a real Postgres instance
+//
 // WAL mode is enabled and busy_timeout set to 5s so concurrent writers
 // (event ingest + queue claim, once Phase 2 lands) wait rather than
 // fail with SQLITE_BUSY.
@@ -154,8 +163,6 @@ func Open(dsn string) (*Store, error) {
 	if dsn == "" {
 		return nil, errors.New("state.Open: empty DSN")
 	}
-	// modernc.org/sqlite registers as "sqlite". The pragmas pass through
-	// the connection string so they apply to every connection in the pool.
 	conn := dsn
 	if dsn != ":memory:" {
 		conn = dsn + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)"
@@ -164,10 +171,6 @@ func Open(dsn string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("state.Open: %w", err)
 	}
-	// Pool size of 1 keeps writes serialized at the connection level on
-	// top of the in-process mutex; SQLite WAL serializes anyway, but this
-	// avoids transient SQLITE_BUSY on the in-memory variant where
-	// busy_timeout pragmas don't help.
 	db.SetMaxOpenConns(1)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()

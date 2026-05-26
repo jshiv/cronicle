@@ -415,12 +415,13 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 	if err != nil {
 		Fatal(err)
 	}
-	// Foreground one-shot: ephemeral in-memory projection. The user is
-	// watching the run; nothing later will query the projection. Keeps
-	// disk untouched so `cronicle exec` stays write-free where the user
-	// hasn't asked for --log-to-file.
-	if err := EnableStateStore(":memory:"); err != nil {
-		slog.Warn("state store open failed; projection disabled", "error", err.Error())
+	// Foreground one-shot: use the already-open state store (opened by
+	// cmd/exec.go for secret resolution) if available. Otherwise fall
+	// back to an ephemeral in-memory projection.
+	if StateStore() == nil {
+		if err := EnableStateStore(":memory:"); err != nil {
+			slog.Warn("state store open failed; projection disabled", "error", err.Error())
+		}
 	}
 	slog.Info("Loading " + cronicleFileAbs)
 	if !fileExists(cronicleFileAbs) {

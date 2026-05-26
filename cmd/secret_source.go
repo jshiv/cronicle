@@ -158,7 +158,12 @@ func deriveDefaultSpec(cmd *cobra.Command) (spec, token string) {
 		return "state://", ""
 	}
 
-	// Standalone shape: the operator's shell IS the secret source.
+	// Standalone shape: if state.db is open (e.g. cronicle exec after
+	// cronicle init), secrets resolve from the local store. Otherwise
+	// fall back to the operator's shell env.
+	if cronicle.StateStore() != nil {
+		return "state://", ""
+	}
 	return "env://", ""
 }
 

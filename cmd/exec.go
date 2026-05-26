@@ -16,6 +16,7 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -60,6 +61,19 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 				if err := cronicle.EnableFileLog(filepath.Dir(abs)); err != nil {
 					cronicle.Fatal(err)
 				}
+			}
+		}
+
+		// Open state.db so $secret.* refs resolve during exec.
+		// Falls back to CRONICLE_SECRET_SOURCE=env:// if no state.db.
+		absPath, _ := filepath.Abs(path)
+		stateDir := filepath.Dir(absPath)
+		if err := cronicle.EnableStateStore(filepath.Join(stateDir, ".cronicle", "state.db")); err != nil {
+			slog.Debug("state.db not available, secrets resolve from env only", "err", err.Error())
+		} else {
+			ctx := context.Background()
+			if err := startSecretSource(ctx, cmd); err != nil {
+				slog.Debug("secret source not configured", "err", err.Error())
 			}
 		}
 
@@ -113,6 +127,7 @@ func init() {
 	execCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
 	execCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")
 	execCmd.Flags().Bool("log-to-file", false, "mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); stdout is unaffected")
+	addSecretSourceFlags(execCmd)
 
 	// Here you will define your flags and configuration settings.
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
+	"github.com/jshiv/cronicle/internal/cronicle/state"
 	url "github.com/whilp/git-urls"
 
 	"github.com/fatih/color"
@@ -75,6 +76,20 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 		defer f.Close()
 		if _, err := f.WriteString(".cronicle\n"); err != nil {
 			slog.Error("gitignore write failed", "error", err.Error())
+		}
+	}
+
+	// Bootstrap .cronicle/state.db so `cronicle secret set` and
+	// `cronicle exec` with $secret.* refs work immediately after
+	// init — no need to run the daemon first.
+	stateDBPath := path.Join(absCroniclePath, ".cronicle", "state.db")
+	if !fileExists(stateDBPath) {
+		s, err := state.Open(stateDBPath)
+		if err != nil {
+			slog.Error("state.db init failed", "error", err.Error())
+		} else {
+			s.Close()
+			slog.Info("state.db initialized", "path", stateDBPath)
 		}
 	}
 
