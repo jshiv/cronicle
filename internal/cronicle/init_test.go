@@ -26,7 +26,7 @@ var _ = Describe("Init", func() {
 				Expect(err).To(BeNil())
 				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath))
 			})
-			It("should clone a sub repo from https://github.com/jshiv/cronicle-sample.git", func() {
+			It("should propagate schedule repo to task and clone at execution time", func() {
 				conf.Schedules[0].Repo = &cronicle.Repo{}
 				conf.Schedules[0].Repo.URL = "https://github.com/jshiv/cronicle-sample.git"
 				err := conf.Init(croniclePath)
@@ -34,12 +34,14 @@ var _ = Describe("Init", func() {
 				Expect(err).To(BeNil())
 				Expect(conf.Schedules[0].Tasks[0].Path).To(Equal(croniclePath + "/.cronicle/repos/jshiv/cronicle-sample.git/foo/bar"))
 				Expect(conf.Schedules[0].Tasks[0].Repo.URL).To(Equal("https://github.com/jshiv/cronicle-sample.git"))
-				Expect(config.DirExists(croniclePath + "/.cronicle/repos/jshiv/cronicle-sample.git/foo/bar/.git")).To(Equal(true))
+				// Per-task repos are no longer cloned at Init() — they're
+				// cloned at execution time in Task.Execute() so $secret.*
+				// references in repo passwords are resolved first.
+				// Verify the clone works when triggered explicitly:
 				repo := cronicle.Repo{URL: conf.Schedules[0].Tasks[0].Repo.URL, DeployKey: ""}
 				auth, err := repo.Auth()
 				Expect(err).To(BeNil())
 				g, err := cronicle.Clone(conf.Schedules[0].Tasks[0].Path, conf.Schedules[0].Tasks[0].Repo.URL, auth)
-				// g, err := cronicle.Clone(conf.Schedules[0].Tasks[0].Path, conf.Schedules[0].Tasks[0].Repo)
 				Expect(err).To(BeNil())
 				Expect(g.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))
 
