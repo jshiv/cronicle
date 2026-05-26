@@ -172,10 +172,56 @@ func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 			cloneOptions.Progress = os.Stdout
 		}
 
-		_, err := git.PlainClone(worktreeDir, &cloneOptions)
-		if err != nil {
-			slog.Error("git clone failed", "url", url, "path", worktreeDir, "error", err.Error())
-			return Git{}, err
+		// go-git v6 rejects PlainClone into non-empty dirs. When the
+		// workdir has files (e.g. cronicled writes cronicle.hcl before
+		// exec), init + add remote + fetch instead.
+		empty, _ := isDirEmpty(worktreeDir)
+		if !empty {
+			if _, err := git.PlainInit(worktreeDir, false); err != nil {
+				slog.Error("git init failed", "path", worktreeDir, "error", err.Error())
+				return Git{}, err
+			}
+			r, err := git.PlainOpen(worktreeDir)
+			if err != nil {
+				return Git{}, err
+			}
+			if _, err := r.CreateRemote(&c.RemoteConfig{
+				Name: "origin",
+				URLs: []string{url},
+			}); err != nil {
+				return Git{}, err
+			}
+			if err := r.Fetch(&git.FetchOptions{
+				RemoteName:    "origin",
+				ClientOptions: opts,
+			}); err != nil {
+				slog.Error("git fetch failed", "url", url, "path", worktreeDir, "error", err.Error())
+				return Git{}, err
+			}
+			// After init+fetch, HEAD is unborn. Point it at the remote's
+			// default branch and checkout so the worktree is populated.
+			wt, err := r.Worktree()
+			if err != nil {
+				return Git{}, err
+			}
+			if err := wt.Checkout(&git.CheckoutOptions{
+				Branch: plumbing.NewRemoteReferenceName("origin", "master"),
+				Force:  true,
+			}); err != nil {
+				// Try "main" if "master" doesn't exist
+				if err2 := wt.Checkout(&git.CheckoutOptions{
+					Branch: plumbing.NewRemoteReferenceName("origin", "main"),
+					Force:  true,
+				}); err2 != nil {
+					return Git{}, fmt.Errorf("checkout after init+fetch: %w (also tried main: %v)", err, err2)
+				}
+			}
+		} else {
+			_, err := git.PlainClone(worktreeDir, &cloneOptions)
+			if err != nil {
+				slog.Error("git clone failed", "url", url, "path", worktreeDir, "error", err.Error())
+				return Git{}, err
+			}
 		}
 		slog.Info("git clone complete", "url", url, "path", worktreeDir)
 	} else {
