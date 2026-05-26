@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -309,7 +310,11 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 			case schedule.Cron == "":
 				slog.Warn("Skip execution. Use 'cronicle exec' to run.", "schedule", schedule.Name, "cron", schedule.Cron)
 			default:
-				_, err := c.AddFunc(schedule.Cron, ProduceSchedule(schedule, queue))
+				cronExpr := schedule.Cron
+				if schedule.Timezone != "" && !strings.HasPrefix(cronExpr, "CRON_TZ=") && !strings.HasPrefix(cronExpr, "@") {
+					cronExpr = "CRON_TZ=" + schedule.Timezone + " " + cronExpr
+				}
+				_, err := c.AddFunc(cronExpr, ProduceSchedule(schedule, queue))
 				if err != nil {
 					fmt.Printf("\x1b[31;1m%s\x1b[0m\n", fmt.Sprintf("schedule cron format error: %s", schedule.Name))
 					Fatal(err)
