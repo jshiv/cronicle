@@ -247,6 +247,18 @@ func fileExists(filename string) bool {
 	return !info.IsDir()
 }
 
+// isDirEmpty returns true if the directory is empty or doesn't exist.
+func isDirEmpty(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return len(entries) == 0, nil
+}
+
 // DirExists checks that a directory exists.
 func DirExists(dirname string) bool {
 	info, err := os.Stat(dirname)
