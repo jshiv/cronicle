@@ -86,7 +86,8 @@ type Schedule struct {
 type Task struct {
 	Name         string   `hcl:"name,label"`
 	Command      []string `hcl:"command,optional"`
-	Depends      []string `hcl:"depends,optional"`
+	Depends           []string `hcl:"depends,optional"`
+	ContinueOnFailure bool     `hcl:"continue_on_failure,optional"`
 	Repo         *Repo    `hcl:"repo,block"`
 	Retry        *Retry   `hcl:"retry,block"`
 	Agent        *Agent   `hcl:"agent,block"`

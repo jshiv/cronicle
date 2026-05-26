@@ -74,6 +74,13 @@ func (schedule Schedule) ExecuteTasks() {
 	}
 	slog.Info("schedule started", startAttrs...)
 
+	continueOnFailure := make(map[string]bool)
+	for _, task := range schedule.Tasks {
+		if task.ContinueOnFailure {
+			continueOnFailure[task.Name] = true
+		}
+	}
+
 	walkErr := walkDAG(deps, func(name string) error {
 		task := taskMap[name]
 		// Run-pause gate: a POST /v1/runs/{id}/pause may land mid-walk.
@@ -117,6 +124,14 @@ func (schedule Schedule) ExecuteTasks() {
 		}
 		_, err := task.Execute(now)
 		return err
+	}, continueOnFailure, func(node, failedDep string) {
+		slog.Warn("task skipped: upstream dependency failed",
+			"entry_type", "task_dep_failed",
+			"run_id", schedule.RunID,
+			"schedule", schedule.Name,
+			"task", node,
+			"failed_dependency", failedDep,
+		)
 	})
 	durationMs := time.Since(startedAt).Milliseconds()
 
@@ -142,8 +157,12 @@ func (schedule Schedule) ExecuteTasks() {
 	}
 }
 
-// walkDAG executes fn for each node in topological order, running independent nodes concurrently.
-func walkDAG(deps map[string][]string, fn func(string) error) error {
+// walkDAG executes fn for each node in topological order, running independent
+// nodes concurrently. When fn returns an error for a node, all transitive
+// dependents are skipped (marked failed without calling fn) unless
+// continueOnFailure[dependent] is true. onDepFailed is called for every
+// skipped dependent with the name of the first failed upstream dependency.
+func walkDAG(deps map[string][]string, fn func(string) error, continueOnFailure map[string]bool, onDepFailed func(node, failedDep string)) error {
 	inDegree := make(map[string]int)
 	dependents := make(map[string][]string)
 
@@ -159,6 +178,7 @@ func walkDAG(deps map[string][]string, fn func(string) error) error {
 
 	var mu sync.Mutex
 	var firstErr error
+	failed := make(map[string]bool)
 	done := make(chan string, len(deps))
 
 	launch := func(node string) {
@@ -168,6 +188,7 @@ func walkDAG(deps map[string][]string, fn func(string) error) error {
 				if firstErr == nil {
 					firstErr = err
 				}
+				failed[node] = true
 				mu.Unlock()
 			}
 			done <- node
@@ -188,8 +209,32 @@ func walkDAG(deps map[string][]string, fn func(string) error) error {
 		for _, dependent := range dependents[completed] {
 			inDegree[dependent]--
 			if inDegree[dependent] == 0 {
-				running++
-				launch(dependent)
+				// Check whether any of this dependent's upstream deps failed.
+				mu.Lock()
+				var failedDep string
+				if !continueOnFailure[dependent] {
+					for _, dep := range deps[dependent] {
+						if failed[dep] {
+							failedDep = dep
+							break
+						}
+					}
+				}
+				if failedDep != "" {
+					// Skip this dependent: mark it failed for cascade and
+					// signal completion without launching a goroutine.
+					failed[dependent] = true
+					mu.Unlock()
+					if onDepFailed != nil {
+						onDepFailed(dependent, failedDep)
+					}
+					running++
+					done <- dependent
+				} else {
+					mu.Unlock()
+					running++
+					launch(dependent)
+				}
 			}
 		}
 	}
