@@ -7,7 +7,7 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v6/plumbing"
 
 	"github.com/jshiv/cronicle/internal/cronicle"
 	config "github.com/jshiv/cronicle/internal/cronicle"
@@ -38,7 +38,7 @@ var _ = Describe("Init", func() {
 				repo := cronicle.Repo{URL: conf.Schedules[0].Tasks[0].Repo.URL, DeployKey: ""}
 				auth, err := repo.Auth()
 				Expect(err).To(BeNil())
-				g, err := cronicle.Clone(conf.Schedules[0].Tasks[0].Path, conf.Schedules[0].Tasks[0].Repo.URL, &auth)
+				g, err := cronicle.Clone(conf.Schedules[0].Tasks[0].Path, conf.Schedules[0].Tasks[0].Repo.URL, auth)
 				// g, err := cronicle.Clone(conf.Schedules[0].Tasks[0].Path, conf.Schedules[0].Tasks[0].Repo)
 				Expect(err).To(BeNil())
 				Expect(g.Head.Name()).To(Equal(plumbing.NewBranchReferenceName("master")))

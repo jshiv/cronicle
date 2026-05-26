@@ -25,11 +25,11 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/go-git/go-git/v5"
-	gitconfig "github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v6"
+	gitconfig "github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 // GitTool exposes a small subset of git operations to the agent via go-git.
@@ -41,7 +41,7 @@ import (
 // by cronicle.Commit elsewhere in the package.
 type GitTool struct {
 	Workspace string
-	Auth      transport.AuthMethod
+	Auth      []client.Option
 }
 
 func (g *GitTool) Name() string { return "git" }
@@ -419,10 +419,7 @@ func (g *GitTool) push(ctx context.Context, repo *git.Repository, raw json.RawMe
 	if a.Remote == "" {
 		a.Remote = "origin"
 	}
-	opts := &git.PushOptions{RemoteName: a.Remote}
-	if g.Auth != nil {
-		opts.Auth = g.Auth
-	}
+	opts := &git.PushOptions{RemoteName: a.Remote, ClientOptions: g.Auth}
 	if a.Branch != "" {
 		// Push only the named branch with `refs/heads/<x>:refs/heads/<x>`.
 		full := string(plumbing.NewBranchReferenceName(a.Branch))

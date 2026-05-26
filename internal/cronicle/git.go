@@ -10,15 +10,15 @@ import (
 
 	homedir "github.com/mitchellh/go-homedir"
 
-	"github.com/go-git/go-git/v5"
-	c "github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	c "github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/object"
 
-	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	"github.com/go-git/go-git/v6/plumbing/format/gitignore"
+	"github.com/go-git/go-git/v6/plumbing/transport/http"
+	"github.com/go-git/go-git/v6/plumbing/transport/ssh"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -30,7 +30,7 @@ type Git struct {
 	Hash          *plumbing.Hash
 	Commit        *object.Commit
 	ReferenceName plumbing.ReferenceName
-	authMethod    *transport.AuthMethod
+	authMethod    []client.Option
 }
 
 // Auth returns the transport.AuthMethod implied by the repo block.
@@ -51,7 +51,7 @@ type Git struct {
 // cronicle-hosted git server all accept "any-username + token-in-
 // password-slot" over HTTPS, so one shape covers every common case
 // without hardcoding a hostname or env-var name.
-func (repo *Repo) Auth() (transport.AuthMethod, error) {
+func (repo *Repo) Auth() ([]client.Option, error) {
 
 	if repo.URL == "" {
 		return nil, nil
@@ -71,7 +71,7 @@ func (repo *Repo) Auth() (transport.AuthMethod, error) {
 			return nil, fmt.Errorf("load ssh deploy key %q: %w", keyPath, err)
 		}
 		auth.HostKeyCallback = gossh.InsecureIgnoreHostKey()
-		return auth, nil
+		return []client.Option{client.WithSSHAuth(auth)}, nil
 	}
 
 	if repo.Password != "" {
@@ -79,7 +79,7 @@ func (repo *Repo) Auth() (transport.AuthMethod, error) {
 		if user == "" {
 			user = "x"
 		}
-		return &http.BasicAuth{Username: user, Password: repo.Password}, nil
+		return []client.Option{client.WithHTTPAuth(&http.BasicAuth{Username: user, Password: repo.Password})}, nil
 	}
 
 	return nil, nil
@@ -156,16 +156,11 @@ func Commit(worktreeDir string, msg string) {
 //in the pretty/json/text stdout streams — previously these operations
 //were silent and the only signal that cloning happened was the
 //directory appearing on disk.
-func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, error) {
-
-	var effectiveAuth transport.AuthMethod
-	if auth != nil && *auth != nil {
-		effectiveAuth = *auth
-	}
+func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
 		slog.Info("git clone", "url", url, "path", worktreeDir)
-		cloneOptions := git.CloneOptions{URL: url, Auth: effectiveAuth}
+		cloneOptions := git.CloneOptions{URL: url, ClientOptions: opts}
 		// In pretty mode, route go-git's progress sideband straight to
 		// stdout so the user sees the live "Counting objects" / "Receiving
 		// objects" lines (the same UX as the host `git` CLI). In file/Loki
@@ -177,7 +172,7 @@ func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, err
 			cloneOptions.Progress = os.Stdout
 		}
 
-		_, err := git.PlainClone(worktreeDir, false, &cloneOptions)
+		_, err := git.PlainClone(worktreeDir, &cloneOptions)
 		if err != nil {
 			slog.Error("git clone failed", "url", url, "path", worktreeDir, "error", err.Error())
 			return Git{}, err
@@ -187,18 +182,11 @@ func Clone(worktreeDir string, url string, auth *transport.AuthMethod) (Git, err
 		slog.Info("git open", "path", worktreeDir, "note", "worktree already exists, skipping clone")
 	}
 
-	// Stash the effective auth (caller-supplied OR auto-filled cronicle-
-	// hosted bearer) so Checkout's fetch uses the same credentials the
-	// Clone used. Without this, Checkout would fall back to the caller's
-	// nil auth and the fetch against a cronicle-hosted repo would 401.
-	var stored transport.AuthMethod
-	if effectiveAuth != nil {
-		stored = effectiveAuth
-	} else if auth != nil {
-		stored = *auth
-	}
+	// Stash the client options so Checkout's fetch uses the same credentials
+	// the Clone used. Without this, Checkout would fall back to nil options
+	// and the fetch against a private repo would 401.
 	var g Git
-	g.authMethod = &stored
+	g.authMethod = opts
 	if err := g.Open(worktreeDir); err != nil {
 		return g, err
 	}
@@ -226,18 +214,10 @@ func (g *Git) Checkout(branch string, commit string) error {
 		branch = g.defaultBranch()
 	}
 
-	var fetchOptions git.FetchOptions
-	if g.authMethod == nil {
-		fetchOptions = git.FetchOptions{
-			RefSpecs: []c.RefSpec{"+refs/heads/*:refs/remotes/origin/*", "refs/*:refs/*"},
-			Force:    true,
-		}
-	} else {
-		fetchOptions = git.FetchOptions{
-			RefSpecs: []c.RefSpec{"+refs/heads/*:refs/remotes/origin/*", "refs/*:refs/*"},
-			Force:    true,
-			Auth:     *g.authMethod,
-		}
+	fetchOptions := git.FetchOptions{
+		RefSpecs:      []c.RefSpec{"+refs/heads/*:refs/remotes/origin/*", "refs/*:refs/*"},
+		Force:         true,
+		ClientOptions: g.authMethod,
 	}
 
 	slog.Info("git fetch", "refs", "+refs/heads/*:refs/remotes/origin/*")

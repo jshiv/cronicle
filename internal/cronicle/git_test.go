@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v6/plumbing"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
@@ -21,9 +21,9 @@ var _ = Describe("git", func() {
 
 		conf.PropigateTaskProperties(path)
 		task := conf.Schedules[0].Tasks[0]
-		auth, err := task.Repo.Auth()
+		opts, err := task.Repo.Auth()
 		Expect(err).To(BeNil())
-		g, err := cronicle.Clone(task.Path, task.Repo.URL, &auth)
+		g, err := cronicle.Clone(task.Path, task.Repo.URL, opts)
 		Expect(err).To(BeNil())
 		task.Git = g
 
@@ -45,9 +45,9 @@ var _ = Describe("git", func() {
 
 		conf.PropigateTaskProperties(path)
 		task := conf.Schedules[0].Tasks[0]
-		auth, err := task.Repo.Auth()
+		opts, err := task.Repo.Auth()
 		Expect(err).To(BeNil())
-		g, err := cronicle.Clone(task.Path, task.Repo.URL, &auth)
+		g, err := cronicle.Clone(task.Path, task.Repo.URL, opts)
 		Expect(err).To(BeNil())
 		task.Git = g
 
@@ -69,9 +69,9 @@ var _ = Describe("git", func() {
 		conf.PropigateTaskProperties(taskPath)
 		task := conf.Schedules[0].Tasks[0]
 		repo := cronicle.Repo{URL: task.Repo.URL, DeployKey: ""}
-		auth, err := repo.Auth()
+		opts, err := repo.Auth()
 		Expect(err).To(BeNil())
-		g, err := cronicle.Clone(task.Path, task.Repo.URL, &auth)
+		g, err := cronicle.Clone(task.Path, task.Repo.URL, opts)
 		Expect(err).To(BeNil())
 		task.Git = g
 		err = task.Git.Checkout(task.Repo.Branch, task.Repo.Commit)

@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/jshiv/cronicle/pkg/agent"
 	"github.com/jshiv/cronicle/pkg/exec"
 )
@@ -430,7 +430,7 @@ func defaultAgentToolNames() []string {
 // pretty streaming mode). Empty/nil names defaults to the full native
 // toolkit (defaultAgentToolNames). Unknown names are filtered out (Validate
 // has already rejected them at parse time, so this is defensive).
-func buildAgentTools(names []string, workspace string, env []string, gitAuth transport.AuthMethod, scratchDir string, w io.Writer) []agent.Tool {
+func buildAgentTools(names []string, workspace string, env []string, gitAuth []client.Option, scratchDir string, w io.Writer) []agent.Tool {
 	if len(names) == 0 {
 		names = defaultAgentToolNames()
 	}
