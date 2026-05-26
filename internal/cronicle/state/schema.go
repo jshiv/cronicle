@@ -23,7 +23,7 @@ package state
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS schema_versions (
     version    INTEGER PRIMARY KEY,
-    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    applied_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS schedule_state (
     paused_by  TEXT NOT NULL DEFAULT '',
     reason     TEXT NOT NULL DEFAULT '',
     drained    INTEGER NOT NULL DEFAULT 0,   -- 0|1, reserved for Phase 4
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 `
 
@@ -209,7 +209,7 @@ CREATE TABLE IF NOT EXISTS task_state (
     skipped_at  TEXT NOT NULL DEFAULT '',
     skipped_by  TEXT NOT NULL DEFAULT '',
     reason      TEXT NOT NULL DEFAULT '',
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     PRIMARY KEY (schedule, task)
 );
 `
@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS run_state (
     paused_at   TEXT NOT NULL DEFAULT '',
     paused_by   TEXT NOT NULL DEFAULT '',
     reason      TEXT NOT NULL DEFAULT '',
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 `
 
@@ -252,7 +252,7 @@ CREATE TABLE IF NOT EXISTS runner_state (
     drained_at  TEXT NOT NULL DEFAULT '',
     drained_by  TEXT NOT NULL DEFAULT '',
     reason      TEXT NOT NULL DEFAULT '',
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 INSERT OR IGNORE INTO runner_state(id) VALUES (1);
 `
@@ -284,7 +284,7 @@ CREATE TABLE IF NOT EXISTS secrets (
     name        TEXT PRIMARY KEY,
     value       TEXT NOT NULL,
     version     INTEGER NOT NULL DEFAULT 1,
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
     updated_by  TEXT NOT NULL DEFAULT ''
 );
 
