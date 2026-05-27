@@ -483,15 +483,24 @@ func transcriptPath(cfg Config) (string, error) {
 	return filepath.Join(cfg.TranscriptDir, name+".jsonl"), nil
 }
 
-// msgToParam converts an assistant Message to a MessageParam using the raw
-// JSON from the API response. This bypasses the SDK's ToParam() which has
-// broken serialization for web_search_tool_result and web_fetch_tool_result
-// content blocks (anthropics/anthropic-sdk-go#346).
+// msgToParam converts an assistant Message to a MessageParam, preserving
+// the raw JSON for each content block. The SDK's ToParam() has broken
+// serialization for web_search_tool_result and web_fetch_tool_result
+// (anthropics/anthropic-sdk-go#346), so we pass content blocks through
+// as raw JSON instead of converting field by field.
 func msgToParam(msg anthropic.Message) anthropic.MessageParam {
-	if raw := msg.RawJSON(); raw != "" {
-		return param.Override[anthropic.MessageParam](json.RawMessage(raw))
+	blocks := make([]anthropic.ContentBlockParamUnion, len(msg.Content))
+	for i, block := range msg.Content {
+		if raw := block.RawJSON(); raw != "" {
+			blocks[i] = param.Override[anthropic.ContentBlockParamUnion](json.RawMessage(raw))
+		} else {
+			blocks[i] = block.ToParam()
+		}
 	}
-	return msg.ToParam()
+	return anthropic.MessageParam{
+		Role:    anthropic.MessageParamRole(msg.Role),
+		Content: blocks,
+	}
 }
 
 // transcriptWriter is a per-run JSONL writer that records every turn's
