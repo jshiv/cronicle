@@ -303,6 +303,14 @@ var defaultStore = New()
 // SetBackend is called, Get returns ErrNotConfigured.
 func Default() *Store { return defaultStore }
 
+// SetDefault replaces the process-wide singleton. Returns the previous
+// value so tests can restore it in a cleanup function.
+func SetDefault(s *Store) *Store {
+	prev := defaultStore
+	defaultStore = s
+	return prev
+}
+
 // StartDefault is the convenience the worker startup path calls. Binds
 // the backend and starts the refresh loop in one call.
 func StartDefault(ctx context.Context, be state.SecretStore, src secretsource.Source, interval, staleTTL time.Duration) error {
