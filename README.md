@@ -127,9 +127,76 @@ repo {
 ```
 
 
+### Repo authentication
+
+The `repo` block supports three authentication methods:
+
+**SSH deploy key** (private repos, CI/CD):
+```hcl
+repo {
+  url = "git@github.com:org/private-repo.git"
+  key = "~/.ssh/deploy_key"
+}
+```
+
+**HTTP Basic with environment variable** (resolved at HCL parse time):
+```hcl
+repo {
+  url      = "https://github.com/org/private-repo.git"
+  password = "${env.GITHUB_TOKEN}"
+}
+```
+The `${env.VARIABLE}` syntax reads from the process environment when the
+HCL file is parsed. Use this for credentials available in the process env
+(e.g. injected by the container runtime, set by cronicled).
+
+**HTTP Basic with secret store** (resolved at task execution time):
+```hcl
+task "review" {
+  env = ["GITHUB_TOKEN=$secret.GITHUB_TOKEN"]
+
+  repo {
+    url      = "https://github.com/org/private-repo.git"
+    password = "$secret.GITHUB_TOKEN"
+  }
+}
+```
+The `$secret.NAME` syntax resolves from the encrypted secret store at
+task execution time. Use this for user-managed secrets set via
+`cronicle secret set`, the web UI, or the MCP `cronicle_set_secret` tool.
+
+The key difference: `${env.VAR}` is available immediately at startup,
+while `$secret.NAME` requires the secret store to be initialized (which
+happens after config loading). Per-task repo clones are deferred to
+execution time so that `$secret.NAME` passwords resolve correctly.
+
+**Username** defaults to `"x"` (the conventional placeholder for
+token-based git auth). Override with `username = "oauth2"` if your
+provider requires it.
+
+**GitHub token format**: both classic tokens (`ghp_...`) and
+fine-grained tokens (`github_pat_...`) work in the password slot.
+Fine-grained tokens with read-only Contents + Pull requests permissions
+are recommended for least-privilege access.
+
+### Repo block levels
+
+The `repo` block behaves differently depending on where it appears:
+
+| Level | Purpose | Clone timing |
+|-------|---------|-------------|
+| **Config** (top-level) | Tracks the `cronicle.hcl` file itself. The heartbeat fetches and refreshes from this remote. | At startup |
+| **Schedule** | Default repo for all tasks in the schedule. Propagated to tasks that don't have their own `repo` block. | At task execution |
+| **Task** | Overrides the schedule-level repo for this specific task. The task runs in a fresh clone of this repo. | At task execution |
+
+Config-level repos are cloned at startup because the HCL file itself
+lives there. Schedule and task-level repos are cloned at execution time
+so that `$secret.NAME` passwords in the repo block can be resolved from
+the secret store.
+
 ### `task`
-Contains the executable command, dependency relationship between tasks, 
-a repo to execute the command against, 
+Contains the executable command, dependency relationship between tasks,
+a repo to execute the command against,
 ```hcl
 task "bar" {
   //executable command
@@ -137,7 +204,10 @@ task "bar" {
 
   //dependency relationship between tasks
   depends = ["baz"]
-  
+
+  // skip this task if an upstream dependency failed (default: false)
+  continue_on_failure = false
+
   //git repo containing source code to clone/fetch on execution
   repo ...
 
@@ -178,12 +248,33 @@ schedule "foo" {
     ...
   }
 
-  // task "last" will execute only after "bar" and "baz" succeed 
+  // task "last" will execute only after "bar" and "baz" succeed
   task "last" {
     ...
     depends = ["bar", "baz"]
   }
 }
+```
+
+### DAG dependency gating
+
+When a task fails (non-zero exit or agent error), all downstream
+dependents are automatically skipped. The skipped tasks emit a
+`task_dep_failed` log entry identifying the failed upstream dependency.
+This prevents cascading failures where downstream tasks run against
+missing files or empty scratch directories.
+
+To override this behavior for a specific task, set `continue_on_failure`:
+```hcl
+task "cleanup" {
+  depends = ["process"]
+  continue_on_failure = true
+  command = ["bash", "-c", "rm -rf /tmp/work"]
+}
+```
+
+Independent tasks (no shared dependencies) are unaffected — if task A
+fails, task B still runs if it doesn't depend on A.
 ```
 
 
