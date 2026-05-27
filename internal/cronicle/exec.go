@@ -52,6 +52,26 @@ func splitAPIKey(env []string) (apiKey string, rest []string) {
 // silently produce broken behavior (auth failure, etc.), and the
 // store-configured signal is the operator's commitment that
 // references should resolve.
+// resolveRepoSecrets expands $secret.NAME references in the repo's
+// Password field using the secret store. Called at task execution time
+// (not at config load) so the secret store is available. No-op when
+// the store isn't configured or the password has no $secret. references.
+func resolveRepoSecrets(repo *Repo) {
+	if repo == nil || repo.Password == "" {
+		return
+	}
+	if !strings.Contains(repo.Password, "$secret.") {
+		return
+	}
+	store := secretstore.Default()
+	if !store.Configured() {
+		return
+	}
+	if v, err := store.ExpandValue(repo.Password); err == nil {
+		repo.Password = v
+	}
+}
+
 func resolveEnv(env []string) ([]string, error) {
 	if len(env) == 0 {
 		return env, nil
@@ -507,6 +527,7 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 
 	//If a repo is given, clone the repo and task.Git.Open(task.Path)
 	if task.Repo != nil {
+		resolveRepoSecrets(task.Repo)
 		opts, err := task.Repo.Auth()
 		if err != nil {
 			return exec.Result{}, err

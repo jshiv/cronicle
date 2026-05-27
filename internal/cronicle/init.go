@@ -166,17 +166,6 @@ func (conf *Config) Init(croniclePath string) error {
 			if err := task.Validate(); err != nil {
 				return err
 			}
-			if task.Repo != nil {
-				opts, err := task.Repo.Auth()
-				if err != nil {
-					return fmt.Errorf("schedule %q task %q repo auth: %w",
-						schedule.Name, task.Name, err)
-				}
-				if _, err := Clone(task.Path, task.Repo.URL, opts); err != nil {
-					return fmt.Errorf("schedule %q task %q clone %s: %w",
-						schedule.Name, task.Name, task.Repo.URL, err)
-				}
-			}
 		}
 	}
 	return nil
