@@ -14,7 +14,6 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/jshiv/cronicle/pkg/exec"
 )
 
@@ -317,11 +316,11 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		if cfg.BudgetUSD > 0 && currentCost > cfg.BudgetUSD {
 			runErr = fmt.Errorf("%w: $%.4f > $%.2f after turn %d",
 				ErrBudgetExceeded, currentCost, cfg.BudgetUSD, turn+1)
-			conversation = append(conversation, msgToParam(msg))
+			conversation = append(conversation, msg.ToParam())
 			break
 		}
 
-		conversation = append(conversation, msgToParam(msg))
+		conversation = append(conversation, msg.ToParam())
 
 		// pause_turn: server-side tool flow asked us to continue without
 		// dispatching anything ourselves. Loop back without appending tool
@@ -481,26 +480,6 @@ func transcriptPath(cfg Config) (string, error) {
 		name = time.Now().UTC().Format("20060102T150405Z")
 	}
 	return filepath.Join(cfg.TranscriptDir, name+".jsonl"), nil
-}
-
-// msgToParam converts an assistant Message to a MessageParam, preserving
-// the raw JSON for each content block. The SDK's ToParam() has broken
-// serialization for web_search_tool_result and web_fetch_tool_result
-// (anthropics/anthropic-sdk-go#346), so we pass content blocks through
-// as raw JSON instead of converting field by field.
-func msgToParam(msg anthropic.Message) anthropic.MessageParam {
-	blocks := make([]anthropic.ContentBlockParamUnion, len(msg.Content))
-	for i, block := range msg.Content {
-		if raw := block.RawJSON(); raw != "" {
-			blocks[i] = param.Override[anthropic.ContentBlockParamUnion](json.RawMessage(raw))
-		} else {
-			blocks[i] = block.ToParam()
-		}
-	}
-	return anthropic.MessageParam{
-		Role:    anthropic.MessageParamRole(msg.Role),
-		Content: blocks,
-	}
 }
 
 // transcriptWriter is a per-run JSONL writer that records every turn's

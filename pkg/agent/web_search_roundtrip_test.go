@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/packages/param"
 )
 
 // TestWebSearchMultiTurnRoundTrip reproduces the bug from
@@ -60,12 +59,12 @@ func TestWebSearchMultiTurnRoundTrip(t *testing.T) {
 		t.Skip("model didn't use web_search on this turn — can't test round-trip")
 	}
 
-	// Build conversation with raw JSON passthrough (the fix)
+	// Build conversation using ToParam() — the SDK fork uses raw JSON passthrough
 	conversation := []anthropic.MessageParam{
 		anthropic.NewUserMessage(
 			anthropic.NewTextBlock("Search the web for 'anthropic claude' and tell me what you find. Keep it brief."),
 		),
-		msgToParam(*msg),
+		msg.ToParam(),
 		anthropic.NewUserMessage(
 			anthropic.NewTextBlock("Thanks. Summarize in one sentence."),
 		),
@@ -90,38 +89,11 @@ func TestWebSearchMultiTurnRoundTrip(t *testing.T) {
 
 	t.Logf("Turn 2 succeeded: stop_reason=%s, %d content blocks", msg2.StopReason, len(msg2.Content))
 
-	// Also verify the original ToParam() still fails (proving the workaround is needed)
-	t.Log("Verifying original ToParam() still fails...")
-	badConversation := []anthropic.MessageParam{
-		anthropic.NewUserMessage(
-			anthropic.NewTextBlock("Search the web for 'anthropic claude' and tell me what you find. Keep it brief."),
-		),
-		msg.ToParam(), // the broken path
-		anthropic.NewUserMessage(
-			anthropic.NewTextBlock("Thanks. Summarize in one sentence."),
-		),
-	}
-	_, badErr := client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.ModelClaudeSonnet4_6,
-		MaxTokens: 256,
-		Tools: []anthropic.ToolUnionParam{
-			{OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
-				Name: "web_search",
-				Type: "web_search_20250305",
-			}},
-		},
-		Messages: badConversation,
-	})
-	if badErr == nil {
-		t.Log("NOTE: ToParam() path also succeeded — upstream may have fixed the bug")
-	} else {
-		t.Logf("Confirmed: ToParam() still fails: %v", badErr)
-	}
 }
 
-// TestMsgToParamPreservesRawJSON verifies that msgToParam produces valid JSON
-// that can be re-serialized without data loss.
-func TestMsgToParamPreservesRawJSON(t *testing.T) {
+// TestToParamPreservesWebSearchContent verifies that ToParam (via the SDK
+// fork's raw JSON passthrough) produces valid JSON with web_search content.
+func TestToParamPreservesWebSearchContent(t *testing.T) {
 	apiResponse := []byte(`{
 		"id": "msg_test",
 		"type": "message",
@@ -150,27 +122,30 @@ func TestMsgToParamPreservesRawJSON(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	mp := msgToParam(msg)
+	mp := msg.ToParam()
 	data, err := json.Marshal(mp)
 	if err != nil {
 		t.Fatalf("marshal param: %v", err)
 	}
-
-	// Verify it contains the web_search_tool_result content
 	if !json.Valid(data) {
 		t.Fatal("invalid JSON produced")
 	}
-	t.Logf("msgToParam output: %s", string(data))
+	t.Logf("ToParam output: %s", string(data))
 
-	// Verify the override path was used (not ToParam)
-	mpDirect := msg.ToParam()
-	dataDirect, _ := json.Marshal(mpDirect)
-
-	// The override version should preserve encrypted_content in the content array;
-	// verify the raw output contains it
-	if len(data) < len(dataDirect) {
-		t.Errorf("raw passthrough produced less data than ToParam — override may not be working")
+	// Verify content block preserved
+	var raw map[string]json.RawMessage
+	json.Unmarshal(data, &raw)
+	var blocks []json.RawMessage
+	json.Unmarshal(raw["content"], &blocks)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(blocks))
 	}
-
-	_ = param.IsOmitted // ensure param import is used
+	var block map[string]json.RawMessage
+	json.Unmarshal(blocks[0], &block)
+	if string(block["type"]) != `"web_search_tool_result"` {
+		t.Fatalf("expected web_search_tool_result, got %s", string(block["type"]))
+	}
+	if block["content"] == nil {
+		t.Fatal("web_search_tool_result.content is missing")
+	}
 }

@@ -104,4 +104,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/anthropics/anthropic-sdk-go => github.com/jshiv/anthropic-sdk-go v1.45.1-0.20260527143229-26e08999c583
+replace github.com/anthropics/anthropic-sdk-go => github.com/jshiv/anthropic-sdk-go v1.45.1-0.20260527151002-739a8b136dd1
