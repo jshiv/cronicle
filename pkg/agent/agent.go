@@ -14,6 +14,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/jshiv/cronicle/pkg/exec"
 )
 
@@ -316,11 +317,11 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		if cfg.BudgetUSD > 0 && currentCost > cfg.BudgetUSD {
 			runErr = fmt.Errorf("%w: $%.4f > $%.2f after turn %d",
 				ErrBudgetExceeded, currentCost, cfg.BudgetUSD, turn+1)
-			conversation = append(conversation, msg.ToParam())
+			conversation = append(conversation, msgToParam(msg))
 			break
 		}
 
-		conversation = append(conversation, msg.ToParam())
+		conversation = append(conversation, msgToParam(msg))
 
 		// pause_turn: server-side tool flow asked us to continue without
 		// dispatching anything ourselves. Loop back without appending tool
@@ -480,6 +481,17 @@ func transcriptPath(cfg Config) (string, error) {
 		name = time.Now().UTC().Format("20060102T150405Z")
 	}
 	return filepath.Join(cfg.TranscriptDir, name+".jsonl"), nil
+}
+
+// msgToParam converts an assistant Message to a MessageParam using the raw
+// JSON from the API response. This bypasses the SDK's ToParam() which has
+// broken serialization for web_search_tool_result and web_fetch_tool_result
+// content blocks (anthropics/anthropic-sdk-go#346).
+func msgToParam(msg anthropic.Message) anthropic.MessageParam {
+	if raw := msg.RawJSON(); raw != "" {
+		return param.Override[anthropic.MessageParam](json.RawMessage(raw))
+	}
+	return msg.ToParam()
 }
 
 // transcriptWriter is a per-run JSONL writer that records every turn's
