@@ -103,3 +103,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/anthropics/anthropic-sdk-go => github.com/jshiv/anthropic-sdk-go v1.45.1-0.20260527141030-38784e7cad48
