@@ -106,6 +106,61 @@ func TestScratch_SurvivesCheckout(t *testing.T) {
 	}
 }
 
+// TestCheckout_CleansUntrackedFiles verifies that Checkout removes
+// untracked files outside the .cronicle/ exclusion. This is the
+// `git reset --hard && git clean -fd` semantic the v5 fork used to
+// provide via a patched HardReset; the v6 native Checkout doesn't
+// do the clean step, so we restore it explicitly in (g *Git).Checkout.
+//
+// Regression caught in the wild: after the v5→v6 migration, untracked
+// files inside the worktree (e.g. files written by a previous task
+// that didn't land in .cronicle/scratch) were accumulating across
+// runs and drifting the worktree from the repo state.
+func TestCheckout_CleansUntrackedFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	opts, err := (&cronicle.Repo{URL: "https://github.com/jshiv/cronicle-sample.git"}).Auth()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := cronicle.Clone(dir, "https://github.com/jshiv/cronicle-sample.git", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Drop an untracked file in the repo root (NOT in .cronicle/).
+	stray := filepath.Join(dir, "stray.txt")
+	if err := os.WriteFile(stray, []byte("untracked"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Force checkout — should clean stray.txt
+	if err := g.Checkout("master", ""); err != nil {
+		t.Fatalf("Checkout failed: %v", err)
+	}
+
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Fatalf("stray.txt should have been cleaned by Checkout; err=%v", err)
+	}
+
+	// Sanity: also verify .cronicle/ still survives in the same call
+	scratchDir := filepath.Join(dir, ".cronicle", "scratch")
+	if err := os.MkdirAll(scratchDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(scratchDir, "data.txt")
+	if err := os.WriteFile(sentinel, []byte("task-output"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Checkout("master", ""); err != nil {
+		t.Fatalf("second Checkout failed: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf(".cronicle/scratch should survive clean; err=%v", err)
+	}
+}
+
 // TestClone_NonEmptyDir_WithSSH verifies Clone into a non-empty
 // directory works with SSH auth (deploy key).
 func TestClone_NonEmptyDir_WithSSH(t *testing.T) {
