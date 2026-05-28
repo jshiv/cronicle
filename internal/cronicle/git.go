@@ -300,6 +300,21 @@ func (g *Git) Checkout(branch string, commit string) error {
 		return err
 	}
 
+	// Checkout(Force:true) does a HardReset which restores tracked
+	// files but leaves untracked ones behind. Real `git reset --hard`
+	// doesn't clean either — you need `git clean -fd` for that. The
+	// v5 fork patched HardReset to also clean; v6 native doesn't, so
+	// we restore the behavior explicitly here.
+	//
+	// Clean honors Worktree.Excludes (set in Open() to include
+	// .cronicle), so per-run scratch dirs and the worker's local
+	// state survive checkout. Without this call, untracked files in
+	// a sub-repo accumulate across runs and the worktree drifts from
+	// the repo state.
+	if err := g.Worktree.Clean(&git.CleanOptions{Dir: true}); err != nil {
+		slog.Warn("git clean failed", "error", err.Error())
+	}
+
 	//Set head and commit state after checkout branch/commit
 	g.Head, err = g.Repository.Head()
 	if err != nil {
