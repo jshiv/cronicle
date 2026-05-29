@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,25 @@ import (
 	"github.com/jshiv/cronicle/pkg/exec"
 	"gopkg.in/matryer/try.v1"
 )
+
+// lastRunStr renders a schedule's previous-successful-run start as
+// RFC3339 (UTC) for the ${last_run} token, or "" when there is no prior
+// run (first run / no state backend).
+func lastRunStr(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// lastRunEpoch renders the same instant as unix seconds for the
+// ${last_run_epoch} token, or "" when there is no prior run.
+func lastRunEpoch(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return strconv.FormatInt(t.Unix(), 10)
+}
 
 // splitAPIKey pulls an ANTHROPIC_API_KEY entry out of the env slice
 // and returns (value, remainder). Used by the agent dispatch path so
@@ -83,10 +103,12 @@ func resolveEnv(env []string) ([]string, error) {
 	return store.ExpandEnv(env)
 }
 
-//Exec executes task.Command at task.Path and returns the exec.Result struct
-//prior to execution, the command will replace any ${date}, ${datetime}, ${timestamp}
-//with time t given in the bash command. If task.Agent is set, the task is
-//dispatched to pkg/agent instead.
+// Exec executes task.Command at task.Path and returns the exec.Result struct
+// prior to execution, the command will replace any ${date}, ${datetime}, ${timestamp}
+// with time t, ${path}/${scratch} with the task dirs, and ${last_run}/
+// ${last_run_epoch} with the prior successful run's start (empty on first
+// run). The same substitutions apply to agent prompts/system. If task.Agent
+// is set, the task is dispatched to pkg/agent instead.
 func (task *Task) Exec(t time.Time) exec.Result {
 	// Reset per-attempt state. Execute() loops on retry by re-calling Exec
 	// on the same *Task, so without this any field that an early-return
@@ -108,6 +130,13 @@ func (task *Task) Exec(t time.Time) exec.Result {
 		// (e.g. one-off `cronicle exec`) — the substitution leaves the
 		// literal in place, which is loud enough to debug.
 		"${scratch}", task.ScratchDir,
+		// ${last_run} / ${last_run_epoch}: start time of this schedule's
+		// previous SUCCESSFUL run (set by ExecuteTasks from the state
+		// backend), for "fetch only what's new since last run" jobs. Both
+		// resolve to "" on the first run / no state — a script should read
+		// empty as "no prior run, full backfill".
+		"${last_run}", lastRunStr(task.LastRun),
+		"${last_run_epoch}", lastRunEpoch(task.LastRun),
 	)
 
 	if task.Agent != nil {
@@ -608,9 +637,9 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 	return result, nil
 }
 
-//Log logs the exit status, stderr, git commit and other logging data.
-//Agent tasks own their logging end-to-end via execAgent, so this is a no-op
-//for them.
+// Log logs the exit status, stderr, git commit and other logging data.
+// Agent tasks own their logging end-to-end via execAgent, so this is a no-op
+// for them.
 func (task *Task) Log(res exec.Result) {
 	if task.Agent != nil {
 		return

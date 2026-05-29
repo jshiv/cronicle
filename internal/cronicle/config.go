@@ -51,8 +51,8 @@ type Schedule struct {
 	Timezone  string `hcl:"timezone,optional"`
 	StartDate string `hcl:"start_date,optional"`
 	EndDate   string `hcl:"end_date,optional"`
-	Repo  *Repo  `hcl:"repo,block"`
-	Tasks []Task `hcl:"task,block"`
+	Repo      *Repo  `hcl:"repo,block"`
+	Tasks     []Task `hcl:"task,block"`
 	// AgentTasks is the first-class schedule-level `agent "X" { ... }` HCL
 	// block — folded into Tasks immediately after parse (see parse.go's
 	// ParseFile). It's a parse-time intermediate and never serialized:
@@ -84,19 +84,19 @@ type Schedule struct {
 
 // Task is the configuration structure that defines a task (i.e., a command)
 type Task struct {
-	Name         string   `hcl:"name,label"`
-	Command      []string `hcl:"command,optional"`
+	Name              string   `hcl:"name,label"`
+	Command           []string `hcl:"command,optional"`
 	Depends           []string `hcl:"depends,optional"`
 	ContinueOnFailure bool     `hcl:"continue_on_failure,optional"`
-	Repo         *Repo    `hcl:"repo,block"`
-	Retry        *Retry   `hcl:"retry,block"`
-	Agent        *Agent   `hcl:"agent,block"`
-	Env          []string `hcl:"env,optional"`
-	Path         string
-	CronicleRepo *Repo
-	CroniclePath string
-	Git          Git
-	ScheduleName string
+	Repo              *Repo    `hcl:"repo,block"`
+	Retry             *Retry   `hcl:"retry,block"`
+	Agent             *Agent   `hcl:"agent,block"`
+	Env               []string `hcl:"env,optional"`
+	Path              string
+	CronicleRepo      *Repo
+	CroniclePath      string
+	Git               Git
+	ScheduleName      string
 	// RunID is propagated from the parent Schedule at execution time
 	// (set in dag.go's ExecuteTasks). Threaded into per-task events so
 	// the projection groups them under the right run.
@@ -117,6 +117,15 @@ type Task struct {
 	// walking the DAG; substituted into prompts/commands as `${scratch}`.
 	// Survives the run for transcript/audit access.
 	ScratchDir string
+	// LastRun is the start time of this schedule's previous SUCCESSFUL
+	// run, looked up from the state backend by ExecuteTasks. Substituted
+	// into commands/prompts as `${last_run}` (RFC3339) and
+	// `${last_run_epoch}` (unix seconds) so a task can fetch only what's
+	// new "since the prior run" instead of guessing a lookback window.
+	// Zero on a schedule's first-ever run (or with no state backend) —
+	// both tokens then resolve to the empty string, which a script
+	// should treat as "no prior run / full backfill".
+	LastRun time.Time
 }
 
 // Agent is the configuration structure that defines an LLM agent invocation.
@@ -287,7 +296,7 @@ type Repo struct {
 	Commit string `hcl:"commit,optional"`
 }
 
-//Retry defines the retry count and delay in number and seconds.
+// Retry defines the retry count and delay in number and seconds.
 type Retry struct {
 	//Count: Number of retry attemts to make after first attempt
 	Count int `hcl:"count,optional"`
@@ -440,8 +449,8 @@ func knownAgentTool(name string) bool {
 	return false
 }
 
-//Validate checks that schedule.Name is not empty and assigns task.ScheduleName
-//on a whole config struct.
+// Validate checks that schedule.Name is not empty and assigns task.ScheduleName
+// on a whole config struct.
 func (conf *Config) Validate() error {
 
 	if conf.Timezone != "" {
@@ -478,8 +487,8 @@ func (conf *Config) Validate() error {
 	return nil
 }
 
-//PropigateTaskProperties pushes schedule.Name, schedule.Repo and the repo path down to the task values.
-//It also populates task.Git.ReferenceName with task.Branch or HEAD.
+// PropigateTaskProperties pushes schedule.Name, schedule.Repo and the repo path down to the task values.
+// It also populates task.Git.ReferenceName with task.Branch or HEAD.
 func (conf *Config) PropigateTaskProperties(croniclePath string) {
 	for i := range conf.Schedules {
 		if conf.Schedules[i].Timezone == "" {
@@ -490,8 +499,8 @@ func (conf *Config) PropigateTaskProperties(croniclePath string) {
 	}
 }
 
-//PropigateTaskProperties pushes schedule.Name, schedule.Repo and the repo path down to the task values.
-//It also populates task.Git.ReferenceName with task.Branch or HEAD.
+// PropigateTaskProperties pushes schedule.Name, schedule.Repo and the repo path down to the task values.
+// It also populates task.Git.ReferenceName with task.Branch or HEAD.
 func (schedule *Schedule) PropigateTaskProperties(croniclePath string) {
 	// Assign the path for each task or schedule repo
 	for i, task := range schedule.Tasks {
@@ -557,9 +566,9 @@ func (schedule *Schedule) PropigateTaskProperties(croniclePath string) {
 	}
 }
 
-//Default returns a basic default Config
-//it includes a single schedule that runs every 5 seconds
-//and a single "Hello World" task.
+// Default returns a basic default Config
+// it includes a single schedule that runs every 5 seconds
+// and a single "Hello World" task.
 func Default() Config {
 
 	var task Task
@@ -578,12 +587,12 @@ func Default() Config {
 	return conf
 }
 
-//TaskArray is an array of Task structs,
-//calling config.TaskArray() ensures that each task.ScheduleName is filled
+// TaskArray is an array of Task structs,
+// calling config.TaskArray() ensures that each task.ScheduleName is filled
 type TaskArray []Task
 
-//TaskArray exports a TaskArray all tasks in a given config,
-//additionally, it ensures that task.ScheduleName is propigated
+// TaskArray exports a TaskArray all tasks in a given config,
+// additionally, it ensures that task.ScheduleName is propigated
 func (conf *Config) TaskArray() TaskArray {
 
 	err := conf.Validate() // ensure that schedule.Name and task.ScheduleName are not empty
@@ -600,10 +609,10 @@ func (conf *Config) TaskArray() TaskArray {
 	return tasks
 }
 
-//ScheduleMap is an map of key=schedul.Name: value=Schedule struct,
+// ScheduleMap is an map of key=schedul.Name: value=Schedule struct,
 type ScheduleMap map[string]Schedule
 
-//ScheduleMap exports a ScheduleMap all schedules in a given config
+// ScheduleMap exports a ScheduleMap all schedules in a given config
 func (conf *Config) ScheduleMap() ScheduleMap {
 
 	scheduleMap := ScheduleMap{}
@@ -613,10 +622,10 @@ func (conf *Config) ScheduleMap() ScheduleMap {
 	return scheduleMap
 }
 
-//TaskMap is an map of key=task.Name: value=Task struct,
+// TaskMap is an map of key=task.Name: value=Task struct,
 type TaskMap map[string]Task
 
-//TaskMap exports a TaskMap all tasks in a given config,
+// TaskMap exports a TaskMap all tasks in a given config,
 func (schedule *Schedule) TaskMap() TaskMap {
 
 	taskMap := TaskMap{}
@@ -626,10 +635,10 @@ func (schedule *Schedule) TaskMap() TaskMap {
 	return taskMap
 }
 
-//FilterTasks returns a task array where
-//only matching task.Name = taskName and schedule.Name=scheduleName
-//if taskName = "" and scheduleName = "" then all tasks will be returned
-//empty strings are intrepreted as no filtering requested.
+// FilterTasks returns a task array where
+// only matching task.Name = taskName and schedule.Name=scheduleName
+// if taskName = "" and scheduleName = "" then all tasks will be returned
+// empty strings are intrepreted as no filtering requested.
 func (t TaskArray) FilterTasks(taskName string, scheduleName string) TaskArray {
 
 	tasks := TaskArray{}
