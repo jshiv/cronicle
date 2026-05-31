@@ -102,7 +102,7 @@ func Run(ctx context.Context, cronicleFile string, runOptions RunOptions) {
 		go enqueueAdapter(enqueueChan, stateStore)
 		go StartCron(ctx, cronicleFileAbs, enqueueChan)
 		if runOptions.RunWorker {
-			go selfWorker(ctx, stateStore, croniclePath, &wg)
+			go selfWorker(ctx, loopbackURL(runOptions.ListenAddr), runOptions.ListenToken, croniclePath, &wg)
 		}
 		go reaperLoop(ctx, stateStore)
 	} else {

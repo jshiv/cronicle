@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"sync"
@@ -44,76 +45,45 @@ func enqueueAdapter(in <-chan []byte, store state.Backend) {
 	}
 }
 
-// selfWorker is the in-process consumer for --queue self mode. Claims
-// jobs from the SQLite store, hands the payload to the same DAG walker
-// the existing ConsumeSchedule path uses, then acks. Treats Apply
-// failures as "the run executed but recorded a schedule_complete with
-// success=false" — the job is acked DONE either way; the projection
-// has the failure detail.
+// selfWorker is the in-process worker for single-node mode. Rather than
+// claiming from the state store directly, it drives jobs through the SAME
+// HTTP pathway a remote worker uses — long-polling the producer's own
+// /v1/jobs over loopback, executing, and acking over HTTP. Net effect:
+// ONE worker code path (no in-process special case), and the worker never
+// holds a store handle, so the producer stays the sole owner of state.
 //
-// Visibility timeout is 5 minutes. Long-running agent runs aren't
-// covered by that without explicit Heartbeat — single-node mode
-// rarely needs it because the worker IS the producer (no network
-// partition can preempt), but if a panic kills the goroutine the
-// reaper will recover the job.
-func selfWorker(ctx context.Context, store state.Backend, croniclePath string, wg *sync.WaitGroup) {
-	workerID := SelfWorkerID()
-	slog.Info("self-worker started", "worker_id", workerID)
-
-	for {
-		// Bail before each Claim attempt so a cancel signal observed
-		// between WaitForJob returning and the next Claim still ends
-		// the loop promptly.
-		if ctx.Err() != nil {
-			slog.Info("self-worker: shutting down", "worker_id", workerID)
-			return
-		}
-		job, err := store.Claim(workerID, 5*time.Minute)
-		if errors.Is(err, state.ErrNoJobs) {
-			// Park until a wakeup or 30s elapses, then re-Claim. Passing
-			// ctx here lets cancellation interrupt the park immediately
-			// instead of waiting for the 30s ceiling.
-			store.WaitForJob(ctx, 30*time.Second)
-			continue
-		}
-		if err != nil {
-			slog.Error("self-worker: claim failed", "error", err.Error())
-			// Sleep through cancel — return early on ctx.Done so shutdown
-			// isn't blocked by the back-off.
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			continue
-		}
-		wg.Add(1)
-		go func(j state.Job) {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("self-worker: panic during execute",
-						"run_id", j.RunID, "panic", r)
-					_ = store.Ack(j.RunID, workerID, false, "panic during execute")
-				}
-			}()
-
-			var sch Schedule
-			if err := json.Unmarshal(j.Payload, &sch); err != nil {
-				slog.Error("self-worker: payload decode failed",
-					"run_id", j.RunID, "error", err.Error())
-				_ = store.Ack(j.RunID, workerID, false, err.Error())
-				return
-			}
-			sch.PropigateTaskProperties(croniclePath)
-			sch.ExecuteTasks()
-			// Per-task success rolls into the projection via the slog
-			// Sink; the queue Ack just records "this worker handled
-			// this job to completion." Run-level success is recorded
-			// separately on the projection's runs row.
-			_ = store.Ack(j.RunID, workerID, true, "")
-		}(job)
+// It is only started when the listener is configured (see Run), so the
+// loopback endpoint is always reachable; consume() backs off and retries
+// until it binds. Unlike a remote worker it does NOT ship run events over
+// HTTP — they already reach the store through the producer's own in-process
+// slog sink (same process); shipping too would double-apply them.
+//
+// One difference worth calling out: jobs run one at a time (consume is
+// serial), matching the remote worker. Single-node concurrency is now a
+// function of how many self-workers you run, not in-process goroutines.
+func selfWorker(ctx context.Context, producerURL, token, croniclePath string, wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer wg.Done()
+	w := newHTTPWorker(HTTPWorkerOptions{
+		ProducerURL: producerURL,
+		Token:       token,
+		WorkerID:    SelfWorkerID(),
+		Path:        croniclePath,
+	}, ctx)
+	slog.Info("self-worker started (http loopback)",
+		"worker_id", w.opts.WorkerID, "producer", producerURL)
+	if err := w.consume(croniclePath); err != nil && !errors.Is(err, context.Canceled) {
+		slog.Error("self-worker stopped", "error", err.Error())
 	}
+}
+
+// loopbackURL turns the listener bind address (":8765", "0.0.0.0:8765")
+// into a URL the in-process self-worker can dial on loopback.
+func loopbackURL(listenAddr string) string {
+	if _, port, err := net.SplitHostPort(listenAddr); err == nil && port != "" {
+		return "http://127.0.0.1:" + port
+	}
+	return "http://" + listenAddr
 }
 
 // reaperLoop periodically walks the jobs table for claims past their

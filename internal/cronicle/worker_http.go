@@ -111,32 +111,52 @@ func StartHTTPWorker(ctx context.Context, opts HTTPWorkerOptions) error {
 		defer shipper.stop()
 	}
 
-	client := &http.Client{
+	w := newHTTPWorker(opts, ctx)
+	slog.Info("HTTP worker started",
+		"worker_id", w.opts.WorkerID,
+		"producer", w.opts.ProducerURL,
+		"poll_block", w.opts.PollBlock.String(),
+	)
+	return w.consume(pathAbs)
+}
+
+// newHTTPWorker builds a worker with defaults applied. Shared by the
+// out-of-process entrypoint (StartHTTPWorker) and the in-process loopback
+// self-worker, so both drive the identical claim/execute/ack protocol.
+func newHTTPWorker(opts HTTPWorkerOptions, ctx context.Context) *httpWorker {
+	if opts.WorkerID == "" {
+		opts.WorkerID = defaultWorkerID()
+	}
+	if opts.PollBlock <= 0 {
+		opts.PollBlock = 30 * time.Second
+	}
+	if opts.HeartbeatEvery <= 0 {
+		opts.HeartbeatEvery = 100 * time.Second
+	}
+	return &httpWorker{
+		opts: opts,
 		// One full long-poll cycle plus margin. Don't set this too
 		// tight or transient retransmits look like timeouts.
-		Timeout: opts.PollBlock + 30*time.Second,
+		client:     &http.Client{Timeout: opts.PollBlock + 30*time.Second},
+		ctx:        ctx,
+		activeRuns: map[string]context.CancelFunc{},
 	}
-	w := &httpWorker{
-		opts:   opts,
-		client: client,
-		ctx:    ctx,
-	}
+}
 
-	slog.Info("HTTP worker started",
-		"worker_id", opts.WorkerID,
-		"producer", opts.ProducerURL,
-		"poll_block", opts.PollBlock.String(),
-	)
-
-	// Control channel: a long-lived SSE connection to the producer
-	// for cancel signals. The goroutine reconnects on disconnects so
-	// transient producer restarts don't permanently disable cancel.
+// consume runs the long-poll claim → execute → ack loop until ctx is
+// canceled. This is THE worker execution pathway — there is no separate
+// in-process route. Jobs are processed one at a time (concurrency is a
+// function of worker count, local or remote, not in-process goroutines).
+func (w *httpWorker) consume(pathAbs string) error {
+	// Control channel: a long-lived SSE connection to the producer for
+	// cancel signals. The goroutine reconnects on disconnects so transient
+	// producer restarts don't permanently disable cancel.
 	go w.controlLoop()
 
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-w.ctx.Done():
+			return w.ctx.Err()
 		default:
 		}
 		job, gotJob, err := w.pollOnce()
@@ -145,8 +165,8 @@ func StartHTTPWorker(ctx context.Context, opts HTTPWorkerOptions) error {
 			// Backoff. With the producer down workers should not
 			// hot-loop on connection errors.
 			select {
-			case <-ctx.Done():
-				return ctx.Err()
+			case <-w.ctx.Done():
+				return w.ctx.Err()
 			case <-time.After(2 * time.Second):
 			}
 			continue
