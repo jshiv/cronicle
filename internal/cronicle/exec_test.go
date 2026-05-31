@@ -154,6 +154,35 @@ var _ = Describe("Exec", func() {
 		}))
 	})
 
+	It("task.Exec(t) Should replace ${last_run}/${last_run_epoch} with the prior successful run start", func() {
+		conf := cronicle.Default()
+		schedule := conf.Schedules[0]
+		task := schedule.Tasks[0]
+		lr, _ := time.Parse(time.RFC3339, "2020-10-31T12:00:00Z")
+		task.LastRun = lr
+		task.Command = []string{"/bin/echo", "${last_run}", "${last_run_epoch}"}
+		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		r := task.Exec(t)
+
+		Expect(r.ExitStatus).To(Equal(0))
+		Expect(r.Command).To(Equal([]string{
+			"/bin/echo", "2020-10-31T12:00:00Z", fmt.Sprintf("%d", lr.Unix()),
+		}))
+		Expect(r.Stdout).To(Equal(fmt.Sprintf("2020-10-31T12:00:00Z %d\n", lr.Unix())))
+	})
+
+	It("task.Exec(t) Should resolve ${last_run}/${last_run_epoch} to empty on the first run", func() {
+		conf := cronicle.Default()
+		schedule := conf.Schedules[0]
+		task := schedule.Tasks[0] // LastRun is the zero value
+		task.Command = []string{"/bin/echo", "[${last_run}]", "[${last_run_epoch}]"}
+		t, _ := time.Parse(time.RFC3339, "2020-11-01T22:08:41+00:00")
+		r := task.Exec(t)
+
+		Expect(r.ExitStatus).To(Equal(0))
+		Expect(r.Stdout).To(Equal("[] []\n"))
+	})
+
 	It("task.Exec(t) Should replace ${path} with task.Path", func() {
 		conf := cronicle.Default()
 		schedule := conf.Schedules[0]

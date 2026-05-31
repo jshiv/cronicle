@@ -8,7 +8,33 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jshiv/cronicle/internal/cronicle/state"
 )
+
+// lastSuccessfulRunStart returns the start time of the most recent
+// SUCCEEDED run of the named schedule, excluding the in-flight run.
+// Best-effort: ok=false when there's no state backend, no prior success,
+// or the query errors — callers treat that as "no prior run".
+func lastSuccessfulRunStart(schedule, currentRunID string) (time.Time, bool) {
+	st := StateStore()
+	if st == nil {
+		return time.Time{}, false
+	}
+	runs, err := st.ListRuns(state.ListFilter{Schedule: schedule, Status: "succeeded", Limit: 1})
+	if err != nil {
+		slog.Warn("last-run lookup failed; ${last_run} will be empty",
+			"schedule", schedule, "error", err.Error())
+		return time.Time{}, false
+	}
+	for _, r := range runs {
+		if r.RunID == currentRunID || r.StartedAt.IsZero() {
+			continue
+		}
+		return r.StartedAt, true
+	}
+	return time.Time{}, false
+}
 
 // ExecuteTasks executes all tasks in dependency order, running independent tasks concurrently.
 func (schedule Schedule) ExecuteTasks() {
@@ -54,6 +80,17 @@ func (schedule Schedule) ExecuteTasks() {
 		_ = os.MkdirAll(scratchDir, 0o755)
 		for name, t := range taskMap {
 			t.ScratchDir = scratchDir
+			taskMap[name] = t
+		}
+	}
+
+	// Last successful run start, surfaced to tasks as ${last_run} /
+	// ${last_run_epoch} so "incremental since last run" jobs read the
+	// real boundary instead of guessing a lookback window. Best-effort:
+	// zero (→ empty token) on the first run or when state is unavailable.
+	if lastRun, ok := lastSuccessfulRunStart(schedule.Name, schedule.RunID); ok {
+		for name, t := range taskMap {
+			t.LastRun = lastRun
 			taskMap[name] = t
 		}
 	}
