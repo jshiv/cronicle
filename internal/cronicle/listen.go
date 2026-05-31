@@ -94,27 +94,10 @@ func startListener(ctx context.Context, addr, token string, queue chan<- []byte)
 		stateSrc:    StateStore,
 		liveSinkSrc: LiveSink,
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/v1/schedules", s.handleListSchedules)
-	mux.HandleFunc("/v1/schedules/", s.handleScheduleRoute)
-	mux.HandleFunc("/v1/runs", s.handleListRuns)
-	mux.HandleFunc("/v1/events", s.handleIngestEvents)
-	mux.HandleFunc("/v1/events/stream", s.handleEventsStream)
-	mux.HandleFunc("/v1/jobs", s.handleClaimJob)
-	mux.HandleFunc("/v1/jobs/", s.handleJobControl)
-	mux.HandleFunc("/v1/workers", s.handleListWorkers)
-	mux.HandleFunc("/v1/workers/", s.handleWorkerRoute)
-	mux.HandleFunc("/v1/runs/", s.handleRunRoute)
-	mux.HandleFunc("/v1/runner/state", s.handleRunnerState)
-	mux.HandleFunc("/v1/runner/drain", s.handleRunnerDrain)
-	mux.HandleFunc("/v1/runner/undrain", s.handleRunnerUndrain)
-	mux.HandleFunc("/v1/secrets", s.handleSecretsRoot)
-	mux.HandleFunc("/v1/secrets/", s.handleSecretByName)
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           s.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// WriteTimeout has to outlast the longest long-poll block. We
 		// cap GET /v1/jobs at 60s, so 90s here gives the handler room
@@ -152,6 +135,30 @@ func startListener(ctx context.Context, addr, token string, queue chan<- []byte)
 		}
 	}()
 	return done
+}
+
+// handler builds the full producer route table. Extracted from
+// startListener so tests can mount the exact same mux behind an
+// httptest.Server and drive a real worker against it.
+func (s *listenServer) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/v1/schedules", s.handleListSchedules)
+	mux.HandleFunc("/v1/schedules/", s.handleScheduleRoute)
+	mux.HandleFunc("/v1/runs", s.handleListRuns)
+	mux.HandleFunc("/v1/events", s.handleIngestEvents)
+	mux.HandleFunc("/v1/events/stream", s.handleEventsStream)
+	mux.HandleFunc("/v1/jobs", s.handleClaimJob)
+	mux.HandleFunc("/v1/jobs/", s.handleJobControl)
+	mux.HandleFunc("/v1/workers", s.handleListWorkers)
+	mux.HandleFunc("/v1/workers/", s.handleWorkerRoute)
+	mux.HandleFunc("/v1/runs/", s.handleRunRoute)
+	mux.HandleFunc("/v1/runner/state", s.handleRunnerState)
+	mux.HandleFunc("/v1/runner/drain", s.handleRunnerDrain)
+	mux.HandleFunc("/v1/runner/undrain", s.handleRunnerUndrain)
+	mux.HandleFunc("/v1/secrets", s.handleSecretsRoot)
+	mux.HandleFunc("/v1/secrets/", s.handleSecretByName)
+	return mux
 }
 
 // authed returns true when the request carries a matching bearer token.
