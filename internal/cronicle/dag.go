@@ -16,8 +16,12 @@ import (
 // SUCCEEDED run of the named schedule, excluding the in-flight run.
 // Best-effort: ok=false when there's no state backend, no prior success,
 // or the query errors — callers treat that as "no prior run".
-func lastSuccessfulRunStart(schedule, currentRunID string) (time.Time, bool) {
-	st := StateStore()
+//
+// The store is passed in explicitly so the producer resolves ${last_run}
+// against its authoritative state backend at enqueue time (enqueueAdapter)
+// — never the worker, whose local store is a non-authoritative in-memory
+// projection. See Schedule.LastRunResolved.
+func lastSuccessfulRunStart(st state.Backend, schedule, currentRunID string) (time.Time, bool) {
 	if st == nil {
 		return time.Time{}, false
 	}
@@ -34,6 +38,26 @@ func lastSuccessfulRunStart(schedule, currentRunID string) (time.Time, bool) {
 		return r.StartedAt, true
 	}
 	return time.Time{}, false
+}
+
+// resolveLastRun stamps every task's LastRun with the schedule's previous
+// successful run start, read from the authoritative state store st.
+//
+// Call this at DISPATCH time — the producer's enqueueAdapter, or the
+// in-process ConsumeSchedule / ExecTasks paths — so the value is baked
+// before ExecuteTasks runs. ExecuteTasks must NOT resolve ${last_run}
+// itself: it also runs on distributed workers, where StateStore() is a
+// non-authoritative in-memory projection with no run history. Resolving
+// only at dispatch keeps the producer the single source of truth.
+//
+// Best-effort: a miss (no prior run, no/again-unavailable store) leaves
+// LastRun zero → ${last_run} empty → "full backfill".
+func resolveLastRun(st state.Backend, sch *Schedule) {
+	if lastRun, ok := lastSuccessfulRunStart(st, sch.Name, sch.RunID); ok {
+		for i := range sch.Tasks {
+			sch.Tasks[i].LastRun = lastRun
+		}
+	}
 }
 
 // ExecuteTasks executes all tasks in dependency order, running independent tasks concurrently.
@@ -84,16 +108,13 @@ func (schedule Schedule) ExecuteTasks() {
 		}
 	}
 
-	// Last successful run start, surfaced to tasks as ${last_run} /
-	// ${last_run_epoch} so "incremental since last run" jobs read the
-	// real boundary instead of guessing a lookback window. Best-effort:
-	// zero (→ empty token) on the first run or when state is unavailable.
-	if lastRun, ok := lastSuccessfulRunStart(schedule.Name, schedule.RunID); ok {
-		for name, t := range taskMap {
-			t.LastRun = lastRun
-			taskMap[name] = t
-		}
-	}
+	// ${last_run} / ${last_run_epoch} come straight from task.LastRun,
+	// which the DISPATCHER already resolved (resolveLastRun) — the producer
+	// at enqueue, or the in-process ConsumeSchedule / ExecTasks paths.
+	// ExecuteTasks itself never reads state for this: it also runs on
+	// distributed workers, whose StateStore() is a non-authoritative
+	// in-memory projection with no run history. Empty → ${last_run} empty
+	// → "no prior run / full backfill".
 
 	startedAt := time.Now()
 	startAttrs := []any{

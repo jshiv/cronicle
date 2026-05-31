@@ -348,6 +348,10 @@ func ConsumeSchedule(queue <-chan []byte, path string, wg *sync.WaitGroup) {
 				slog.Error("schedule unmarshal failed", "error", err.Error())
 			}
 			schedule.PropigateTaskProperties(p)
+			// In-process dispatch (non-queue, single-node): resolve
+			// ${last_run} here, where StateStore() is the authoritative
+			// store, before ExecuteTasks (which never reads state itself).
+			resolveLastRun(StateStore(), &schedule)
 			schedule.ExecuteTasks()
 		}(scheduleBytes)
 	}
@@ -486,8 +490,11 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 			}
 		} else {
 			schedule.Now = nowInLoc
-		schedule.RunID = newRunID()
-		schedule.Source = "exec"
+			schedule.RunID = newRunID()
+			schedule.Source = "exec"
+			// Foreground one-shot dispatch: resolve ${last_run} from the
+			// authoritative store before ExecuteTasks (which never reads it).
+			resolveLastRun(StateStore(), &schedule)
 			schedule.ExecuteTasks()
 		}
 	}
