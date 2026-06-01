@@ -113,7 +113,7 @@ func RunFromSource(ctx context.Context, spec, workdir string, runOptions RunOpti
 			return fmt.Errorf("scheduler start: %w", err)
 		}
 		if runOptions.RunWorker {
-			go selfWorker(ctx, stateStore, workdirAbs, &wg)
+			selfWorkerPool(ctx, stateStore, workdirAbs, runOptions.WorkerCount, &wg)
 		}
 		go reaperLoop(ctx, stateStore)
 	} else {

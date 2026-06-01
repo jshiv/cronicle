@@ -102,7 +102,7 @@ func Run(ctx context.Context, cronicleFile string, runOptions RunOptions) {
 		go enqueueAdapter(enqueueChan, stateStore)
 		go StartCron(ctx, cronicleFileAbs, enqueueChan)
 		if runOptions.RunWorker {
-			go selfWorker(ctx, stateStore, croniclePath, &wg)
+			selfWorkerPool(ctx, stateStore, croniclePath, runOptions.WorkerCount, &wg)
 		}
 		go reaperLoop(ctx, stateStore)
 	} else {
@@ -158,6 +158,11 @@ type RunOptions struct {
 	// listener it's the chan-based ConsumeSchedule. Set to false on
 	// dedicated producers so external workers do all execution.
 	RunWorker bool
+	// WorkerCount is how many in-process self-workers to run in queue
+	// mode. Each runs the shared (serial) consume loop, so N workers =
+	// up to N jobs executing concurrently. <=1 means one worker (serial).
+	// Ignored when RunWorker is false or in non-listener mode.
+	WorkerCount int
 	// LogToFile mirrors structured logs to .cronicle/log/cronicle.jsonl
 	// rotated by lumberjack. Independent of stdout.
 	LogToFile bool
