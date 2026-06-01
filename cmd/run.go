@@ -46,6 +46,7 @@ The run command will log schedule information to stdout including git commit inf
 		workdir, _ := cmd.Flags().GetString("workdir")
 
 		runWorker, _ := cmd.Flags().GetBool("worker")
+		workerCount, _ := cmd.Flags().GetInt("worker-count")
 		cron, _ := cmd.Flags().GetString("cron")
 		command, _ := cmd.Flags().GetString("command")
 		logToFile, _ := cmd.Flags().GetBool("log-to-file")
@@ -61,6 +62,7 @@ The run command will log schedule information to stdout including git commit inf
 
 		runOptions := cronicle.RunOptions{
 			RunWorker:   runWorker,
+			WorkerCount: workerCount,
 			LogToFile:   logToFile,
 			ListenAddr:  listenAddr,
 			ListenToken: listenToken,
@@ -121,6 +123,7 @@ func init() {
 		"working directory for .cronicle/state.db, .cronicle/log/*.jsonl, scratch dirs. "+
 			"File-source mode derives this from --path; required for non-file sources")
 	runCmd.Flags().Bool("worker", true, "start a worker thread to consume tasks in distributed mode")
+	runCmd.Flags().Int("worker-count", 4, "number of in-process self-workers (queue mode); each runs one job at a time, so N = up to N concurrent jobs")
 	runCmd.Flags().String("cron", "", "crontab expression for running a command e.g. @every 1h")
 	runCmd.Flags().String("command", "", "command to run on the given cron [/bin/echo cronicle]")
 	runCmd.Flags().Bool("log-to-file", false, "mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); stdout is unaffected and remains controlled by --log-format")

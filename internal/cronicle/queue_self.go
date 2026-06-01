@@ -51,27 +51,43 @@ func enqueueAdapter(in <-chan []byte, store state.Backend) {
 	}
 }
 
-// selfWorker is the in-process worker for single-node mode (--worker). It
-// runs the SAME claim→execute→ack loop as a remote worker (see worker /
-// consume), but over a localQueueClient — a thin in-process adapter on the
-// state backend, with NO socket. The worker's only contact with state is
-// the three queue verbs (Claim/Ack/Heartbeat); it never reads run history
-// or projections, so the producer stays the single source of truth by
-// construction, not convention.
+// selfWorkerPool launches count in-process workers for single-node mode
+// (--worker). Each runs the SAME claim→execute→ack loop as a remote worker
+// (see worker / consume), over its own localQueueClient — a thin in-process
+// adapter on the state backend, with NO socket. A worker's only contact
+// with state is the three queue verbs (Claim/Ack/Heartbeat); it never reads
+// run history or projections, so the producer stays the single source of
+// truth by construction, not convention.
 //
-// Run events still reach the store through the producer's in-process slog
-// sink (same process), so unlike a remote worker there is nothing to ship.
-// Jobs run one at a time (consume is serial); the reaper recovers a job if
-// this worker dies mid-run.
-func selfWorker(ctx context.Context, store state.Backend, croniclePath string, wg *sync.WaitGroup) {
-	wg.Add(1)
-	defer wg.Done()
-	workerID := SelfWorkerID()
-	lc := &localQueueClient{store: store, workerID: workerID, ctx: ctx}
-	w := newWorker(ctx, lc, workerID, 30*time.Second, 100*time.Second)
-	slog.Info("self-worker started", "worker_id", workerID)
-	if err := w.consume(croniclePath); err != nil && !errors.Is(err, context.Canceled) {
-		slog.Error("self-worker stopped", "error", err.Error())
+// Each consume loop runs one job at a time, so count workers = up to count
+// jobs concurrently; the store's atomic Claim keeps two from grabbing the
+// same job. count<=1 runs a single (serial) worker. Run events reach the
+// store through the producer's in-process slog sink (same process), so
+// unlike a remote worker there is nothing to ship. The reaper recovers a
+// job if a worker dies mid-run.
+//
+// Non-blocking: spawns the workers (registering each on wg) and returns.
+func selfWorkerPool(ctx context.Context, store state.Backend, croniclePath string, count int, wg *sync.WaitGroup) {
+	if count < 1 {
+		count = 1
+	}
+	base := SelfWorkerID()
+	for i := 0; i < count; i++ {
+		workerID := base
+		if count > 1 {
+			// Distinct IDs so claims/heartbeats are attributable per worker.
+			workerID = base + "-" + strconv.Itoa(i)
+		}
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			lc := &localQueueClient{store: store, workerID: id, ctx: ctx}
+			w := newWorker(ctx, lc, id, 30*time.Second, 100*time.Second)
+			slog.Info("self-worker started", "worker_id", id)
+			if err := w.consume(croniclePath); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Error("self-worker stopped", "worker_id", id, "error", err.Error())
+			}
+		}(workerID)
 	}
 }
 
