@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +56,7 @@ const (
 // producer. Lazy-init keeps single-node mode free of the cost.
 type Store struct {
 	db          *sql.DB
+	dialect     dialect    // sqlite (default) | postgres
 	mu          sync.Mutex // serializes write transactions
 	waitOnce    sync.Once
 	wait        *jobWaiters
@@ -163,6 +165,9 @@ func Open(dsn string) (*Store, error) {
 	if dsn == "" {
 		return nil, errors.New("state.Open: empty DSN")
 	}
+	if isPostgresDSN(dsn) {
+		return openPostgres(dsn)
+	}
 	conn := dsn
 	if dsn != ":memory:" {
 		conn = dsn + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)"
@@ -176,7 +181,34 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("state.Open: ping: %w", err)
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, dialect: dialectSQLite}
+	if err := s.migrate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// openPostgres backs the Store with a shared, durable Postgres instead of a
+// local SQLite file. Same schema and queries (via the placeholder-rebind
+// driver + DDL dialect transform). This is what a per-deployment producer
+// uses in the managed topology so run history survives pod restarts and
+// `${last_run}` reads the authoritative record.
+func openPostgres(dsn string) (*Store, error) {
+	registerPGDriver()
+	db, err := sql.Open(pgxRebindDriverName, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("state.Open(postgres): %w", err)
+	}
+	// Unlike SQLite (single writer), Postgres handles concurrency; the
+	// Store's mu still serializes our write transactions.
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("state.Open(postgres): ping: %w", err)
+	}
+	s := &Store{db: db, dialect: dialectPostgres}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -199,12 +231,27 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// execDDL applies one schema block: dialect-transform for Postgres, then
+// run each statement individually (pgx's extended protocol rejects
+// multi-statement Exec; splitting is harmless for SQLite too).
+func (s *Store) execDDL(block string) error {
+	if s.dialect == dialectPostgres {
+		block = dialectizePG(block)
+	}
+	for _, stmt := range splitStatements(block) {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("execDDL: %q: %w", strings.TrimSpace(stmt)[:min(48, len(strings.TrimSpace(stmt)))], err)
+		}
+	}
+	return nil
+}
+
 // migrate runs the schema SQL idempotently and records the version.
 // Each numbered version's DDL is applied if the recorded version is < target.
 // Idempotent on re-runs because every CREATE uses IF NOT EXISTS.
 func (s *Store) migrate() error {
 	// v1: runs/tasks/events/schema_versions
-	if _, err := s.db.Exec(schemaSQL); err != nil {
+	if err := s.execDDL(schemaSQL); err != nil {
 		return fmt.Errorf("state.migrate v1: %w", err)
 	}
 	var current int
@@ -214,50 +261,50 @@ func (s *Store) migrate() error {
 	}
 	// v2: jobs (queue table)
 	if current < 2 {
-		if _, err := s.db.Exec(schemaSQL_v2); err != nil {
+		if err := s.execDDL(schemaSQL_v2); err != nil {
 			return fmt.Errorf("state.migrate v2: %w", err)
 		}
 	}
 	// v3: workers (registry)
 	if current < 3 {
-		if _, err := s.db.Exec(schemaSQL_v3); err != nil {
+		if err := s.execDDL(schemaSQL_v3); err != nil {
 			return fmt.Errorf("state.migrate v3: %w", err)
 		}
 	}
 	// v4: slim events ledger (drop payload column on upgrade)
 	if current < 4 {
-		if _, err := s.db.Exec(schemaSQL_v4); err != nil {
+		if err := s.execDDL(schemaSQL_v4); err != nil {
 			return fmt.Errorf("state.migrate v4: %w", err)
 		}
 	}
 	// v5: schedule_state (pause/drained control rows)
 	if current < 5 {
-		if _, err := s.db.Exec(schemaSQL_v5); err != nil {
+		if err := s.execDDL(schemaSQL_v5); err != nil {
 			return fmt.Errorf("state.migrate v5: %w", err)
 		}
 	}
 	// v6: task_state (per-task skip flags)
 	if current < 6 {
-		if _, err := s.db.Exec(schemaSQL_v6); err != nil {
+		if err := s.execDDL(schemaSQL_v6); err != nil {
 			return fmt.Errorf("state.migrate v6: %w", err)
 		}
 	}
 	// v7: run_state (per-run pause flag)
 	if current < 7 {
-		if _, err := s.db.Exec(schemaSQL_v7); err != nil {
+		if err := s.execDDL(schemaSQL_v7); err != nil {
 			return fmt.Errorf("state.migrate v7: %w", err)
 		}
 	}
 	// v8: runner_state (runner-wide drain flag, singleton)
 	if current < 8 {
-		if _, err := s.db.Exec(schemaSQL_v8); err != nil {
+		if err := s.execDDL(schemaSQL_v8); err != nil {
 			return fmt.Errorf("state.migrate v8: %w", err)
 		}
 	}
 	// v9: secrets table + secrets_meta(etag_counter) — the in-tree
 	// store backing the SecretStore role on Backend.
 	if current < 9 {
-		if _, err := s.db.Exec(schemaSQL_v9); err != nil {
+		if err := s.execDDL(schemaSQL_v9); err != nil {
 			return fmt.Errorf("state.migrate v9: %w", err)
 		}
 	}
@@ -266,7 +313,7 @@ func (s *Store) migrate() error {
 	// BackfillSecrets after WithAEAD — schema-level migration just
 	// adds the columns.
 	if current < 10 {
-		if _, err := s.db.Exec(schemaSQL_v10); err != nil {
+		if err := s.execDDL(schemaSQL_v10); err != nil {
 			return fmt.Errorf("state.migrate v10: %w", err)
 		}
 	}
@@ -385,8 +432,9 @@ func (s *Store) applyTrigger(tx *sql.Tx, e Event) error {
 		source = SourceHTTP // trigger events come from the listener
 	}
 	_, err := tx.Exec(`
-		INSERT OR IGNORE INTO runs(run_id, schedule, status, source, started_at)
-		VALUES (?, ?, ?, ?, NULL)`,
+		INSERT INTO runs(run_id, schedule, status, source, started_at)
+		VALUES (?, ?, ?, ?, NULL)
+		ON CONFLICT (run_id) DO NOTHING`,
 		e.RunID, e.Schedule, StatusQueued, source,
 	)
 	return err
@@ -416,8 +464,9 @@ func (s *Store) applyScheduleStart(tx *sql.Tx, e Event) error {
 	}
 	for _, name := range e.Tasks {
 		_, err := tx.Exec(`
-			INSERT OR IGNORE INTO tasks(run_id, name, status)
-			VALUES (?, ?, ?)`,
+			INSERT INTO tasks(run_id, name, status)
+			VALUES (?, ?, ?)
+			ON CONFLICT (run_id, name) DO NOTHING`,
 			e.RunID, name, StatusQueued,
 		)
 		if err != nil {

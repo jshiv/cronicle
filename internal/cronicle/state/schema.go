@@ -254,7 +254,7 @@ CREATE TABLE IF NOT EXISTS runner_state (
     reason      TEXT NOT NULL DEFAULT '',
     updated_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
-INSERT OR IGNORE INTO runner_state(id) VALUES (1);
+INSERT INTO runner_state(id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 `
 
 // schemaSQL_v9 adds the secrets table — the in-tree key/value store
@@ -292,7 +292,7 @@ CREATE TABLE IF NOT EXISTS secrets_meta (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
     etag_counter    INTEGER NOT NULL DEFAULT 0
 );
-INSERT OR IGNORE INTO secrets_meta(id) VALUES (1);
+INSERT INTO secrets_meta(id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 `
 
 // schemaSQL_v10 adds at-rest envelope encryption to the secrets table.
