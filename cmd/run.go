@@ -55,6 +55,10 @@ The run command will log schedule information to stdout including git commit inf
 		if listenToken == "" {
 			listenToken = os.Getenv("CRONICLE_LISTEN_TOKEN")
 		}
+		stateSource, _ := cmd.Flags().GetString("state-source")
+		if stateSource == "" {
+			stateSource = os.Getenv("CRONICLE_STATE_SOURCE")
+		}
 
 		ctx, stop := signal.NotifyContext(context.Background(),
 			syscall.SIGINT, syscall.SIGTERM)
@@ -66,6 +70,7 @@ The run command will log schedule information to stdout including git commit inf
 			LogToFile:   logToFile,
 			ListenAddr:  listenAddr,
 			ListenToken: listenToken,
+			StateSource: stateSource,
 			// Defer secret-source startup until AFTER cronicle has opened
 			// state.db — the secretstore binds to that backend, so it has
 			// to land in the right order. The hook closes over `cmd` so
@@ -129,6 +134,7 @@ func init() {
 	runCmd.Flags().Bool("log-to-file", false, "mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); stdout is unaffected and remains controlled by --log-format")
 	runCmd.Flags().String("listen", "", "host:port to expose the remote-trigger HTTP API (e.g. :8765). Empty disables. Requires --listen-token.")
 	runCmd.Flags().String("listen-token", "", "bearer token for the remote-trigger HTTP API (or env CRONICLE_LISTEN_TOKEN). Required when --listen is set.")
+	runCmd.Flags().String("state-source", "", "state plane DSN (or env CRONICLE_STATE_SOURCE). Empty → local .cronicle/state.db (SQLite); postgres://… → durable Postgres so run history / ${last_run} survive restarts.")
 	addSecretSourceFlags(runCmd)
 
 	// Here you will define your flags and configuration settings.

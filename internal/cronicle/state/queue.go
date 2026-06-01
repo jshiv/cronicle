@@ -70,8 +70,9 @@ func (s *Store) Enqueue(runID, schedule string, payload []byte) error {
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.Exec(`
-		INSERT OR IGNORE INTO jobs(run_id, schedule, payload, status, enqueued_at)
-		VALUES (?, ?, ?, ?, ?)`,
+		INSERT INTO jobs(run_id, schedule, payload, status, enqueued_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (run_id) DO NOTHING`,
 		runID, schedule, string(payload), JobPending, now,
 	)
 	if err != nil {

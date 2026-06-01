@@ -177,8 +177,9 @@ func (s *Store) Retry(runID, newRunID string) (RetryResult, error) {
 	// re-acquires s.mu, so re-implement the INSERT here.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := s.db.Exec(`
-		INSERT OR IGNORE INTO jobs(run_id, schedule, payload, status, enqueued_at)
-		VALUES (?, ?, ?, ?, ?)`,
+		INSERT INTO jobs(run_id, schedule, payload, status, enqueued_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (run_id) DO NOTHING`,
 		newRunID, schedule, string(newPayload), JobPending, now,
 	); err != nil {
 		return RetryResult{}, fmt.Errorf("Retry: enqueue: %w", err)
@@ -281,8 +282,9 @@ func (s *Store) RetryFailed(runID, newRunID string) (RetryResult, error) {
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := s.db.Exec(`
-		INSERT OR IGNORE INTO jobs(run_id, schedule, payload, status, enqueued_at)
-		VALUES (?, ?, ?, ?, ?)`,
+		INSERT INTO jobs(run_id, schedule, payload, status, enqueued_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (run_id) DO NOTHING`,
 		newRunID, schedule, string(newPayload), JobPending, now,
 	); err != nil {
 		return RetryResult{}, fmt.Errorf("RetryFailed: enqueue: %w", err)
@@ -379,8 +381,9 @@ func (s *Store) RetryTask(runID, taskName string, keep map[string]bool, newRunID
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := s.db.Exec(`
-		INSERT OR IGNORE INTO jobs(run_id, schedule, payload, status, enqueued_at)
-		VALUES (?, ?, ?, ?, ?)`,
+		INSERT INTO jobs(run_id, schedule, payload, status, enqueued_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (run_id) DO NOTHING`,
 		newRunID, schedule, string(newPayload), JobPending, now,
 	); err != nil {
 		return RetryResult{}, fmt.Errorf("RetryTask: enqueue: %w", err)

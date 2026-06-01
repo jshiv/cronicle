@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"time"
 )
 
 // SecretStore implementation backed by the v9 `secrets` + `secrets_meta`
@@ -32,6 +33,9 @@ func (s *Store) PutSecret(name, value, actor string) error {
 	if name == "" {
 		return errors.New("state.PutSecret: empty name")
 	}
+	// Bind the timestamp in Go rather than SQL datetime('now') so the
+	// query is portable across sqlite/postgres.
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("state.PutSecret: begin: %w", err)
@@ -50,30 +54,30 @@ func (s *Store) PutSecret(name, value, actor string) error {
 		// crashing on a missing column).
 		if _, err := tx.Exec(`
 			INSERT INTO secrets (name, value, value_ct, value_nonce, version, updated_at, updated_by)
-			VALUES (?, '', ?, ?, 1, datetime('now'), ?)
+			VALUES (?, '', ?, ?, 1, ?, ?)
 			ON CONFLICT(name) DO UPDATE SET
 			    value       = '',
 			    value_ct    = excluded.value_ct,
 			    value_nonce = excluded.value_nonce,
 			    version     = secrets.version + 1,
-			    updated_at  = datetime('now'),
+			    updated_at  = ?,
 			    updated_by  = excluded.updated_by`,
-			name, ct, nonce, actor,
+			name, ct, nonce, now, actor, now,
 		); err != nil {
 			return fmt.Errorf("state.PutSecret: upsert: %w", err)
 		}
 	} else {
 		if _, err := tx.Exec(`
 			INSERT INTO secrets (name, value, version, updated_at, updated_by)
-			VALUES (?, ?, 1, datetime('now'), ?)
+			VALUES (?, ?, 1, ?, ?)
 			ON CONFLICT(name) DO UPDATE SET
 			    value      = excluded.value,
 			    value_ct   = NULL,
 			    value_nonce = NULL,
 			    version    = secrets.version + 1,
-			    updated_at = datetime('now'),
+			    updated_at = ?,
 			    updated_by = excluded.updated_by`,
-			name, value, actor,
+			name, value, now, actor, now,
 		); err != nil {
 			return fmt.Errorf("state.PutSecret: upsert: %w", err)
 		}
