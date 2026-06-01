@@ -1,7 +1,7 @@
 name: ci
 
 # PR-time validation: go vet + go test ./...
-# Runs on every PR and on push to master (catches direct merges).
+# Runs on every PR and on push to main (catches direct merges).
 #
 # gofmt is intentionally not enforced here — Go 1.26 reflows godoc lists
 # differently than earlier versions, so re-enabling it requires a one-time
@@ -10,7 +10,7 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [main]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
