@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,19 @@ import (
 
 	cron "github.com/robfig/cron/v3"
 )
+
+// redactDSN masks the password in a postgres:// DSN for safe logging.
+func redactDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil || u.User == nil {
+		return dsn
+	}
+	if _, hasPw := u.User.Password(); hasPw {
+		u.User = url.UserPassword(u.User.Username(), "***")
+		return u.String()
+	}
+	return dsn
+}
 
 // Run is the main function of the cron package.
 //
@@ -57,15 +71,27 @@ func Run(ctx context.Context, cronicleFile string, runOptions RunOptions) {
 		}
 	}
 
-	// State plane: SQLite-backed projection of slog events. Lives at
-	// .cronicle/state.db so the lifetime matches the schedule directory.
-	// Currently the store is built into the producer; once Phase 2 lands
-	// the listener and the API will share this same handle.
-	stateDir := filepath.Join(croniclePath, ".cronicle")
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		slog.Warn("state dir mkdir failed; projection disabled", "error", err.Error())
-	} else if err := EnableStateStore(filepath.Join(stateDir, "state.db")); err != nil {
-		slog.Warn("state store open failed; projection disabled", "error", err.Error())
+	// State plane: projection of slog events + the durable job queue.
+	// Default is a local SQLite at .cronicle/state.db (ephemeral in managed
+	// pods). When --state-source / CRONICLE_STATE_SOURCE points at a
+	// postgres:// DSN, the producer uses a durable, restart-surviving store
+	// instead — so run history (and ${last_run}) persists across pod
+	// recreation. The worker is unaffected: it still reaches all state
+	// through the producer over HTTP.
+	if runOptions.StateSource != "" {
+		if err := EnableStateStore(runOptions.StateSource); err != nil {
+			slog.Warn("state store open failed; projection disabled",
+				"source", redactDSN(runOptions.StateSource), "error", err.Error())
+		} else {
+			slog.Info("state store: external", "source", redactDSN(runOptions.StateSource))
+		}
+	} else {
+		stateDir := filepath.Join(croniclePath, ".cronicle")
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
+			slog.Warn("state dir mkdir failed; projection disabled", "error", err.Error())
+		} else if err := EnableStateStore(filepath.Join(stateDir, "state.db")); err != nil {
+			slog.Warn("state store open failed; projection disabled", "error", err.Error())
+		}
 	}
 
 	if runOptions.PostStateStoreHook != nil {
@@ -163,6 +189,12 @@ type RunOptions struct {
 	// up to N jobs executing concurrently. <=1 means one worker (serial).
 	// Ignored when RunWorker is false or in non-listener mode.
 	WorkerCount int
+	// StateSource overrides where the state plane lives. Empty → local
+	// .cronicle/state.db (SQLite). A postgres:// DSN → durable Postgres,
+	// so run history / ${last_run} survive pod recreation. Set via
+	// --state-source or CRONICLE_STATE_SOURCE; in managed deployments the
+	// control plane injects a per-deployment DSN for the PRODUCER pod.
+	StateSource string
 	// LogToFile mirrors structured logs to .cronicle/log/cronicle.jsonl
 	// rotated by lumberjack. Independent of stdout.
 	LogToFile bool
