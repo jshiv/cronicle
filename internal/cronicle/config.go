@@ -118,7 +118,11 @@ type Task struct {
 	// Survives the run for transcript/audit access.
 	ScratchDir string
 	// LastRun is the start time of this schedule's previous SUCCESSFUL
-	// run, looked up from the state backend by ExecuteTasks. Substituted
+	// run. Resolved by the dispatcher (resolveLastRun) against the
+	// authoritative state store before ExecuteTasks runs — the producer
+	// at enqueue, or the in-process ConsumeSchedule / ExecTasks paths.
+	// ExecuteTasks never reads state for it (it also runs on distributed
+	// workers, whose store has no run history). Substituted
 	// into commands/prompts as `${last_run}` (RFC3339) and
 	// `${last_run_epoch}` (unix seconds) so a task can fetch only what's
 	// new "since the prior run" instead of guessing a lookback window.

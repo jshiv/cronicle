@@ -36,8 +36,15 @@ func enqueueAdapter(in <-chan []byte, store state.Backend) {
 			// stamp RunID before queueing. Defensive: synthesize one
 			// rather than dropping the run.
 			sch.RunID = newRunID()
-			payload, _ = json.Marshal(sch)
 		}
+		// Resolve ${last_run} HERE, on the producer, against the
+		// authoritative state store, and bake it into the payload. The
+		// worker that later claims this job (single-node self-worker or a
+		// distributed HTTP worker) executes from the fully-resolved payload
+		// and never reads state itself — its local store is a
+		// non-authoritative in-memory projection with no run history.
+		resolveLastRun(store, &sch)
+		payload, _ = json.Marshal(sch)
 		if err := store.Enqueue(sch.RunID, sch.Name, payload); err != nil {
 			slog.Error("self-queue: enqueue failed", "run_id", sch.RunID, "error", err.Error())
 		}
