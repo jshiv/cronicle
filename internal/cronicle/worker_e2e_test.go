@@ -69,31 +69,27 @@ func TestDistributed_ProducerWorkerEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	w := &httpWorker{
-		opts: HTTPWorkerOptions{
-			ProducerURL:    ts.URL,
-			Token:          token,
-			WorkerID:       "W1",
-			PollBlock:      2 * time.Second,
-			HeartbeatEvery: time.Hour, // never fires during the test
-		},
-		client:     &http.Client{Timeout: 10 * time.Second},
-		ctx:        ctx,
-		activeRuns: map[string]context.CancelFunc{},
+	hc := &httpQueueClient{
+		producerURL: ts.URL,
+		token:       token,
+		workerID:    "W1",
+		client:      &http.Client{Timeout: 10 * time.Second},
+		ctx:         ctx,
 	}
+	w := newWorker(ctx, hc, "W1", 2*time.Second, time.Hour /* heartbeat never fires */)
 
 	// Claim the job over HTTP and run it.
-	job, ok, err := w.pollOnce()
+	job, ok, err := hc.Claim(w.pollBlock)
 	if err != nil {
-		t.Fatalf("pollOnce: %v", err)
+		t.Fatalf("Claim: %v", err)
 	}
 	if !ok {
-		t.Fatal("pollOnce returned no job, want R2")
+		t.Fatal("Claim returned no job, want R2")
 	}
 	if job.RunID != "R2" || job.Schedule != "daily" {
 		t.Fatalf("claimed job = (%q,%q), want (R2,daily)", job.RunID, job.Schedule)
 	}
-	w.execute(w.opts.Path, job)
+	w.execute("", job)
 
 	// Flush shipped events into the producer projection.
 	shipper.stop()
