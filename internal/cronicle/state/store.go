@@ -12,7 +12,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -189,6 +191,17 @@ func Open(dsn string) (*Store, error) {
 	return s, nil
 }
 
+// envIntDefault reads a positive integer from env, falling back to def when
+// unset, empty, or unparseable / non-positive.
+func envIntDefault(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
 // openPostgres backs the Store with a shared, durable Postgres instead of a
 // local SQLite file. Same schema and queries (via the placeholder-rebind
 // driver + DDL dialect transform). This is what a per-deployment producer
@@ -200,10 +213,19 @@ func openPostgres(dsn string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("state.Open(postgres): %w", err)
 	}
-	// Unlike SQLite (single writer), Postgres handles concurrency; the
-	// Store's mu still serializes our write transactions.
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
+	// A producer's Store serializes essentially all DB access behind its
+	// mutex, so it needs very few connections — but there are MANY producers
+	// (one per deployment) sharing one managed Postgres with a small
+	// connection cap (e.g. db-s-1vcpu-1gb ≈ 22 usable). Keep the per-producer
+	// pool tiny so N producers + the api stay under budget. Overridable via
+	// CRONICLE_STATE_MAX_OPEN_CONNS for tuning without an image rebuild.
+	maxOpen := envIntDefault("CRONICLE_STATE_MAX_OPEN_CONNS", 2)
+	db.SetMaxOpenConns(maxOpen)
+	idle := maxOpen - 1
+	if idle < 1 {
+		idle = 1
+	}
+	db.SetMaxIdleConns(idle)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("state.Open(postgres): ping: %w", err)
