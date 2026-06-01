@@ -93,7 +93,15 @@ var (
 			// Used in mcp { command = ["...", "${path}/data"] }
 			// patterns where the server needs a real filesystem path.
 			"path": cty.StringVal("${path}"),
-			"env":  envContextVar(),
+			// last_run / last_run_epoch survive HCL parse as their literal
+			// tokens, then exec.go substitutes the prior successful run's
+			// start (resolved at dispatch — see resolveLastRun). Without
+			// these entries HCL rejects "${last_run}" as an unknown
+			// variable, so the token is unusable from a .hcl file even
+			// though the exec-time replacer knows it.
+			"last_run":       cty.StringVal("${last_run}"),
+			"last_run_epoch": cty.StringVal("${last_run_epoch}"),
+			"env":            envContextVar(),
 		},
 	}
 
