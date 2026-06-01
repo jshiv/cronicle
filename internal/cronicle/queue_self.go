@@ -51,75 +51,27 @@ func enqueueAdapter(in <-chan []byte, store state.Backend) {
 	}
 }
 
-// selfWorker is the in-process consumer for --queue self mode. Claims
-// jobs from the SQLite store, hands the payload to the same DAG walker
-// the existing ConsumeSchedule path uses, then acks. Treats Apply
-// failures as "the run executed but recorded a schedule_complete with
-// success=false" — the job is acked DONE either way; the projection
-// has the failure detail.
+// selfWorker is the in-process worker for single-node mode (--worker). It
+// runs the SAME claim→execute→ack loop as a remote worker (see worker /
+// consume), but over a localQueueClient — a thin in-process adapter on the
+// state backend, with NO socket. The worker's only contact with state is
+// the three queue verbs (Claim/Ack/Heartbeat); it never reads run history
+// or projections, so the producer stays the single source of truth by
+// construction, not convention.
 //
-// Visibility timeout is 5 minutes. Long-running agent runs aren't
-// covered by that without explicit Heartbeat — single-node mode
-// rarely needs it because the worker IS the producer (no network
-// partition can preempt), but if a panic kills the goroutine the
-// reaper will recover the job.
+// Run events still reach the store through the producer's in-process slog
+// sink (same process), so unlike a remote worker there is nothing to ship.
+// Jobs run one at a time (consume is serial); the reaper recovers a job if
+// this worker dies mid-run.
 func selfWorker(ctx context.Context, store state.Backend, croniclePath string, wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer wg.Done()
 	workerID := SelfWorkerID()
+	lc := &localQueueClient{store: store, workerID: workerID, ctx: ctx}
+	w := newWorker(ctx, lc, workerID, 30*time.Second, 100*time.Second)
 	slog.Info("self-worker started", "worker_id", workerID)
-
-	for {
-		// Bail before each Claim attempt so a cancel signal observed
-		// between WaitForJob returning and the next Claim still ends
-		// the loop promptly.
-		if ctx.Err() != nil {
-			slog.Info("self-worker: shutting down", "worker_id", workerID)
-			return
-		}
-		job, err := store.Claim(workerID, 5*time.Minute)
-		if errors.Is(err, state.ErrNoJobs) {
-			// Park until a wakeup or 30s elapses, then re-Claim. Passing
-			// ctx here lets cancellation interrupt the park immediately
-			// instead of waiting for the 30s ceiling.
-			store.WaitForJob(ctx, 30*time.Second)
-			continue
-		}
-		if err != nil {
-			slog.Error("self-worker: claim failed", "error", err.Error())
-			// Sleep through cancel — return early on ctx.Done so shutdown
-			// isn't blocked by the back-off.
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			continue
-		}
-		wg.Add(1)
-		go func(j state.Job) {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("self-worker: panic during execute",
-						"run_id", j.RunID, "panic", r)
-					_ = store.Ack(j.RunID, workerID, false, "panic during execute")
-				}
-			}()
-
-			var sch Schedule
-			if err := json.Unmarshal(j.Payload, &sch); err != nil {
-				slog.Error("self-worker: payload decode failed",
-					"run_id", j.RunID, "error", err.Error())
-				_ = store.Ack(j.RunID, workerID, false, err.Error())
-				return
-			}
-			sch.PropigateTaskProperties(croniclePath)
-			sch.ExecuteTasks()
-			// Per-task success rolls into the projection via the slog
-			// Sink; the queue Ack just records "this worker handled
-			// this job to completion." Run-level success is recorded
-			// separately on the projection's runs row.
-			_ = store.Ack(j.RunID, workerID, true, "")
-		}(job)
+	if err := w.consume(croniclePath); err != nil && !errors.Is(err, context.Canceled) {
+		slog.Error("self-worker stopped", "error", err.Error())
 	}
 }
 
