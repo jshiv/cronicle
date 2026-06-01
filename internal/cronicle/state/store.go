@@ -208,6 +208,13 @@ func openPostgres(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("state.Open(postgres): ping: %w", err)
 	}
+	// When the DSN scopes the producer to a per-deployment schema
+	// (search_path=dep_<id>), self-create it so the control plane needs no
+	// DB access. Best-effort: a restricted role that can't CREATE SCHEMA
+	// must have it pre-provisioned (migrate then fails clearly if missing).
+	if schema := schemaFromDSN(dsn); schema != "" {
+		_, _ = db.Exec(`CREATE SCHEMA IF NOT EXISTS ` + quoteIdent(schema))
+	}
 	s := &Store{db: db, dialect: dialectPostgres}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()

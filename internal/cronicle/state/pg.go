@@ -4,12 +4,34 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5/stdlib"
 )
+
+// schemaFromDSN returns the per-deployment schema pinned via the DSN's
+// search_path (first entry if a list), or "" for none. The producer
+// self-creates this schema on connect so the control plane doesn't need
+// DB access — it just hands over a DSN scoped to the deployment.
+func schemaFromDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return ""
+	}
+	sp := u.Query().Get("search_path")
+	if i := strings.IndexByte(sp, ','); i >= 0 {
+		sp = sp[:i]
+	}
+	return strings.TrimSpace(sp)
+}
+
+// quoteIdent double-quotes a Postgres identifier (schema name from the DSN).
+func quoteIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
 
 // dialect selects SQL flavor. The state store was written for SQLite; the
 // Postgres path reuses the same queries with a thin placeholder-rebind
