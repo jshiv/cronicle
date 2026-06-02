@@ -65,14 +65,6 @@ func (s *HTTPSource) WithBearer(token string) *HTTPSource {
 	return s
 }
 
-// WithHeader sets an arbitrary header for every fetch. Replaces any
-// previous value for the same key. Useful for x-actor / trace headers
-// callers want propagated.
-func (s *HTTPSource) WithHeader(key, value string) *HTTPSource {
-	s.Headers.Set(key, value)
-	return s
-}
-
 func (s *HTTPSource) Fetch(ctx context.Context, prevEtag string) (map[string]string, string, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL, nil)
 	if err != nil {

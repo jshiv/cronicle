@@ -16,9 +16,8 @@ import (
 // 304 Not Modified. Falls back gracefully if the server doesn't
 // participate in conditional GETs — we'll just always-redownload.
 //
-// Auth: the caller can supply a bearer token via WithBearer; or set
-// arbitrary headers via WithHeader. The token is held in process
-// memory and is NOT included in String() output.
+// Auth: the caller can supply a bearer token via WithBearer. The token
+// is held in process memory and is NOT included in String() output.
 type HTTPSource struct {
 	URL     string
 	Client  *http.Client
@@ -47,13 +46,6 @@ func NewHTTPSource(rawurl string) (*HTTPSource, error) {
 // the source for chaining at construction sites.
 func (s *HTTPSource) WithBearer(token string) *HTTPSource {
 	s.Headers.Set("Authorization", "Bearer "+token)
-	return s
-}
-
-// WithHeader sets an arbitrary header for every fetch. Replaces any
-// previous value for the same key.
-func (s *HTTPSource) WithHeader(key, value string) *HTTPSource {
-	s.Headers.Set(key, value)
 	return s
 }
 
