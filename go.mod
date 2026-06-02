@@ -3,7 +3,7 @@ module github.com/jshiv/cronicle
 go 1.26
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.45.0
+	github.com/anthropics/anthropic-sdk-go v1.46.0
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/config v1.27.27
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.101.0
@@ -104,4 +104,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/anthropics/anthropic-sdk-go => github.com/jshiv/anthropic-sdk-go v1.45.1-0.20260529110403-ee8571291242
+replace github.com/anthropics/anthropic-sdk-go => github.com/jshiv/anthropic-sdk-go v1.46.1-0.20260602022625-c3415d621638
