@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	homedir "github.com/mitchellh/go-homedir"
 
@@ -121,32 +120,6 @@ func (g *Git) Open(worktreePath string) error {
 	}
 
 	return nil
-}
-
-//Commit does a git commit on the repository at worktree
-func Commit(worktreeDir string, msg string) {
-	// Opens an already existing repository.
-	r, _ := git.PlainOpen(worktreeDir)
-
-	w, _ := r.Worktree()
-
-	_, _ = w.Add(".")
-
-	// We can verify the current status of the worktree using the method Status.
-	status, _ := w.Status()
-
-	fmt.Println(status)
-
-	commit, _ := w.Commit(msg, &git.CommitOptions{
-		Author: &object.Signature{
-			Name: "Cronicle user",
-			When: time.Now(),
-		},
-	})
-
-	obj, _ := r.CommitObject(commit)
-
-	fmt.Println(obj)
 }
 
 //Clone checks for the existance of worktreeDir/.git and clones if it does not exist
