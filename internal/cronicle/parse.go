@@ -235,11 +235,3 @@ func (conf Config) Hcl() HclWriteFile {
 	return HclWriteFile{File: *f, Bytes: b}
 }
 
-//Hcl returns a hcl File object from a given task
-func (task Task) Hcl() HclWriteFile {
-	f := hclwrite.NewEmptyFile()
-	gohcl.EncodeIntoBody(&task, f.Body())
-	r := regexp.MustCompile("[$]+")
-	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
-	return HclWriteFile{File: *f, Bytes: b}
-}
