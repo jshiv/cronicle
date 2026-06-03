@@ -3,7 +3,6 @@ package cronicle
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"sync"
 	"time"
 )
 
@@ -20,11 +19,4 @@ func newRunID() string {
 	var b [4]byte
 	_, _ = rand.Read(b[:]) // crypto/rand never errors on darwin/linux
 	return time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(b[:])
-}
-
-// monotonicSuffix is reserved for a future sortability guarantee if we
-// switch to ULIDs. Kept behind a mutex to avoid clock-skew foot-guns.
-var monotonicSuffix struct {
-	sync.Mutex
-	last time.Time
 }
