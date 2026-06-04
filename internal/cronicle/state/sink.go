@@ -5,29 +5,22 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"sync/atomic"
 )
 
 // Sink is a slog.Handler that converts each record into an Event and
 // folds it into a Store. It composes into the multi-handler chain
 // alongside the JSONL file writer and stdout — the same record lands
-// in both places. Errors during Apply() are tracked atomically (no
+// in both places. Errors during Apply() are silently dropped (no
 // per-event log spam) so a transient DB write hiccup doesn't take
 // down the run that's actually doing the work.
 type Sink struct {
 	store *Store
-	errs  atomic.Int64
 }
 
 // NewSink returns a slog.Handler wired to store. Pass nil store and the
 // sink becomes a noop — useful for tests that don't care about the
 // projection but still construct a Sink to satisfy the handler chain.
 func NewSink(store *Store) *Sink { return &Sink{store: store} }
-
-// Errors returns the running count of Apply() failures since process
-// start. Useful for /healthz to surface "state plane degraded" without
-// flapping on individual writes.
-func (s *Sink) Errors() int64 { return s.errs.Load() }
 
 // Enabled accepts everything; the per-record EntryType filter happens
 // inside Handle. We could short-circuit on slog.LevelDebug but the
@@ -79,26 +72,19 @@ func (s *Sink) Handle(ctx context.Context, r slog.Record) error {
 	}
 	line, err := encodeRecord(r)
 	if err != nil {
-		s.errs.Add(1)
 		return nil
 	}
 	ev, ok := DecodeEvent(line)
 	if !ok {
-		// Missing run_id, or malformed — already counted above when DecodeEvent
-		// rejects malformed input by parse error. ok=false on missing run_id
-		// is benign; don't bump the error counter.
 		return nil
 	}
-	if err := s.store.Apply(ev); err != nil {
-		s.errs.Add(1)
-	}
+	_ = s.store.Apply(ev)
 	return nil
 }
 
 // WithAttrs is a noop. cronicle doesn't construct logger.With(...) chains
 // for projection-bearing events, so propagating attrs across handler
-// clones isn't needed. Returning the same Sink avoids copying the
-// embedded atomic counter.
+// clones isn't needed. Returning the same Sink keeps the contract simple.
 func (s *Sink) WithAttrs(_ []slog.Attr) slog.Handler { return s }
 
 // WithGroup is a noop — the projection ignores grouping. cronicle doesn't
