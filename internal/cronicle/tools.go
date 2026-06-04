@@ -322,6 +322,14 @@ func (t *TextEditorTool) resolvePath(p string) (string, error) {
 // resolveInWorkspace turns a model-supplied path (relative or absolute) into
 // an absolute path *guaranteed* to live under workspace, or an error. Used
 // by every text_editor operation as the workspace-containment gate.
+//
+// Symlink handling: lexical containment via filepath.Clean is not sufficient
+// — an agent could create a symlink inside the workspace pointing at
+// /etc/passwd, then ask text_editor to "view" it. We resolve symlinks on
+// both the workspace root and the deepest existing ancestor of the target,
+// then re-check containment against the symlink-free roots. Non-existent
+// leaves are legitimate for create operations, so we only require the
+// nearest existing ancestor to resolve.
 func resolveInWorkspace(workspace, p string) (string, error) {
 	if p == "" {
 		return "", fmt.Errorf("path required")
@@ -330,6 +338,13 @@ func resolveInWorkspace(workspace, p string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("workspace abs: %w", err)
 	}
+	// Resolve symlinks in the workspace root itself so a symlinked workspace
+	// doesn't fail the post-EvalSymlinks containment check below. If the
+	// workspace dir doesn't exist yet we keep the lexical form; the per-target
+	// EvalSymlinks below will reject anything that escapes anyway.
+	if resolved, err := filepath.EvalSymlinks(wsAbs); err == nil {
+		wsAbs = resolved
+	}
 	var abs string
 	if filepath.IsAbs(p) {
 		abs = p
@@ -337,14 +352,55 @@ func resolveInWorkspace(workspace, p string) (string, error) {
 		abs = filepath.Join(wsAbs, p)
 	}
 	abs = filepath.Clean(abs)
-	rel, err := filepath.Rel(wsAbs, abs)
+
+	// Resolve symlinks against the deepest existing ancestor. A non-existent
+	// leaf is fine (creating a new file), but every existing path component
+	// MUST resolve under wsAbs after symlink expansion.
+	resolved, err := evalSymlinksTolerant(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", p, err)
+	}
+	rel, err := filepath.Rel(wsAbs, resolved)
 	if err != nil {
 		return "", fmt.Errorf("path %s outside workspace", p)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %s escapes workspace", p)
 	}
-	return abs, nil
+	return resolved, nil
+}
+
+// evalSymlinksTolerant resolves abs through symlinks, walking up to the
+// deepest existing ancestor when the leaf doesn't exist. Returns a path
+// whose existing-prefix is symlink-free; any non-existing suffix is
+// appended verbatim. Used by resolveInWorkspace so that "create new file"
+// operations don't fail the containment check just because the file
+// hasn't been written yet.
+func evalSymlinksTolerant(abs string) (string, error) {
+	suffix := ""
+	cur := abs
+	for {
+		resolved, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			if suffix == "" {
+				return resolved, nil
+			}
+			return filepath.Join(resolved, suffix), nil
+		}
+		// Only walk up on os.IsNotExist; any other error (perm denied, etc.)
+		// is a real failure that the caller should see.
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the root and nothing exists. Return the lexical path —
+			// the containment check in the caller still catches escapes.
+			return abs, nil
+		}
+		suffix = filepath.Join(filepath.Base(cur), suffix)
+		cur = parent
+	}
 }
 
 // isBinary reports whether the data looks like binary (any null byte in the

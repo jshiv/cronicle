@@ -35,6 +35,7 @@ package cronicle
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -170,7 +171,11 @@ func (s *listenServer) authed(r *http.Request) bool {
 	if !strings.HasPrefix(h, prefix) {
 		return false
 	}
-	return strings.TrimPrefix(h, prefix) == s.token
+	// Constant-time compare so an attacker can't recover s.token byte-by-byte
+	// via response-latency probing. subtle.ConstantTimeCompare returns 0 if
+	// the lengths differ, so callers can't infer the token length either.
+	got := strings.TrimPrefix(h, prefix)
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
 }
 
 func (s *listenServer) handleHealth(w http.ResponseWriter, r *http.Request) {
