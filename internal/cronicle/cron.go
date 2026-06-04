@@ -273,11 +273,10 @@ func StartCron(ctx context.Context, cronicleFile string, queue chan<- []byte) {
 	// populating the map before c.Start(), no tick can fire until both
 	// the entries and the static-set mask are in place.
 	globalRuntime.setStaticEntries(map[cron.EntryID]bool{hbID: true, refreshID: true})
-	// Initial dynamic-schedule registration runs before c.Start(). The
-	// inner LoadCron will call c.Stop() (no-op when not running) and
-	// c.Start() (which starts the cron); the subsequent c.Start() below
-	// is then a no-op against an already-running cron. This shape is
-	// what lets us avoid the startup race entirely.
+	// Initial dynamic-schedule registration. LoadCron no longer touches
+	// the cron lifecycle (used to call Stop/Start, which raced its own
+	// run goroutine), so AddFunc against the not-yet-started scheduler
+	// is a plain append — no ticks can fire until c.Start() below.
 	LoadCron(cronicleFile, c, queue, true)
 	c.Start()
 
@@ -321,7 +320,14 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 
 	if !globalRuntime.hclEquals(rawHCL) || force {
 		slog.Info("Refreshing config...", "cronicle", "heartbeat", "path", cronicleFile)
-		c.Stop()
+		// NOTE: do NOT call c.Stop() / c.Start() here. Stop() returns
+		// before the run goroutine has actually exited (it returns a
+		// context the caller can wait on), so a Start() immediately
+		// after races a second run goroutine against the still-draining
+		// first one. AddFunc / Remove are documented safe-to-call while
+		// the cron is running — they coordinate with the run goroutine
+		// via the c.add / c.remove channels — so the swap can happen
+		// in-place.
 		for _, entry := range c.Entries() {
 			// Preserve the heartbeat + config_refresh static entries; only
 			// remove the dynamic per-schedule entries so we can re-register
@@ -351,7 +357,6 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 			}
 
 		}
-		c.Start()
 	}
 	globalRuntime.storeConfAndHCL(conf, rawHCL)
 

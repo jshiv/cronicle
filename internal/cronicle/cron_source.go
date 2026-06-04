@@ -206,10 +206,10 @@ func startSchedulerFromSource(ctx context.Context, src configsource.Source, conf
 	// rationale as StartCron's ordering in cron.go.
 	state.static = map[cron.EntryID]bool{hbID: true, refreshID: true}
 
-	// Initial dynamic-schedule registration runs before c.Start(). The
-	// inner loadInto will call c.Stop() (no-op) and c.Start() (starts
-	// the cron); the c.Start() below is then a no-op against an
-	// already-running cron. This is what lets us avoid the startup race.
+	// Initial dynamic-schedule registration. loadInto no longer touches
+	// the cron lifecycle (used to call Stop/Start, which raced its own
+	// run goroutine), so AddFunc against the not-yet-started scheduler
+	// is a plain append — no ticks can fire until c.Start() below.
 	state.loadInto(ctx, c, queue, true)
 	c.Start()
 
@@ -326,7 +326,11 @@ func (s *reloadState) loadInto(ctx context.Context, c *cron.Cron, queue chan<- [
 	slog.Info("Refreshing config...", "source", s.src.String(),
 		"schedules", len(conf.Schedules))
 
-	c.Stop()
+	// Same reasoning as the file path in cron.go's LoadCron: don't
+	// Stop/Start the scheduler from inside a refresh tick. Remove and
+	// AddFunc are documented safe-to-call while running, and Stop()
+	// returns before its run goroutine has actually exited so the
+	// follow-up Start() spawns a second goroutine that races the first.
 	for _, entry := range c.Entries() {
 		if s.static[entry.ID] {
 			continue
@@ -348,7 +352,6 @@ func (s *reloadState) loadInto(ctx context.Context, c *cron.Cron, queue chan<- [
 			}
 		}
 	}
-	c.Start()
 	globalRuntime.storeConf(conf)
 }
 
