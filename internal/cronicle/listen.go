@@ -517,10 +517,17 @@ func (s *listenServer) handleGetScheduleState(w http.ResponseWriter, r *http.Req
 // falling back to X-Actor / X-Reason headers. Bodyless POSTs (curl with
 // no -d) are explicitly supported — the headers and falling-through
 // empties keep the endpoint script-friendly.
+//
+// Body is capped at 64 KiB via http.MaxBytesReader so an authenticated
+// (or auth-bypassed) caller can't OOM the process by POSTing a multi-GiB
+// payload to pause/resume/skip. The pauseRequest schema is tiny — actor
+// and reason strings — so 64K is well above any legitimate use.
+// ContentLength can be -1 (chunked encoding); we treat any unknown size
+// as "maybe there's a body" so chunked POSTs aren't silently ignored.
 func readPauseBody(r *http.Request) (string, string) {
 	var req pauseRequest
 	if r.Body != nil && r.ContentLength != 0 {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(http.MaxBytesReader(nil, r.Body, 64<<10)).Decode(&req)
 	}
 	if req.Actor == "" {
 		req.Actor = r.Header.Get("X-Actor")

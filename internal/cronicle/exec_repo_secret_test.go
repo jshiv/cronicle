@@ -38,10 +38,19 @@ func TestResolveRepoSecrets_ExpandsSecretRef(t *testing.T) {
 	defer cleanup()
 
 	repo := &Repo{Password: "$secret.GITHUB_TOKEN"}
-	resolveRepoSecrets(repo)
+	out := resolveRepoSecrets(repo)
 
-	if repo.Password != "ghp_test123" {
-		t.Errorf("expected password %q, got %q", "ghp_test123", repo.Password)
+	if out.Password != "ghp_test123" {
+		t.Errorf("expected resolved password %q, got %q", "ghp_test123", out.Password)
+	}
+	// The original *Repo must be unchanged — that's the whole point of
+	// returning a clone instead of mutating in place. Tasks sharing the
+	// schedule-level *Repo must not see each other's resolutions.
+	if repo.Password != "$secret.GITHUB_TOKEN" {
+		t.Errorf("input repo mutated; got Password=%q", repo.Password)
+	}
+	if out == repo {
+		t.Errorf("expected a fresh *Repo, got the same pointer back")
 	}
 }
 
@@ -50,30 +59,42 @@ func TestResolveRepoSecrets_LeavesEnvSyntaxAlone(t *testing.T) {
 	defer cleanup()
 
 	repo := &Repo{Password: "${env.CRONICLE_TOKEN}"}
-	resolveRepoSecrets(repo)
+	out := resolveRepoSecrets(repo)
 
-	if repo.Password != "${env.CRONICLE_TOKEN}" {
-		t.Errorf("should not modify env syntax, got %q", repo.Password)
+	if out.Password != "${env.CRONICLE_TOKEN}" {
+		t.Errorf("should not modify env syntax, got %q", out.Password)
+	}
+	// No expansion needed → same pointer returned, no allocation.
+	if out != repo {
+		t.Errorf("expected same pointer when no expansion, got fresh clone")
 	}
 }
 
 func TestResolveRepoSecrets_NoopWhenNil(t *testing.T) {
-	resolveRepoSecrets(nil)
+	if out := resolveRepoSecrets(nil); out != nil {
+		t.Errorf("expected nil for nil input, got %v", out)
+	}
 }
 
 func TestResolveRepoSecrets_NoopWhenEmpty(t *testing.T) {
 	repo := &Repo{Password: ""}
-	resolveRepoSecrets(repo)
-	if repo.Password != "" {
-		t.Errorf("expected empty, got %q", repo.Password)
+	out := resolveRepoSecrets(repo)
+	if out.Password != "" {
+		t.Errorf("expected empty, got %q", out.Password)
+	}
+	if out != repo {
+		t.Errorf("expected same pointer for noop, got fresh clone")
 	}
 }
 
 func TestResolveRepoSecrets_NoopWhenStoreUnconfigured(t *testing.T) {
 	repo := &Repo{Password: "$secret.GITHUB_TOKEN"}
-	resolveRepoSecrets(repo)
-	if repo.Password != "$secret.GITHUB_TOKEN" {
-		t.Errorf("should leave unresolved when store not configured, got %q", repo.Password)
+	out := resolveRepoSecrets(repo)
+	if out.Password != "$secret.GITHUB_TOKEN" {
+		t.Errorf("should leave unresolved when store not configured, got %q", out.Password)
+	}
+	if out != repo {
+		t.Errorf("expected same pointer when store unconfigured, got fresh clone")
 	}
 }
 
@@ -82,9 +103,42 @@ func TestResolveRepoSecrets_PlainPasswordUnchanged(t *testing.T) {
 	defer cleanup()
 
 	repo := &Repo{Password: "my-plain-token"}
-	resolveRepoSecrets(repo)
+	out := resolveRepoSecrets(repo)
 
-	if repo.Password != "my-plain-token" {
-		t.Errorf("plain password should be unchanged, got %q", repo.Password)
+	if out.Password != "my-plain-token" {
+		t.Errorf("plain password should be unchanged, got %q", out.Password)
+	}
+	if out != repo {
+		t.Errorf("expected same pointer for plain password, got fresh clone")
+	}
+}
+
+// Two tasks sharing a single schedule-level *Repo pointer must each
+// observe their own resolved password without racing on the shared
+// memory. This is the H8 invariant: resolveRepoSecrets must not mutate
+// the input.
+func TestResolveRepoSecrets_ConcurrentSharedRepo(t *testing.T) {
+	cleanup := setupSecretStore(t, map[string]string{
+		"GITHUB_TOKEN": "ghp_concurrent",
+	})
+	defer cleanup()
+
+	shared := &Repo{Password: "$secret.GITHUB_TOKEN"}
+	const goroutines = 50
+	done := make(chan *Repo, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			done <- resolveRepoSecrets(shared)
+		}()
+	}
+	for i := 0; i < goroutines; i++ {
+		out := <-done
+		if out.Password != "ghp_concurrent" {
+			t.Errorf("goroutine %d got password %q, want %q", i, out.Password, "ghp_concurrent")
+		}
+	}
+	// Original must still be untouched.
+	if shared.Password != "$secret.GITHUB_TOKEN" {
+		t.Errorf("shared repo mutated under concurrency; got %q", shared.Password)
 	}
 }

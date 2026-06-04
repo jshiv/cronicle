@@ -74,22 +74,33 @@ func splitAPIKey(env []string) (apiKey string, rest []string) {
 // references should resolve.
 // resolveRepoSecrets expands $secret.NAME references in the repo's
 // Password field using the secret store. Called at task execution time
-// (not at config load) so the secret store is available. No-op when
-// the store isn't configured or the password has no $secret. references.
-func resolveRepoSecrets(repo *Repo) {
+// (not at config load) so the secret store is available.
+//
+// Returns the original pointer when no expansion is needed; otherwise
+// returns a shallow-cloned *Repo with the resolved password. Crucially,
+// it does NOT mutate the input *Repo in place — PropigateTaskProperties
+// shares the schedule-level *Repo across every task in the schedule that
+// doesn't have its own repo block, so concurrent tasks in the DAG would
+// race on the Password field. Returning a per-task clone keeps each
+// goroutine's view of the secret independent.
+func resolveRepoSecrets(repo *Repo) *Repo {
 	if repo == nil || repo.Password == "" {
-		return
+		return repo
 	}
 	if !strings.Contains(repo.Password, "$secret.") {
-		return
+		return repo
 	}
 	store := secretstore.Default()
 	if !store.Configured() {
-		return
+		return repo
 	}
-	if v, err := store.ExpandValue(repo.Password); err == nil {
-		repo.Password = v
+	v, err := store.ExpandValue(repo.Password)
+	if err != nil {
+		return repo
 	}
+	clone := *repo
+	clone.Password = v
+	return &clone
 }
 
 func resolveEnv(env []string) ([]string, error) {
@@ -556,7 +567,9 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 
 	//If a repo is given, clone the repo and task.Git.Open(task.Path)
 	if task.Repo != nil {
-		resolveRepoSecrets(task.Repo)
+		// Replace task.Repo with a clone-with-resolved-password so we don't
+		// race other tasks that share the same schedule-level *Repo pointer.
+		task.Repo = resolveRepoSecrets(task.Repo)
 		opts, err := task.Repo.Auth()
 		if err != nil {
 			return exec.Result{}, err
