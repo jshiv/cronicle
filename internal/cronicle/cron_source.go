@@ -63,9 +63,9 @@ func RunFromSource(ctx context.Context, spec, workdir string, runOptions RunOpti
 	if conf == nil {
 		return fmt.Errorf("parse returned nil config")
 	}
-	// Seed confPriorGlobal so the first refresh tick sees identical
+	// Seed runtime state so the first refresh tick sees identical
 	// bytes and skips a redundant reload pass.
-	confPriorGlobal = conf
+	globalRuntime.storeConf(conf)
 
 	taskCount := 0
 	for _, s := range conf.Schedules {
@@ -168,7 +168,6 @@ func startSchedulerFromSource(ctx context.Context, src configsource.Source, conf
 	logSchedules(conf)
 
 	c := cron.New(cron.WithLocation(loc))
-	c.Start()
 
 	heartbeat := conf.Heartbeat
 	if heartbeat == "" {
@@ -201,11 +200,18 @@ func startSchedulerFromSource(ctx context.Context, src configsource.Source, conf
 	if err != nil {
 		return fmt.Errorf("register config refresh (%q): %w", refresh, err)
 	}
+	// Populate the static-entry mask BEFORE c.Start() so a refresh tick
+	// firing immediately can't observe an empty map and strip the
+	// heartbeat + refresh entries it was registered against. Same
+	// rationale as StartCron's ordering in cron.go.
 	state.static = map[cron.EntryID]bool{hbID: true, refreshID: true}
 
-	// Initial dynamic-schedule registration. Force=true so the static
-	// confPriorGlobal == conf check doesn't short-circuit.
+	// Initial dynamic-schedule registration runs before c.Start(). The
+	// inner loadInto will call c.Stop() (no-op) and c.Start() (starts
+	// the cron); the c.Start() below is then a no-op against an
+	// already-running cron. This is what lets us avoid the startup race.
 	state.loadInto(ctx, c, queue, true)
+	c.Start()
 
 	go func() {
 		<-ctx.Done()
@@ -305,11 +311,14 @@ func (s *reloadState) loadInto(ctx context.Context, c *cron.Cron, queue chan<- [
 	}
 
 	// Diff at the rendered-HCL level. Identical bytes → no-op.
+	// NOTE (M3 from audit): Hcl() round-trip is lossy — gohcl drops the
+	// repo block, comments, and formatting — so two structurally different
+	// configs can produce equal bytes here. The file path migrated to a
+	// raw-byte comparison; this path still uses the lossy form pending a
+	// separate fix.
 	if !force {
-		s.mu.Lock()
-		isSame := confPriorGlobal != nil && string(confPriorGlobal.Hcl().Bytes) == string(conf.Hcl().Bytes)
-		s.mu.Unlock()
-		if isSame {
+		prior := globalRuntime.snapshotConf()
+		if prior != nil && string(prior.Hcl().Bytes) == string(conf.Hcl().Bytes) {
 			return
 		}
 	}
@@ -340,7 +349,7 @@ func (s *reloadState) loadInto(ctx context.Context, c *cron.Cron, queue chan<- [
 		}
 	}
 	c.Start()
-	confPriorGlobal = conf
+	globalRuntime.storeConf(conf)
 }
 
 func pickLocation(tz string) (*time.Location, error) {

@@ -24,17 +24,11 @@ func TestRun_ShutdownOnCtxCancel(t *testing.T) {
 	hcl := filepath.Join(dir, "cronicle.hcl")
 	// Cron set far enough out that the test doesn't accidentally fire
 	// a task during the shutdown window — we want to measure the pure
-	// shutdown latency, not the time to drain in-flight work.
-	//
-	// config_refresh likewise pushed past the test window: the default
-	// "@every 1s" refresh tick races (under -race) with the initial
-	// LoadCron write inside StartCron because both touch confPriorGlobal
-	// without synchronization. That's a latent global-state race in the
-	// production code, independent of this PR's shutdown work; it's
-	// tracked separately. A long refresh interval keeps the tick from
-	// firing during this test so the race window doesn't open.
-	body := `config_refresh = "@every 1h"
-schedule "smoke" {
+	// shutdown latency, not the time to drain in-flight work. The
+	// previous "config_refresh = @every 1h" workaround for the
+	// confPriorGlobal data race is no longer needed — runtime state is
+	// now properly synchronized via globalRuntime.
+	body := `schedule "smoke" {
   cron = "@every 1h"
   task "noop" { command = ["true"] }
 }
