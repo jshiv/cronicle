@@ -35,3 +35,16 @@ jobs:
 
       - name: go test
         run: go test -race -count=1 -timeout=5m ./...
+
+      # Binary-level smoke tests. These build a race-instrumented
+      # cronicle binary and exec it as a real subprocess against a
+      # few stress fixtures (clean startup, rapid HCL mutations).
+      # Catches scheduler races and shutdown bugs that the in-process
+      # tests above can't reach because the goroutine interleaving
+      # in a binary driving its own cron ticks differs from
+      # Run() invoked directly from a test.
+      #
+      # Behind a `smoke` build tag so default `go test ./...` stays
+      # fast and self-contained.
+      - name: go test (smoke)
+        run: go test -tags smoke -count=1 -timeout=5m ./...
