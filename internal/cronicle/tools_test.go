@@ -61,16 +61,24 @@ func TestIsBinary(t *testing.T) {
 }
 
 // resolveInWorkspace blocks `..` traversal and absolute paths outside the
-// workspace, allows relative paths inside.
+// workspace, allows relative paths inside, and resolves symlinks before
+// the containment check so an agent can't escape via a planted symlink.
 func TestResolveInWorkspace(t *testing.T) {
 	ws := t.TempDir()
+	// Resolve the workspace's own symlinks so HasPrefix checks below
+	// compare against the canonical form. On macOS, t.TempDir() returns
+	// a /var/folders/... path that resolves to /private/var/folders/...
+	wsResolved, err := filepath.EvalSymlinks(ws)
+	if err != nil {
+		t.Fatalf("workspace eval: %v", err)
+	}
 
 	abs, err := resolveInWorkspace(ws, "sub/file.txt")
 	if err != nil {
 		t.Fatalf("relative inside: %v", err)
 	}
-	if !strings.HasPrefix(abs, ws) {
-		t.Fatalf("resolved path %q outside workspace %q", abs, ws)
+	if !strings.HasPrefix(abs, wsResolved) {
+		t.Fatalf("resolved path %q outside workspace %q", abs, wsResolved)
 	}
 
 	if _, err := resolveInWorkspace(ws, "../escape.txt"); err == nil {
@@ -82,6 +90,69 @@ func TestResolveInWorkspace(t *testing.T) {
 	}
 	if _, err := resolveInWorkspace(ws, ""); err == nil {
 		t.Fatalf("empty path allowed")
+	}
+}
+
+// resolveInWorkspace rejects paths that traverse OUT of the workspace
+// via a symlink. An attacker who can write inside the workspace (the
+// agent's bash tool) must not be able to plant a link and then use
+// text_editor to read or write the link target.
+func TestResolveInWorkspace_SymlinkEscape(t *testing.T) {
+	ws := t.TempDir()
+	outside := t.TempDir()
+	// Plant a target file in the outside directory and a symlink to it
+	// inside the workspace.
+	target := filepath.Join(outside, "stolen.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	link := filepath.Join(ws, "loot")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if _, err := resolveInWorkspace(ws, "loot"); err == nil {
+		t.Fatalf("symlink escape to outside-workspace target was allowed")
+	}
+}
+
+// A symlink that points to a sibling INSIDE the workspace is benign and
+// must continue to resolve cleanly.
+func TestResolveInWorkspace_SymlinkInside(t *testing.T) {
+	ws := t.TempDir()
+	wsResolved, err := filepath.EvalSymlinks(ws)
+	if err != nil {
+		t.Fatalf("workspace eval: %v", err)
+	}
+	target := filepath.Join(ws, "real.txt")
+	if err := os.WriteFile(target, []byte("ok"), 0o600); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	link := filepath.Join(ws, "alias")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	abs, err := resolveInWorkspace(ws, "alias")
+	if err != nil {
+		t.Fatalf("intra-workspace symlink rejected: %v", err)
+	}
+	if !strings.HasPrefix(abs, wsResolved) {
+		t.Fatalf("resolved path %q escapes workspace %q", abs, wsResolved)
+	}
+}
+
+// Create operations must work for a leaf path that doesn't exist yet —
+// resolveInWorkspace can't EvalSymlinks a non-existent file, so it must
+// walk up to the nearest existing ancestor.
+func TestResolveInWorkspace_NonExistentLeaf(t *testing.T) {
+	ws := t.TempDir()
+	abs, err := resolveInWorkspace(ws, "new-dir/new-file.txt")
+	if err != nil {
+		t.Fatalf("create-new path rejected: %v", err)
+	}
+	if !strings.Contains(abs, "new-dir/new-file.txt") {
+		t.Fatalf("leaf lost in resolution: got %q", abs)
 	}
 }
 

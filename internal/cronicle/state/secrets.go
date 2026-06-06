@@ -33,6 +33,13 @@ func (s *Store) PutSecret(name, value, actor string) error {
 	if name == "" {
 		return errors.New("state.PutSecret: empty name")
 	}
+	// Serialize with every other Store write (Apply, BackfillSecrets, queue
+	// ops, etc.). Without this lock, a PUT /v1/secrets racing with the
+	// startup BackfillSecrets pass could double-seal a row or seal stale
+	// plaintext. SQLite's busy_timeout helps but doesn't make the higher-
+	// level invariants safe; the explicit mutex does.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	// Bind the timestamp in Go rather than SQL datetime('now') so the
 	// query is portable across sqlite/postgres.
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
@@ -189,6 +196,10 @@ func (s *Store) ListSecretNames() ([]string, error) {
 // observers may care about regardless. ok reports actual deletion so
 // the CLI can print "removed" vs "no such secret".
 func (s *Store) DeleteSecret(name, actor string) (bool, error) {
+	// Same rationale as PutSecret: serialize with every other Store write
+	// so DELETE doesn't race with BackfillSecrets / etag bumps.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, fmt.Errorf("state.DeleteSecret: begin: %w", err)
