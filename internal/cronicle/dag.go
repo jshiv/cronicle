@@ -301,11 +301,18 @@ func walkDAG(deps map[string][]string, fn func(string) error, continueOnFailure 
 }
 
 // scratchDirFor computes the absolute scratch dir for one schedule run.
-// Lives under <croniclePath>/.cronicle/scratch/<schedule>/<utc-runid>/ so
+// Lives under <croniclePath>/.cronicle/scratch/<schedule>/<run-id>/ so
 // concurrent runs of the same schedule don't collide and each run is
-// addressable by timestamp. Returns "" if the schedule has no tasks (no
+// addressable by id. Returns "" if the schedule has no tasks (no
 // croniclePath to resolve), in which case dag.go skips the mkdir and
 // ${scratch} substitution becomes a no-op.
+//
+// Prefers schedule.RunID (a ULID) over the truncated-to-second timestamp.
+// Two runs of the same schedule firing within the same second (e.g. a
+// cron tick coinciding with an HTTP trigger, or two concurrent triggers)
+// used to produce the same path and clobber each other's files. The
+// timestamp form is kept only as a fallback for paths that don't carry
+// a RunID (direct in-process callers from very old code).
 func (schedule *Schedule) scratchDirFor(now time.Time) string {
 	if len(schedule.Tasks) == 0 {
 		return ""
@@ -314,8 +321,11 @@ func (schedule *Schedule) scratchDirFor(now time.Time) string {
 	if croniclePath == "" {
 		return ""
 	}
-	runID := now.UTC().Format("20060102T150405Z")
-	return filepath.Join(croniclePath, ".cronicle", "scratch", schedule.Name, runID)
+	dirName := schedule.RunID
+	if dirName == "" {
+		dirName = now.UTC().Format("20060102T150405Z")
+	}
+	return filepath.Join(croniclePath, ".cronicle", "scratch", schedule.Name, dirName)
 }
 
 // downstreamTasks returns the transitive set of tasks that depend on
