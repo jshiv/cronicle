@@ -382,7 +382,11 @@ func ConsumeSchedule(queue <-chan []byte, path string, wg *sync.WaitGroup) {
 			var schedule Schedule
 			err := json.Unmarshal(scheduleBytes, &schedule)
 			if err != nil {
+				// Bail before propagating / executing a zero-value Schedule
+				// — would otherwise silently no-op (no tasks) with no
+				// retry signal, hiding malformed payloads on the queue.
 				slog.Error("schedule unmarshal failed", "error", err.Error())
+				return
 			}
 			schedule.PropigateTaskProperties(p)
 			// In-process dispatch (non-queue, single-node): resolve
@@ -433,7 +437,23 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 		slog.Info("Queuing...", "schedule", schedule.Name)
 		var loc *time.Location
 		if schedule.Timezone != "" {
-			loc, _ = time.LoadLocation(schedule.Timezone)
+			var err error
+			loc, err = time.LoadLocation(schedule.Timezone)
+			if err != nil || loc == nil {
+				// Bad IANA name (typo, unknown zone) returns (nil, err).
+				// Using a nil Location with time.Now().In(nil) panics; fall
+				// back to time.Local so the schedule still ticks and log the
+				// problem so the operator can fix the HCL.
+				errMsg := "nil location"
+				if err != nil {
+					errMsg = err.Error()
+				}
+				slog.Warn("invalid timezone; falling back to local",
+					"schedule", schedule.Name,
+					"timezone", schedule.Timezone,
+					"error", errMsg)
+				loc = time.Local
+			}
 		} else {
 			loc = time.Local
 		}
@@ -449,9 +469,32 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 			//if EndDate is not given, default to 1 Year from now
 			endDate = schedule.Now.Add(time.Duration(1) * time.Hour * 24 * 365)
 		} else {
-			endDate, _ = time.Parse("2006-01-02", schedule.EndDate)
+			var err error
+			endDate, err = time.Parse("2006-01-02", schedule.EndDate)
+			if err != nil {
+				// Malformed end_date (e.g. "2026/01/01") used to silently
+				// produce zero time, making Now.After(endDate) true for
+				// any real time → the schedule never fires. Log and skip
+				// the tick so the operator can see something's wrong.
+				slog.Warn("invalid end_date; skipping tick",
+					"schedule", schedule.Name,
+					"end_date", schedule.EndDate,
+					"error", err.Error())
+				return
+			}
 		}
-		startDate, _ := time.Parse("2006-01-02", schedule.StartDate)
+		var startDate time.Time
+		if schedule.StartDate != "" {
+			var err error
+			startDate, err = time.Parse("2006-01-02", schedule.StartDate)
+			if err != nil {
+				slog.Warn("invalid start_date; skipping tick",
+					"schedule", schedule.Name,
+					"start_date", schedule.StartDate,
+					"error", err.Error())
+				return
+			}
+		}
 		if schedule.Now.After(endDate) || schedule.Now.Before(startDate) {
 			s := fmt.Sprintf("now=%s is not between start_date=%s and end_date=%s... Schedule will not execute.", schedule.Now, startDate, endDate)
 			slog.Warn(s, "schedule", schedule.Name)
@@ -523,7 +566,24 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 					_ = os.MkdirAll(scratch, 0o755)
 					task.ScratchDir = scratch
 				}
-				task.Execute(nowInLoc)
+				res, err := task.Execute(nowInLoc)
+				// Propagate failure as a non-zero exit code so CI / cron
+				// scripts that wrap `cronicle exec --task` actually see
+				// the task failed. Without this, the process exited 0
+				// regardless of subprocess outcome.
+				//
+				// Check ExitStatus before err: when a subprocess exits
+				// non-zero, exec.Result.Error mirrors the ExitStatus, and
+				// falling through to Fatal would clobber a real "42" into
+				// the generic "1". Only when no exit status was produced
+				// (validation error, couldn't spawn, agent setup failure
+				// with no subprocess) do we Fatal with 1.
+				if res.ExitStatus != 0 {
+					os.Exit(res.ExitStatus)
+				}
+				if err != nil {
+					Fatal(err)
+				}
 			}
 		} else {
 			schedule.Now = nowInLoc
