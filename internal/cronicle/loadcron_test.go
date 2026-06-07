@@ -33,14 +33,14 @@ schedule "ok" {
 		t.Fatalf("write good: %v", err)
 	}
 
-	// Seed confPriorGlobal as the producer's Run() does, so LoadCron has
+	// Seed runtime state as the producer's Run() does, so LoadCron has
 	// a previous-config snapshot to compare against.
 	conf, err := GetConfig(hclPath)
 	if err != nil {
 		t.Fatalf("GetConfig good: %v", err)
 	}
-	confPriorGlobal = conf
-	defer func() { confPriorGlobal = nil }()
+	globalRuntime.storeConf(conf)
+	defer resetRuntimeStateForTest()
 
 	c := cron.New()
 	queue := make(chan []byte, 1)
@@ -60,7 +60,7 @@ schedule "ok" {
 	}
 
 	// LoadCron used to panic here. Now it should log and return,
-	// leaving confPriorGlobal and the cron entries intact.
+	// leaving runtime state and the cron entries intact.
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("LoadCron panicked on malformed HCL: %v", r)
@@ -69,12 +69,12 @@ schedule "ok" {
 	LoadCron(hclPath, c, queue, false)
 
 	// Previous good config is still authoritative.
-	if confPriorGlobal == nil {
-		t.Fatalf("confPriorGlobal cleared on bad reload — should be preserved")
+	prior := globalRuntime.snapshotConf()
+	if prior == nil {
+		t.Fatalf("runtime conf cleared on bad reload — should be preserved")
 	}
-	if !strings.Contains(string(confPriorGlobal.Hcl().Bytes), `"ok"`) {
-		t.Fatalf("confPriorGlobal mutated to broken state: %s",
-			confPriorGlobal.Hcl().Bytes)
+	if !strings.Contains(string(prior.Hcl().Bytes), `"ok"`) {
+		t.Fatalf("runtime conf mutated to broken state: %s", prior.Hcl().Bytes)
 	}
 	if got := len(c.Entries()); got != priorEntryCount {
 		t.Fatalf("cron entries mutated: got %d, want %d", got, priorEntryCount)

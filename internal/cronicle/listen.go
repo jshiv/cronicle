@@ -91,7 +91,7 @@ func startListener(ctx context.Context, addr, token string, queue chan<- []byte)
 	s := &listenServer{
 		queue:       queue,
 		token:       token,
-		confSrc:     func() *Config { return confPriorGlobal },
+		confSrc:     func() *Config { return globalRuntime.snapshotConf() },
 		stateSrc:    StateStore,
 		liveSinkSrc: LiveSink,
 	}

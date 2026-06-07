@@ -1,7 +1,6 @@
 package cronicle
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -53,7 +52,7 @@ func Run(ctx context.Context, cronicleFile string, runOptions RunOptions) {
 	if err != nil {
 		Fatal(err)
 	}
-	confPriorGlobal = conf
+	globalRuntime.storeConf(conf)
 
 	taskCount := 0
 	for _, s := range conf.Schedules {
@@ -251,7 +250,6 @@ func StartCron(ctx context.Context, cronicleFile string, queue chan<- []byte) {
 	}
 
 	c := cron.New(cron.WithLocation(loc))
-	c.Start()
 	if conf.Heartbeat == "" {
 		conf.Heartbeat = "@every 5m"
 	}
@@ -267,8 +265,20 @@ func StartCron(ctx context.Context, cronicleFile string, queue chan<- []byte) {
 		conf.ConfigRefresh = "@every 1s"
 	}
 	refreshID, _ := c.AddFunc(conf.ConfigRefresh, func() { LoadCron(cronicleFile, c, queue, false) })
-	staticEntryIDs = map[cron.EntryID]bool{hbID: true, refreshID: true}
+	// Record static-entry IDs BEFORE starting the scheduler. With the
+	// previous order (c.Start() first, AddFunc, then set the map), a
+	// refresh tick firing in the gap between AddFunc returning and the
+	// map being populated would observe an empty static set and strip
+	// the heartbeat + refresh entries it was registered against. By
+	// populating the map before c.Start(), no tick can fire until both
+	// the entries and the static-set mask are in place.
+	globalRuntime.setStaticEntries(map[cron.EntryID]bool{hbID: true, refreshID: true})
+	// Initial dynamic-schedule registration. LoadCron no longer touches
+	// the cron lifecycle (used to call Stop/Start, which raced its own
+	// run goroutine), so AddFunc against the not-yet-started scheduler
+	// is a plain append — no ticks can fire until c.Start() below.
 	LoadCron(cronicleFile, c, queue, true)
+	c.Start()
 
 	// Shut down the cron loop on ctx cancel. c.Stop() returns a context
 	// that signals when all in-flight tick handlers (heartbeat, refresh,
@@ -280,25 +290,6 @@ func StartCron(ctx context.Context, cronicleFile string, queue chan<- []byte) {
 		c.Stop()
 	}()
 }
-
-// staticEntryIDs tracks the cron entry IDs registered at startup
-// (heartbeat + config_refresh). LoadCron uses this set as the "do
-// not delete" mask when it re-registers the dynamic schedule entries
-// on a config change. Previously this check was a hard-coded
-// `entry.ID > 1`, which broke as soon as we added the second static
-// entry for decoupled heartbeat / refresh.
-var staticEntryIDs = map[cron.EntryID]bool{}
-
-//confPrior stores a gloabal state of the previosly loaded config for diff checking
-var confPriorGlobal *Config
-
-// lastRawHCL holds the raw file bytes from the previous successful load.
-// Compared byte-for-byte against the current file to detect changes.
-// The previous approach used Hcl() round-trip (encode → bytes), which
-// is lossy — gohcl drops fields it doesn't model (repo block, comments)
-// and normalizes formatting, so two different files could produce
-// identical round-trip bytes and the reload would never trigger.
-var lastRawHCL []byte
 
 //LoadCron exeutes GetConfig(cronicleFile) to load the current config from file,
 //checks the given config against the global confPrior, and if there is a change,
@@ -327,14 +318,21 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 		return
 	}
 
-	if !bytes.Equal(lastRawHCL, rawHCL) || force {
+	if !globalRuntime.hclEquals(rawHCL) || force {
 		slog.Info("Refreshing config...", "cronicle", "heartbeat", "path", cronicleFile)
-		c.Stop()
+		// NOTE: do NOT call c.Stop() / c.Start() here. Stop() returns
+		// before the run goroutine has actually exited (it returns a
+		// context the caller can wait on), so a Start() immediately
+		// after races a second run goroutine against the still-draining
+		// first one. AddFunc / Remove are documented safe-to-call while
+		// the cron is running — they coordinate with the run goroutine
+		// via the c.add / c.remove channels — so the swap can happen
+		// in-place.
 		for _, entry := range c.Entries() {
 			// Preserve the heartbeat + config_refresh static entries; only
 			// remove the dynamic per-schedule entries so we can re-register
 			// them from the new conf.
-			if staticEntryIDs[entry.ID] {
+			if globalRuntime.isStaticEntry(entry.ID) {
 				continue
 			}
 			c.Remove(entry.ID)
@@ -359,10 +357,8 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 			}
 
 		}
-		c.Start()
 	}
-	lastRawHCL = rawHCL
-	confPriorGlobal = conf
+	globalRuntime.storeConfAndHCL(conf, rawHCL)
 
 }
 

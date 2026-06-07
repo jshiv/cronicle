@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -45,15 +46,46 @@ func envContextVar() cty.Value {
 	return cty.ObjectVal(vars)
 }
 
+// evalCtxMu serializes mutations of the package-level CommandEvalContext.
+// Production parsing goes through freshEvalContext which never touches the
+// shared map, so this lock is mostly for backward compatibility with
+// external test code that calls RefreshEvalContext + reads
+// CommandEvalContext directly (parse_test.go, repo_auth_test.go).
+var evalCtxMu sync.Mutex
+
 // RefreshEvalContext re-snapshots the `env` namespace on the package
-// CommandEvalContext using the current process env. ParseFile calls
-// this before decoding so a binary that mutates its env at runtime
-// (e.g. a controller that picks up a token from a Secret mount) sees
-// the fresh value. Tests that use t.Setenv + hclsimple.DecodeFile
-// directly should call this between the two so the new value is
-// visible during decode.
+// CommandEvalContext using the current process env.
+//
+// Internal production callers do NOT use this — decodeConfigBody builds
+// a per-decode fresh EvalContext via freshEvalContext to avoid the data
+// race that mutating a shared map under concurrent cron-tick goroutines
+// produces. This function is kept exported for test code that relies on
+// the legacy "refresh then decode against &cronicle.CommandEvalContext"
+// pattern (e.g. internal/cronicle/repo_auth_test.go).
 func RefreshEvalContext() {
+	evalCtxMu.Lock()
+	defer evalCtxMu.Unlock()
 	CommandEvalContext.Variables["env"] = envContextVar()
+}
+
+// freshEvalContext returns a per-decode *hcl.EvalContext seeded with the
+// canonical variables plus a fresh snapshot of the process env. Returning
+// a new context per call means parallel decodeConfigBody goroutines never
+// race on the shared CommandEvalContext map. The token slot values (date,
+// datetime, etc.) are immutable cty.StringVal so reusing them is safe.
+func freshEvalContext() *hcl.EvalContext {
+	return &hcl.EvalContext{
+		Variables: map[string]cty.Value{
+			"date":           cty.StringVal("${date}"),
+			"datetime":       cty.StringVal("${datetime}"),
+			"timestamp":      cty.StringVal("${timestamp}"),
+			"scratch":        cty.StringVal("${scratch}"),
+			"path":           cty.StringVal("${path}"),
+			"last_run":       cty.StringVal("${last_run}"),
+			"last_run_epoch": cty.StringVal("${last_run_epoch}"),
+			"env":            envContextVar(),
+		},
+	}
 }
 
 // HclWriteFile contains the encoded hclwrite.File and the byte array of the file with
@@ -171,15 +203,17 @@ func ParseBytes(src []byte, filename string, parser *hclparse.Parser) (*Config, 
 // shared by ParseFile and ParseBytes. Keeps the schema-evolution
 // surface in one place.
 func decodeConfigBody(body hcl.Body) (*Config, hcl.Diagnostics) {
-	// Refresh env vars exposed via ${env.X} from the current process env
-	// before each decode. Production binaries' env is typically static
-	// at startup, but the controller pod re-reads its bearer from a
-	// mounted Secret which can rotate, and tests using t.Setenv need
-	// the new value visible during decode.
-	RefreshEvalContext()
+	// Build a per-decode EvalContext that captures the current process
+	// env. Avoids racing on the package-level CommandEvalContext map
+	// when two cron-tick goroutines refresh the config concurrently.
+	// Production binaries' env is typically static at startup, but the
+	// controller pod re-reads its bearer from a mounted Secret which
+	// can rotate, and tests using t.Setenv need the new value visible
+	// during decode — freshEvalContext re-reads os.Environ() every call.
+	ctx := freshEvalContext()
 	var diags hcl.Diagnostics
 	var conf Config
-	decodeDiags := gohcl.DecodeBody(body, &CommandEvalContext, &conf)
+	decodeDiags := gohcl.DecodeBody(body, ctx, &conf)
 	diags = append(diags, decodeDiags...)
 	if diags.HasErrors() {
 		return &conf, diags
