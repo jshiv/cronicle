@@ -290,6 +290,24 @@ type Repo struct {
 	// placeholder for git's HTTP Basic challenge. Every modern host
 	// (GitHub, GitLab, Gitea, cronicle-git) ignores the username and
 	// authenticates on the token in the password slot.
+	//
+	// SECURITY (M2, deferred): when the password uses ${env.X} the value
+	// resolves at gohcl decode (parse time), so the resolved token is
+	// present in the in-memory *Repo and flows into schedule.JSON() at
+	// queue-push time (cron.go: queue <- schedule.JSON()). In
+	// distributed mode the jobs table in state.db then stores the JSON
+	// payload at rest, and the producer→worker HTTP transport carries
+	// it on the wire. Today this is operator-restricted (state.db is
+	// chmod-protected; the HTTP API is bearer-token + intended TLS),
+	// and no production log line prints schedule.JSON, so the practical
+	// exposure is limited. The structural fix is to keep the literal
+	// "$secret.X" reference in queue payloads and re-resolve on the
+	// worker side via the SecretStore (which already plumbs through
+	// state.Backend) — that's a larger refactor pending a follow-up.
+	// Until then prefer $secret.X over ${env.X} for repo passwords in
+	// any distributed deployment; the $secret.X form is resolved at
+	// task.Execute time, after the queue pop, so it never lands in the
+	// jobs table or transport.
 	Username string `hcl:"username,optional"`
 	Password string `hcl:"password,optional"`
 	// Branch and Commit are mutually exclusive. ErrBranchAndCommitGiven
