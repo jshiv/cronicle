@@ -497,7 +497,14 @@ func openTranscript(cfg Config, model string, started time.Time) (*transcriptWri
 	if err != nil || path == "" {
 		return nil, err
 	}
-	f, err := os.Create(path)
+	// 0o600 (owner-only read/write): the transcript contains the full
+	// agent conversation including any secrets the agent referenced in
+	// prompts, tool inputs, or tool results. os.Create's default 0o666
+	// mode (pre-umask) would let any user on a shared host read the
+	// transcript depending on umask settings. The cronicle process
+	// already runs as the owner, so 0o600 doesn't restrict any
+	// legitimate access.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, err
 	}

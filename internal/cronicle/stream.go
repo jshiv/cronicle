@@ -2,12 +2,47 @@ package cronicle
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
 
 	"github.com/jshiv/cronicle/pkg/agent"
 )
+
+// maxLoggedToolInputBytes caps the byte length of an agent tool input
+// when it's emitted to the slog stream (file/Loki + live SSE). The full
+// input is preserved in the per-run agent transcript at
+// .cronicle/runs/{run_id}-{task}.jsonl (which is 0o600 since PR fixing
+// M5), so this truncation only restricts the observability fan-out — it
+// does not lose audit fidelity.
+//
+// Why truncate at all: an agent's bash command could embed a token or
+// header value in its args (e.g. `curl -H "Authorization: Bearer X"`)
+// from a tool_result it composed in a prior turn. Without truncation
+// the full command — including the secret — ships to Loki and the
+// frontend SSE stream. Head-truncation leaves the most diagnostic part
+// (the start of the command) intact while bounding the leak surface.
+//
+// 256 bytes is comfortably above any normal text_editor.path or git
+// arg, while short enough that pasting a typical secret-bearing bash
+// line (which usually leads with the secret-bearing flag) still loses
+// most of the value.
+const maxLoggedToolInputBytes = 256
+
+// redactToolInput returns a string suitable for slog emission from an
+// agent tool's raw JSON input. Short inputs pass through unchanged;
+// long inputs are truncated to maxLoggedToolInputBytes with an explicit
+// marker showing how many bytes were dropped. The full input remains in
+// the agent transcript file for post-hoc audit.
+func redactToolInput(input string) string {
+	if len(input) <= maxLoggedToolInputBytes {
+		return input
+	}
+	return fmt.Sprintf("%s... [+%d bytes truncated; see transcript for full]",
+		input[:maxLoggedToolInputBytes],
+		len(input)-maxLoggedToolInputBytes)
+}
 
 // lineEmitter wraps an io.Writer to emit one slog record per newline
 // AS BYTES FLOW THROUGH. The underlying writer (typically the
@@ -144,7 +179,7 @@ func NewAgentSlogBridge(runID, task, schedule string, downstream agent.StreamHan
 				"entry_type", "tool_use_start",
 				"run_id", runID, "task", task, "schedule", schedule,
 				"tool", e.ToolName,
-				"input", e.ToolInput,
+				"input", redactToolInput(e.ToolInput),
 			)
 		case agent.StreamEventToolResult:
 			slog.Info("tool result",
