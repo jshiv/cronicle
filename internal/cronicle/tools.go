@@ -301,9 +301,16 @@ func (t *TextEditorTool) insert(absPath string, insertLine int, newStr string) (
 // wins; rejection means no root matched. Path-traversal `..` is checked
 // against each root, so the agent can't break out via the additional
 // roots either.
+//
+// A nil receiver or empty Workspace is rejected (audit M15). The previous
+// behavior fell through to resolveInWorkspace("", p) which used
+// filepath.Abs("") — that returns the process CWD, silently breaking the
+// workspace-containment guarantee. Failing loud here means callers that
+// forgot to set Workspace get a recognizable error instead of unbounded
+// CWD access.
 func (t *TextEditorTool) resolvePath(p string) (string, error) {
 	if t == nil || t.Workspace == "" {
-		return resolveInWorkspace(t.Workspace, p)
+		return "", fmt.Errorf("text_editor: workspace not configured")
 	}
 	if abs, err := resolveInWorkspace(t.Workspace, p); err == nil {
 		return abs, nil
