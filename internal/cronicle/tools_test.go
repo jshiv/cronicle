@@ -156,6 +156,22 @@ func TestResolveInWorkspace_NonExistentLeaf(t *testing.T) {
 	}
 }
 
+// TestTextEditorTool_NilOrEmptyWorkspaceRejected: the M15 fix.
+// Previously, a nil receiver or empty Workspace fell through to
+// resolveInWorkspace("", p) which used filepath.Abs("") → process CWD,
+// silently breaking workspace containment. We now reject explicitly.
+func TestTextEditorTool_NilOrEmptyWorkspaceRejected(t *testing.T) {
+	// Nil receiver
+	if _, err := (*TextEditorTool)(nil).resolvePath("a.txt"); err == nil {
+		t.Errorf("nil receiver should return error, got nil")
+	}
+	// Empty workspace
+	tool := &TextEditorTool{Workspace: ""}
+	if _, err := tool.resolvePath("a.txt"); err == nil {
+		t.Errorf("empty Workspace should return error, got nil")
+	}
+}
+
 // defaultAgentToolNames is local-only by default (bash + text_editor + git).
 // web_search / web_fetch bill per call and are opt-in — adding them by
 // default would surprise unattended cron jobs.

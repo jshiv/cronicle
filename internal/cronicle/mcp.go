@@ -16,14 +16,17 @@
 package cronicle
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -104,13 +107,23 @@ func launchOne(ctx context.Context, m MCP, taskEnv []string, w io.Writer) (*MCPH
 	// handles teardown via stdin-close + SIGTERM grace period.
 	cmd := exec.CommandContext(ctx, m.Command[0], m.Command[1:]...)
 	cmd.Env = mcpProcessEnv(m.Env, taskEnv)
-	// Server stderr is forwarded to the agent's pretty-mode writer (or
-	// discarded when nil) so npm/install chatter and runtime logs appear
-	// in-context with the rest of the run.
+	// Server stderr routing (audit M14): in pretty mode the agent's
+	// writer renders MCP output in-context with the rest of the run.
+	// Without a pretty writer we previously dumped raw bytes to
+	// os.Stderr, which (a) bypassed the structured log file and Loki,
+	// (b) let third-party MCP servers emit arbitrary ANSI escapes
+	// directly to the operator's terminal, and (c) let any secrets that
+	// surfaced in MCP errors land in raw stderr instead of the bounded,
+	// structured logging chain.
+	//
+	// Now route nil-writer stderr through mcpStderrSlogWriter which
+	// emits one slog.Warn record per line, tagged with the MCP server
+	// name. Operators get structured, queryable MCP errors; raw bytes
+	// don't escape.
 	if w != nil {
 		cmd.Stderr = w
 	} else {
-		cmd.Stderr = os.Stderr
+		cmd.Stderr = newMCPStderrSlogWriter(m.Name)
 	}
 
 	transport := &mcpsdk.CommandTransport{Command: cmd}
@@ -309,6 +322,60 @@ func mcpSchemaToAnthropic(in any) (anthropic.ToolInputSchemaParam, error) {
 		out.ExtraFields[k] = v
 	}
 	return out, nil
+}
+
+// mcpStderrSlogWriter buffers MCP server stderr bytes by newline and
+// emits one slog.Warn record per line, tagged with the MCP server
+// name. Replaces the previous os.Stderr passthrough so:
+//
+//   - MCP errors land in the file log (cronicle.jsonl → Loki) and
+//     LiveSink → SSE, queryable and bounded.
+//   - Untrusted ANSI escapes from third-party servers can't reach the
+//     operator's terminal directly.
+//   - Large outputs are bounded the same way lineEmitter bounds shell
+//     stdout (force-flush on cap exceeded).
+type mcpStderrSlogWriter struct {
+	name string
+	mu   sync.Mutex
+	buf  []byte
+}
+
+// mcpStderrMaxBufBytes caps the unflushed buffer. Mirrors the
+// lineEmitter cap for the same reason — a no-newline stream
+// (binary blob, malformed output) used to be able to grow without
+// bound.
+const mcpStderrMaxBufBytes = 1 << 20 // 1 MiB
+
+func newMCPStderrSlogWriter(name string) *mcpStderrSlogWriter {
+	return &mcpStderrSlogWriter{name: name}
+}
+
+func (w *mcpStderrSlogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := strings.TrimRight(string(w.buf[:i]), "\r")
+		w.buf = w.buf[i+1:]
+		if line != "" {
+			slog.Warn(line,
+				"entry_type", "mcp_stderr",
+				"mcp_server", w.name,
+			)
+		}
+	}
+	if len(w.buf) > mcpStderrMaxBufBytes {
+		slog.Warn(string(w.buf)+" [truncated: no newline]",
+			"entry_type", "mcp_stderr",
+			"mcp_server", w.name,
+		)
+		w.buf = w.buf[:0]
+	}
+	return len(p), nil
 }
 
 // MCPServerNames returns the names of the launched servers, sorted for
