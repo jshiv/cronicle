@@ -1,6 +1,7 @@
 package cronicle
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -109,7 +110,7 @@ func RunFromSource(ctx context.Context, spec, workdir string, runOptions RunOpti
 		triggerQueue = enqueueChan
 		closeQueue = func() { close(enqueueChan) }
 		go enqueueAdapter(enqueueChan, stateStore)
-		if err := startSchedulerFromSource(ctx, src, conf, etag, enqueueChan); err != nil {
+		if err := startSchedulerFromSource(ctx, src, conf, body, etag, enqueueChan); err != nil {
 			return fmt.Errorf("scheduler start: %w", err)
 		}
 		if runOptions.RunWorker {
@@ -120,7 +121,7 @@ func RunFromSource(ctx context.Context, spec, workdir string, runOptions RunOpti
 		queue := make(chan []byte)
 		triggerQueue = queue
 		closeQueue = func() { close(queue) }
-		if err := startSchedulerFromSource(ctx, src, conf, etag, queue); err != nil {
+		if err := startSchedulerFromSource(ctx, src, conf, body, etag, queue); err != nil {
 			return fmt.Errorf("scheduler start: %w", err)
 		}
 		go ConsumeSchedule(queue, workdirAbs, &wg)
@@ -159,7 +160,7 @@ func RunFromSource(ctx context.Context, spec, workdir string, runOptions RunOpti
 // register heartbeat + config_refresh cron entries, seed the reload
 // state with the pre-fetched conf so the first tick is a true diff
 // rather than a redundant parse.
-func startSchedulerFromSource(ctx context.Context, src configsource.Source, conf *Config, etag string, queue chan<- []byte) error {
+func startSchedulerFromSource(ctx context.Context, src configsource.Source, conf *Config, body []byte, etag string, queue chan<- []byte) error {
 	loc, err := pickLocation(conf.Timezone)
 	if err != nil {
 		return err
@@ -179,11 +180,14 @@ func startSchedulerFromSource(ctx context.Context, src configsource.Source, conf
 	}
 
 	state := newReloadState(src)
-	// Seed the reload state with the already-fetched conf so the first
-	// refresh tick sees `changed=false` and we don't re-parse.
+	// Seed the reload state with the already-fetched conf + raw body so
+	// the first refresh tick's etag check short-circuits at the source
+	// (changed=false), and even if the etag turns over to identical
+	// bytes, the raw-bytes diff in fetchAndParse also short-circuits.
 	state.mu.Lock()
 	state.lastEtag = etag
 	state.lastConf = conf
+	state.lastRawBody = body
 	state.mu.Unlock()
 
 	hbID, err := c.AddFunc(heartbeat, func() {
@@ -227,16 +231,26 @@ func startSchedulerFromSource(ctx context.Context, src configsource.Source, conf
 // the source itself, the last etag, the last parsed config, and the
 // set of static cron entries that must survive a re-register pass.
 //
+// lastRawBody stores the raw bytes from the most recent fetch so
+// loadInto can do a byte-for-byte diff against the new body. The
+// previous approach used Hcl() round-trip (encode → bytes) which is
+// lossy — gohcl drops the repo block, comments, and formatting — so
+// two structurally different configs could produce identical
+// round-trip bytes and the reload would never trigger. The file path
+// already migrated to raw-byte comparison; this brings the source
+// path in line (audit M3).
+//
 // All access is serialized through the cron loop (single goroutine),
 // but a mutex guards the fields for safe inspection from heartbeat
 // callbacks that fire concurrently.
 type reloadState struct {
-	src       configsource.Source
-	mu        sync.Mutex
-	lastEtag  string
-	lastConf  *Config
-	static    map[cron.EntryID]bool
-	lastError error
+	src         configsource.Source
+	mu          sync.Mutex
+	lastEtag    string
+	lastConf    *Config
+	lastRawBody []byte
+	static      map[cron.EntryID]bool
+	lastError   error
 }
 
 func newReloadState(src configsource.Source) *reloadState {
@@ -253,26 +267,43 @@ func (s *reloadState) scheduleCount() int {
 }
 
 // fetchAndParse pulls from the source, parses on change, and updates
-// the state's lastEtag/lastConf. Returns the current config (which may
-// be the cached one when changed=false). Errors are surfaced; callers
-// decide whether to abort or warn-and-keep-previous.
-func (s *reloadState) fetchAndParse(ctx context.Context, initial bool) (*Config, error) {
+// the state's lastEtag/lastConf/lastRawBody. Returns the current config
+// (which may be the cached one when changed=false) and a bytesChanged
+// flag indicating whether the raw body actually differs from the
+// previous load — set to false when the new body is byte-equal to
+// lastRawBody (audit M3: catches the case where the source-side etag
+// indicates "changed" but the bytes round to identical content). Errors
+// are surfaced; callers decide whether to abort or warn-and-keep-prev.
+func (s *reloadState) fetchAndParse(ctx context.Context, initial bool) (conf *Config, bytesChanged bool, err error) {
 	s.mu.Lock()
 	prev := s.lastEtag
 	cached := s.lastConf
+	cachedRaw := s.lastRawBody
 	s.mu.Unlock()
 
 	body, etag, changed, err := s.src.Fetch(ctx, prev)
 	if err != nil {
-		return cached, err
+		return cached, false, err
 	}
 	if !changed {
-		return cached, nil
+		return cached, false, nil
 	}
+	// Raw-bytes diff: the source said "changed" (new etag, no
+	// If-None-Match match) but the body might still be identical. In
+	// that case skip the reload.
+	if cachedRaw != nil && bytes.Equal(cachedRaw, body) {
+		// Refresh the etag so the next If-None-Match short-circuits at
+		// the HTTP layer.
+		s.mu.Lock()
+		s.lastEtag = etag
+		s.mu.Unlock()
+		return cached, false, nil
+	}
+
 	parser := hclparse.NewParser()
 	conf, diags := ParseBytes(body, "cronicle.hcl", parser)
 	if diags.HasErrors() {
-		return cached, fmt.Errorf("parse: %s", diags.Error())
+		return cached, false, fmt.Errorf("parse: %s", diags.Error())
 	}
 
 	// On the very first fetch we don't have a directory context to
@@ -286,8 +317,9 @@ func (s *reloadState) fetchAndParse(ctx context.Context, initial bool) (*Config,
 	s.mu.Lock()
 	s.lastEtag = etag
 	s.lastConf = conf
+	s.lastRawBody = body
 	s.mu.Unlock()
-	return conf, nil
+	return conf, true, nil
 }
 
 // loadInto runs on every refresh tick. Pulls fresh bytes; if changed,
@@ -297,7 +329,7 @@ func (s *reloadState) loadInto(ctx context.Context, c *cron.Cron, queue chan<- [
 	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	conf, err := s.fetchAndParse(fetchCtx, false)
+	conf, bytesChanged, err := s.fetchAndParse(fetchCtx, false)
 	if err != nil {
 		slog.Warn("config refresh failed; keeping previous schedules in place",
 			"source", s.src.String(), "err", err.Error())
@@ -310,17 +342,10 @@ func (s *reloadState) loadInto(ctx context.Context, c *cron.Cron, queue chan<- [
 		return // no cache yet and fetch returned no body
 	}
 
-	// Diff at the rendered-HCL level. Identical bytes → no-op.
-	// NOTE (M3 from audit): Hcl() round-trip is lossy — gohcl drops the
-	// repo block, comments, and formatting — so two structurally different
-	// configs can produce equal bytes here. The file path migrated to a
-	// raw-byte comparison; this path still uses the lossy form pending a
-	// separate fix.
-	if !force {
-		prior := globalRuntime.snapshotConf()
-		if prior != nil && string(prior.Hcl().Bytes) == string(conf.Hcl().Bytes) {
-			return
-		}
+	// Reload only when the raw bytes actually changed (or force). The
+	// diff happens inside fetchAndParse so this is just a flag check.
+	if !force && !bytesChanged {
+		return
 	}
 
 	slog.Info("Refreshing config...", "source", s.src.String(),

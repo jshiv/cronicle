@@ -105,6 +105,18 @@ func (e *lineEmitter) Write(p []byte) (int, error) {
 // consume buffers bytes and emits one slog record per newline. Holds
 // the mutex briefly to keep stdout and stderr writers from interleaving
 // half-lines into each other's buffers.
+// maxLineEmitterBufBytes caps the unflushed buffer that a stream emits
+// no-newline bytes into. A subprocess that writes a long binary blob
+// or a progress bar with carriage-return updates can otherwise grow
+// this buffer without bound. When the cap is exceeded we force-emit
+// the current buffer as one synthetic line — operators see the partial
+// output rather than the process OOMing on multi-GB no-newline streams.
+//
+// 1 MiB is well above any reasonable single-line output (the maximum
+// bash truncation budget is 30 KiB) and small enough that even
+// pathological output is bounded to that per Flush window.
+const maxLineEmitterBufBytes = 1 << 20
+
 func (e *lineEmitter) consume(p []byte) {
 	e.mu.Lock()
 	e.buf = append(e.buf, p...)
@@ -116,6 +128,13 @@ func (e *lineEmitter) consume(p []byte) {
 		line := string(e.buf[:i])
 		e.buf = e.buf[i+1:]
 		e.emit(line)
+	}
+	// Cap the unflushed buffer (M13): a stream that never emits a
+	// newline used to grow this buffer indefinitely. Force-emit the
+	// current contents as one synthetic line so memory stays bounded.
+	if len(e.buf) > maxLineEmitterBufBytes {
+		e.emit(string(e.buf) + " [truncated: no newline]")
+		e.buf = e.buf[:0]
 	}
 	e.mu.Unlock()
 }

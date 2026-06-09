@@ -198,8 +198,14 @@ type StreamingWriter struct {
 	leader bool
 	buf    bytes.Buffer
 	out    io.Writer
-	closed bool
-	mu     sync.Mutex // guards buf for concurrent Write calls within one task
+	// closeOnce wraps the cleanup logic so concurrent Close calls don't
+	// race on the `closed` flag. The previous unguarded read/write of a
+	// bool field meant two goroutines could both pass the check and
+	// both enter the unlock path — for a leader, that's a panic on
+	// double-Unlock of streamLock; for a follower, the second caller
+	// would deadlock on the streamLock.Lock it expects to acquire.
+	closeOnce sync.Once
+	mu        sync.Mutex // guards buf for concurrent Write calls within one task
 }
 
 // NewStreamingWriter returns a writer for one task's streaming output.
@@ -223,21 +229,20 @@ func (s *StreamingWriter) Write(p []byte) (int, error) {
 }
 
 // Close releases the leader lock, or — for followers — blocks to acquire the
-// lock, flushes the accumulated buffer atomically, and releases. Idempotent.
+// lock, flushes the accumulated buffer atomically, and releases. Idempotent
+// and concurrency-safe via sync.Once.
 func (s *StreamingWriter) Close() {
-	if s.closed {
-		return
-	}
-	s.closed = true
-	if s.leader {
+	s.closeOnce.Do(func() {
+		if s.leader {
+			streamLock.Unlock()
+			return
+		}
+		streamLock.Lock()
+		s.mu.Lock()
+		_, _ = s.out.Write(s.buf.Bytes())
+		s.mu.Unlock()
 		streamLock.Unlock()
-		return
-	}
-	streamLock.Lock()
-	s.mu.Lock()
-	_, _ = s.out.Write(s.buf.Bytes())
-	s.mu.Unlock()
-	streamLock.Unlock()
+	})
 }
 
 // FileLoggingEnabled reports whether --log-to-file was passed on the
