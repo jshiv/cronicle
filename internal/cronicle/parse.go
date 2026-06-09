@@ -1,10 +1,10 @@
 package cronicle
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 
-	"regexp"
 	"sync"
 	"time"
 
@@ -16,6 +16,17 @@ import (
 
 	"log/slog"
 )
+
+// unescapeHCLDollars undoes the `$${` → `${` doubling that gohcl's
+// encoder applies to template tokens like `${date}`. The previous
+// approach (regexp `[$]+` → `$`) was a blunt instrument that also
+// collapsed any innocent run of `$` in a user's literal command
+// (e.g. shell `$$` for PID, awk `$$0`). This targeted replacement
+// only touches the actual gohcl escape sequence, leaving every
+// other `$` run intact.
+func unescapeHCLDollars(b []byte) []byte {
+	return bytes.ReplaceAll(b, []byte("$${"), []byte("${"))
+}
 
 // envContextVar builds the `env` namespace exposed to HCL eval —
 // a cty object whose attributes are the names of env vars currently
@@ -153,8 +164,7 @@ var (
 func MarshallHcl(conf Config, path string) string {
 	f := hclwrite.NewEmptyFile()
 	gohcl.EncodeIntoBody(&conf, f.Body())
-	r := regexp.MustCompile("[$]+")
-	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
+	b := unescapeHCLDollars(f.Bytes())
 	destination, err := os.Create(path)
 	if err != nil {
 		panic(err)
@@ -264,8 +274,7 @@ func (task Task) JSON() []byte {
 func (conf Config) Hcl() HclWriteFile {
 	f := hclwrite.NewEmptyFile()
 	gohcl.EncodeIntoBody(&conf, f.Body())
-	r := regexp.MustCompile("[$]+")
-	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
+	b := unescapeHCLDollars(f.Bytes())
 	return HclWriteFile{File: *f, Bytes: b}
 }
 
@@ -273,7 +282,6 @@ func (conf Config) Hcl() HclWriteFile {
 func (task Task) Hcl() HclWriteFile {
 	f := hclwrite.NewEmptyFile()
 	gohcl.EncodeIntoBody(&task, f.Body())
-	r := regexp.MustCompile("[$]+")
-	b := r.ReplaceAllLiteral(f.Bytes(), []byte("$"))
+	b := unescapeHCLDollars(f.Bytes())
 	return HclWriteFile{File: *f, Bytes: b}
 }

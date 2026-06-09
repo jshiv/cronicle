@@ -1582,11 +1582,17 @@ func escapeControl(s string) string {
 }
 
 // truncate trims s to at most n runes, appending "…" when shortened.
+// Operates on []rune so multi-byte UTF-8 input (anything beyond ASCII,
+// including pretty-printed prompts from non-English locales and the
+// emoji that occasionally surface in tool args) is sliced at codepoint
+// boundaries — the previous byte-slicing produced invalid UTF-8 when
+// the cut landed mid-rune.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return string(r[:n-1]) + "…"
 }
 
 // formatDuration renders a millisecond value as "Nms" or "N.Ns" depending on

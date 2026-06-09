@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -31,6 +33,36 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/go-git/go-git/v6/plumbing/object"
 )
+
+// secretFilenamePatterns is the set of filename patterns that, if
+// staged via the agent's `git commit` tool, get a slog.Warn so an
+// operator reviewing the run can see and react. These are the names
+// that commonly carry credentials in repository checkouts. We don't
+// REFUSE to stage them — agents legitimately edit some of these in
+// reset / template workflows — but loud warnings keep the case
+// visible.
+var secretFilenamePatterns = []string{
+	".env", ".env.*",
+	"*.pem", "*.key", "*.p12", "*.pfx", "*.jks",
+	".netrc", "_netrc",
+	"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+}
+
+// isLikelySecretFilename reports whether a path (anywhere in the
+// worktree) ends with a name matching one of secretFilenamePatterns.
+// Public-key counterparts (*.pub) are intentionally not flagged.
+func isLikelySecretFilename(path string) bool {
+	name := filepath.Base(path)
+	if strings.HasSuffix(name, ".pub") {
+		return false
+	}
+	for _, pat := range secretFilenamePatterns {
+		if matched, _ := filepath.Match(pat, name); matched {
+			return true
+		}
+	}
+	return false
+}
 
 // GitTool exposes a small subset of git operations to the agent via go-git.
 // Workspace must be the path to a git working tree (typically task.Path
@@ -382,6 +414,21 @@ func (g *GitTool) commit(repo *git.Repository, raw json.RawMessage) (string, boo
 	if st.IsClean() {
 		return "Error: nothing to commit (working tree clean)", true
 	}
+	// L6: wt.Add(".") stages every modified/untracked file in the
+	// worktree. If the agent has written a .env, *.pem, id_rsa, .netrc
+	// or similar credential-bearing file (intentionally or as a side
+	// effect of running a tool), this will quietly fold the secret
+	// into the commit. We don't refuse — agents legitimately edit
+	// these files in some workflows — but we DO emit a structured
+	// warning so an operator reviewing the run can spot the case.
+	for path, s := range st {
+		_ = s
+		if isLikelySecretFilename(path) {
+			slog.Warn("git tool: staging likely-sensitive file (review before push)",
+				"entry_type", "git_tool_warn",
+				"path", path)
+		}
+	}
 	if _, err := wt.Add("."); err != nil {
 		return fmt.Sprintf("Error: stage: %v", err), true
 	}
@@ -433,3 +480,4 @@ func (g *GitTool) push(ctx context.Context, repo *git.Repository, raw json.RawMe
 	}
 	return fmt.Sprintf("Pushed to %s", a.Remote), false
 }
+

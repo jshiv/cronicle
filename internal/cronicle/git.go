@@ -3,6 +3,7 @@ package cronicle
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,22 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/transport/ssh"
 	gossh "golang.org/x/crypto/ssh"
 )
+
+// redactGitURL strips userinfo from a git URL before logging so an
+// operator who embeds a token in the URL (e.g.
+// https://user:ghp_xxx@github.com/org/repo) doesn't leak it through
+// the structured log → Loki pipeline. Falls back to the original
+// string when parsing fails (SSH-style "git@host:org/repo" doesn't
+// parse as a URL; it also doesn't carry inline credentials, so
+// passing it through is fine).
+func redactGitURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
+}
 
 // Git is the struct which associates common data structures from the go-git library.
 type Git struct {
@@ -132,7 +149,7 @@ func (g *Git) Open(worktreePath string) error {
 func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
-		slog.Info("git clone", "url", url, "path", worktreeDir)
+		slog.Info("git clone", "url", redactGitURL(url), "path", worktreeDir)
 		cloneOptions := git.CloneOptions{URL: url, ClientOptions: opts}
 		// In pretty mode, route go-git's progress sideband straight to
 		// stdout so the user sees the live "Counting objects" / "Receiving
@@ -168,7 +185,7 @@ func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 				RemoteName:    "origin",
 				ClientOptions: opts,
 			}); err != nil {
-				slog.Error("git fetch failed", "url", url, "path", worktreeDir, "error", err.Error())
+				slog.Error("git fetch failed", "url", redactGitURL(url), "path", worktreeDir, "error", err.Error())
 				return Git{}, err
 			}
 			// After init+fetch, HEAD is unborn. Point it at the remote's
@@ -192,11 +209,11 @@ func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 		} else {
 			_, err := git.PlainClone(worktreeDir, &cloneOptions)
 			if err != nil {
-				slog.Error("git clone failed", "url", url, "path", worktreeDir, "error", err.Error())
+				slog.Error("git clone failed", "url", redactGitURL(url), "path", worktreeDir, "error", err.Error())
 				return Git{}, err
 			}
 		}
-		slog.Info("git clone complete", "url", url, "path", worktreeDir)
+		slog.Info("git clone complete", "url", redactGitURL(url), "path", worktreeDir)
 	} else {
 		slog.Info("git open", "path", worktreeDir, "note", "worktree already exists, skipping clone")
 	}

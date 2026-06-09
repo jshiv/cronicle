@@ -14,6 +14,7 @@
 package cronicle
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -620,8 +621,14 @@ func writeSSE(w http.ResponseWriter, event string, payload any) error {
 	return err
 }
 
-// isNoRows returns true if err is sql.ErrNoRows. Wrapped so listen.go
-// doesn't need to import database/sql twice.
+// isNoRows returns true if err wraps sql.ErrNoRows. Wrapped so listen.go
+// doesn't need to import database/sql at every call site.
+//
+// L9: the previous strings.Contains(err.Error(), "no rows") was a string
+// shibboleth that would have matched any error whose message happened to
+// contain that substring — e.g. a future schema-validation error along
+// the lines of "no rows in expected join". errors.Is walks the chain
+// properly.
 func isNoRows(err error) bool {
-	return strings.Contains(err.Error(), "no rows")
+	return errors.Is(err, sql.ErrNoRows)
 }
