@@ -63,6 +63,11 @@ func (s *listenServer) handleRunnerDrain(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	actor, reason := readPauseBody(r)
+	// Serialize against in-flight trigger handlers so a trigger that's
+	// already past its isDrained check doesn't 202 alongside this drain.
+	// See triggerMu doc on listenServer.
+	s.triggerMu.Lock()
+	defer s.triggerMu.Unlock()
 	if err := st.SetDrained(actor, reason); err != nil {
 		slog.Error("drain failed", "error", err.Error())
 		http.Error(w, "drain failed", http.StatusInternalServerError)

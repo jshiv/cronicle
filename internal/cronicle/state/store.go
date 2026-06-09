@@ -298,73 +298,81 @@ func (s *Store) migrate() error {
 	if err := row.Scan(&current); err != nil {
 		return fmt.Errorf("state.migrate: read version: %w", err)
 	}
-	// v2: jobs (queue table)
-	if current < 2 {
-		if err := s.execDDL(schemaSQL_v2); err != nil {
-			return fmt.Errorf("state.migrate v2: %w", err)
+	// Per-version migration: run DDL, immediately record the version
+	// row. Previously DDLs ran in a batch and versions were inserted
+	// in a single loop at the end — if the process crashed between
+	// running v10's ALTER TABLE and writing the version row, the next
+	// startup re-ran the ALTER, which fails with "duplicate column
+	// name" because SQLite's ALTER TABLE ADD COLUMN has no
+	// IF NOT EXISTS form. Per-version recording shrinks the window
+	// dramatically (no other DDL between ALTER and version write) and
+	// recordVersion(10) below is also called from a v10-specific
+	// idempotent path that checks column existence before ALTERing.
+	steps := []struct {
+		v   int
+		ddl string
+		run func() error // optional override for non-idempotent steps
+	}{
+		{2, schemaSQL_v2, nil},
+		{3, schemaSQL_v3, nil},
+		{4, schemaSQL_v4, nil},
+		{5, schemaSQL_v5, nil},
+		{6, schemaSQL_v6, nil},
+		{7, schemaSQL_v7, nil},
+		{8, schemaSQL_v8, nil},
+		{9, schemaSQL_v9, nil},
+		{10, schemaSQL_v10, s.migrateV10Idempotent},
+	}
+	for _, step := range steps {
+		if current >= step.v {
+			continue
 		}
-	}
-	// v3: workers (registry)
-	if current < 3 {
-		if err := s.execDDL(schemaSQL_v3); err != nil {
-			return fmt.Errorf("state.migrate v3: %w", err)
+		if step.run != nil {
+			if err := step.run(); err != nil {
+				return fmt.Errorf("state.migrate v%d: %w", step.v, err)
+			}
+		} else if err := s.execDDL(step.ddl); err != nil {
+			return fmt.Errorf("state.migrate v%d: %w", step.v, err)
 		}
-	}
-	// v4: slim events ledger (drop payload column on upgrade)
-	if current < 4 {
-		if err := s.execDDL(schemaSQL_v4); err != nil {
-			return fmt.Errorf("state.migrate v4: %w", err)
-		}
-	}
-	// v5: schedule_state (pause/drained control rows)
-	if current < 5 {
-		if err := s.execDDL(schemaSQL_v5); err != nil {
-			return fmt.Errorf("state.migrate v5: %w", err)
-		}
-	}
-	// v6: task_state (per-task skip flags)
-	if current < 6 {
-		if err := s.execDDL(schemaSQL_v6); err != nil {
-			return fmt.Errorf("state.migrate v6: %w", err)
-		}
-	}
-	// v7: run_state (per-run pause flag)
-	if current < 7 {
-		if err := s.execDDL(schemaSQL_v7); err != nil {
-			return fmt.Errorf("state.migrate v7: %w", err)
-		}
-	}
-	// v8: runner_state (runner-wide drain flag, singleton)
-	if current < 8 {
-		if err := s.execDDL(schemaSQL_v8); err != nil {
-			return fmt.Errorf("state.migrate v8: %w", err)
-		}
-	}
-	// v9: secrets table + secrets_meta(etag_counter) — the in-tree
-	// store backing the SecretStore role on Backend.
-	if current < 9 {
-		if err := s.execDDL(schemaSQL_v9); err != nil {
-			return fmt.Errorf("state.migrate v9: %w", err)
-		}
-	}
-	// v10: at-rest envelope encryption columns on the secrets table.
-	// Backfill of pre-existing plaintext rows happens in Go via
-	// BackfillSecrets after WithAEAD — schema-level migration just
-	// adds the columns.
-	if current < 10 {
-		if err := s.execDDL(schemaSQL_v10); err != nil {
-			return fmt.Errorf("state.migrate v10: %w", err)
-		}
-	}
-	if current >= targetSchemaVersion {
-		return nil
-	}
-	for v := current + 1; v <= targetSchemaVersion; v++ {
-		if _, err := s.db.Exec(`INSERT INTO schema_versions(version) VALUES (?)`, v); err != nil {
-			return fmt.Errorf("state.migrate: record version %d: %w", v, err)
+		if _, err := s.db.Exec(`INSERT INTO schema_versions(version) VALUES (?)`, step.v); err != nil {
+			return fmt.Errorf("state.migrate: record version %d: %w", step.v, err)
 		}
 	}
 	return nil
+}
+
+// migrateV10Idempotent runs the v10 secrets-encryption columns ALTER
+// only when value_ct doesn't already exist. SQLite's ALTER TABLE ADD
+// COLUMN has no IF NOT EXISTS, so a crash between the DDL succeeding
+// and the version row landing would otherwise wedge startup. Probe via
+// PRAGMA table_info(secrets); if the columns are there, treat the
+// migration as already-applied.
+func (s *Store) migrateV10Idempotent() error {
+	rows, err := s.db.Query(`PRAGMA table_info(secrets)`)
+	if err != nil {
+		return fmt.Errorf("probe secrets schema: %w", err)
+	}
+	defer rows.Close()
+	hasCT, hasNonce := false, false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan secrets schema: %w", err)
+		}
+		switch name {
+		case "value_ct":
+			hasCT = true
+		case "value_nonce":
+			hasNonce = true
+		}
+	}
+	if hasCT && hasNonce {
+		return nil
+	}
+	return s.execDDL(schemaSQL_v10)
 }
 
 // Apply folds an event into the projection. Idempotent on event re-delivery

@@ -178,6 +178,12 @@ func (c *httpQueueClient) controlLoop(cancel func(runID string) bool) {
 		req.Header.Set("X-Cronicle-Host", host)
 
 		// SSE connection has no overall timeout — long-lived by design.
+		// (A request-level Timeout would close working streams once it
+		// expired regardless of liveness.) Liveness against a dead TCP
+		// connection is enforced by a per-stream watchdog inside
+		// consumeSSE that closes the body if no bytes arrive for
+		// 2× the producer's SSE heartbeat interval (~60s today). On
+		// close the Scan loop returns and this outer loop reconnects.
 		sseClient := &http.Client{}
 		resp, err := sseClient.Do(req)
 		if err != nil {
@@ -218,10 +224,17 @@ func (c *httpQueueClient) controlLoop(cancel func(runID string) bool) {
 }
 
 // consumeSSE parses the SSE stream until the body closes, routing each
-// control message to cancel(runID).
+// control message to cancel(runID). Wraps the body in a watchdog reader
+// that closes the body if no bytes arrive within sseIdleTimeout —
+// without that, a dead TCP connection (network partition, RST lost)
+// leaves bufio.Scanner.Scan blocked indefinitely on a Read that never
+// returns, since Scan only checks c.ctx between completed lines.
 func (c *httpQueueClient) consumeSSE(body io.ReadCloser, cancel func(runID string) bool) {
 	defer body.Close()
-	scanner := bufio.NewScanner(body)
+	wd := newSSEWatchdog(body, sseIdleTimeout)
+	defer wd.stop()
+
+	scanner := bufio.NewScanner(wd)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 
 	var event string
@@ -265,5 +278,63 @@ func handleControl(msg state.ControlMsg, cancel func(runID string) bool) {
 		// no-op
 	default:
 		slog.Debug("control: unknown msg type", "type", msg.Type)
+	}
+}
+
+// sseIdleTimeout is the per-stream "no bytes seen" deadline for the
+// control SSE. The producer sends `event: ping` heartbeats every 15-30s
+// (see scheduleEvents in listen.go), so 60s is comfortably above any
+// healthy interval and small enough that a dead connection is detected
+// well before any operator notices a stuck cancel.
+const sseIdleTimeout = 60 * time.Second
+
+// sseWatchdog wraps a ReadCloser with an idle-timeout reader. Each
+// successful read extends the deadline; if no bytes arrive within the
+// timeout, the watchdog closes the underlying body. The Scan loop
+// reading the watchdog then returns naturally (Read returns an error
+// against a closed body) and the outer reconnect loop fires.
+//
+// This is the cure for the previous "long-lived by design" SSE client:
+// without it, a dead TCP connection (network partition, RST lost)
+// leaves bufio.Scanner.Scan blocked on a Read that never returns, since
+// Scan only consults ctx between completed lines.
+type sseWatchdog struct {
+	inner   io.ReadCloser
+	timeout time.Duration
+	timer   *time.Timer
+	done    chan struct{}
+}
+
+func newSSEWatchdog(inner io.ReadCloser, timeout time.Duration) *sseWatchdog {
+	wd := &sseWatchdog{
+		inner:   inner,
+		timeout: timeout,
+		done:    make(chan struct{}),
+	}
+	wd.timer = time.AfterFunc(timeout, func() {
+		slog.Warn("control channel: idle timeout; forcing reconnect",
+			"timeout", timeout)
+		_ = inner.Close()
+	})
+	return wd
+}
+
+func (w *sseWatchdog) Read(p []byte) (int, error) {
+	n, err := w.inner.Read(p)
+	if n > 0 {
+		// Reset the idle deadline on any progress, including heartbeat
+		// pings — those are what keep a healthy connection alive across
+		// the timeout window.
+		w.timer.Reset(w.timeout)
+	}
+	return n, err
+}
+
+func (w *sseWatchdog) stop() {
+	w.timer.Stop()
+	select {
+	case <-w.done:
+	default:
+		close(w.done)
 	}
 }

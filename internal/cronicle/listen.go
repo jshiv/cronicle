@@ -43,6 +43,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jshiv/cronicle/internal/cronicle/state"
@@ -63,6 +64,21 @@ type listenServer struct {
 	confSrc     func() *Config
 	stateSrc    func() state.Backend
 	liveSinkSrc func() *state.LiveSink
+	// triggerMu serializes the trigger handlers' pause/drain check + queue
+	// push against the pause/drain mutation handlers. Without it a request
+	// flow like:
+	//
+	//   trigger:  check isPaused (false), [race window], queue push, 202
+	//   pause:    [race window], SetSchedulePaused
+	//
+	// could 202 a trigger that the operator intended to silence. Worker-
+	// side gates (DAG walker re-checks the pause flag) catch the run before
+	// it actually executes — so the practical leak is at most one queued
+	// row, not an extra task execution — but matching what the client was
+	// told ("queued") with reality is itself a contract the API should
+	// keep. The mutex is uncontended in normal operation; only trigger /
+	// pause / drain handlers acquire it.
+	triggerMu sync.Mutex
 }
 
 // startListener brings up the HTTP server in a background goroutine.
@@ -269,6 +285,11 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 
 	switch {
 	case len(parts) == 2 && parts[1] == "trigger":
+		// triggerMu serializes the check+push against pause/drain mutations
+		// so an interleaving POST /pause can't slide between isPaused and
+		// triggerSchedule. See triggerMu doc comment on listenServer.
+		s.triggerMu.Lock()
+		defer s.triggerMu.Unlock()
 		if s.isDrained() {
 			http.Error(w, "runner is drained", http.StatusServiceUnavailable)
 			return
@@ -292,6 +313,8 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 			http.Error(w, fmt.Sprintf("task %q not in schedule %q", taskName, schedName), http.StatusNotFound)
 			return
 		}
+		s.triggerMu.Lock()
+		defer s.triggerMu.Unlock()
 		if s.isDrained() {
 			http.Error(w, "runner is drained", http.StatusServiceUnavailable)
 			return
@@ -330,6 +353,8 @@ func (s *listenServer) handleScheduleRoute(w http.ResponseWriter, r *http.Reques
 			http.Error(w, fmt.Sprintf("task %q not in schedule %q", taskName, schedName), http.StatusNotFound)
 			return
 		}
+		s.triggerMu.Lock()
+		defer s.triggerMu.Unlock()
 		if s.isDrained() {
 			http.Error(w, "runner is drained", http.StatusServiceUnavailable)
 			return
@@ -470,6 +495,11 @@ func (s *listenServer) handlePauseSchedule(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	actor, reason := readPauseBody(r)
+	// Serialize against in-flight trigger handlers so a trigger that's
+	// already past its isPaused check doesn't 202 alongside this pause.
+	// See triggerMu doc on listenServer.
+	s.triggerMu.Lock()
+	defer s.triggerMu.Unlock()
 	if err := st.SetSchedulePaused(name, actor, reason); err != nil {
 		slog.Error("pause schedule failed", "schedule", name, "error", err.Error())
 		http.Error(w, "pause failed", http.StatusInternalServerError)
