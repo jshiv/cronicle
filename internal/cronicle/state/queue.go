@@ -38,20 +38,56 @@ type Job struct {
 var ErrNoJobs = errors.New("state: no jobs available")
 
 // jobWaiters synchronizes long-poll waiters with enqueue/visibility
-// reapers. Producers Broadcast on enqueue; reapers Broadcast when they
-// move expired claims back to pending. Cheaper than a per-worker
-// wakeup channel and correct at our scale (≤100 workers).
+// reapers. Producers signal on enqueue; reapers signal when they move
+// expired claims back to pending.
+//
+// Implementation: a "broadcast channel" — a chan struct{} that
+// signal() closes and replaces. Waiters read the current channel
+// snapshot, then block on it; closing the chan wakes every waiter
+// holding a reference simultaneously. The next signal allocates a
+// fresh channel.
+//
+// Why not sync.Cond: Cond.Wait has no timeout / ctx awareness, so the
+// previous code wrapped it in a spawned goroutine + select { done /
+// timer.C / ctx.Done }. That had a goroutine-leak race: if signal()
+// fired before the spawned goroutine had acquired the mutex and
+// entered Wait, the broadcast was lost and the goroutine blocked
+// indefinitely (until the next unrelated signal). Channel-close
+// broadcast doesn't have this race — there's no "wait inside lock"
+// step that can be missed.
 type jobWaiters struct {
-	mu   sync.Mutex
-	cond *sync.Cond
+	mu sync.Mutex
+	ch chan struct{}
 }
 
 func (s *Store) waiters() *jobWaiters {
 	s.waitOnce.Do(func() {
-		s.wait = &jobWaiters{}
-		s.wait.cond = sync.NewCond(&s.wait.mu)
+		s.wait = &jobWaiters{ch: make(chan struct{})}
 	})
 	return s.wait
+}
+
+// signal wakes every waiter currently blocked in WaitForJob, then
+// reallocates the channel for the next round. Holding the mutex
+// while we swap the chan ensures concurrent signal()s don't
+// double-close or lose wakeups.
+func (s *Store) signalWaiters() {
+	w := s.waiters()
+	w.mu.Lock()
+	close(w.ch)
+	w.ch = make(chan struct{})
+	w.mu.Unlock()
+}
+
+// currentChan returns the channel each WaitForJob caller blocks on.
+// Captured under lock so a concurrent signal() can't swap the chan
+// out from under us mid-read — we either get the current chan (and
+// its close on next signal wakes us) or the next chan (and its close
+// on the next-next signal wakes us). Either way no wakeup is lost.
+func (w *jobWaiters) currentChan() chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.ch
 }
 
 // Enqueue persists a job for a future Claim. Idempotent on duplicate
@@ -78,12 +114,11 @@ func (s *Store) Enqueue(runID, schedule string, payload []byte) error {
 	if err != nil {
 		return fmt.Errorf("Enqueue: %w", err)
 	}
-	// Wake one waiter; if multiple long-polls are blocked, they'll race
-	// for the SQL claim and at most one wins.
-	w := s.waiters()
-	w.mu.Lock()
-	w.cond.Broadcast()
-	w.mu.Unlock()
+	// Wake every waiter; they'll race for the SQL claim and at most one
+	// wins. Broadcast-style wakeup is correct here — extra spurious
+	// wakeups for losing workers are cheaper than tracking per-worker
+	// state, and at ≤100 workers the wasted Claim calls are negligible.
+	s.signalWaiters()
 	return nil
 }
 
@@ -293,10 +328,7 @@ func (s *Store) ReapExpired() (int, error) {
 	if n > 0 {
 		// Wake any blocked long-polls so the freed jobs get claimed
 		// promptly rather than waiting for the next worker reconnect.
-		w := s.waiters()
-		w.mu.Lock()
-		w.cond.Broadcast()
-		w.mu.Unlock()
+		s.signalWaiters()
 	}
 	return int(n), nil
 }
@@ -308,40 +340,27 @@ func (s *Store) ReapExpired() (int, error) {
 // caller's next Claim will return ErrNoJobs and the long-poll will
 // return 204.
 //
-// We use sync.Cond rather than a per-waiter chan because the broadcast
-// pattern (any pending → all waiters race for the SQL lock, only one
-// wins) maps cleanly to Cond. With ≤100 workers the wasted wakeups are
-// negligible; if we ever scale past, switch to a FIFO of waiter IDs.
+// The previous sync.Cond-based implementation wrapped Cond.Wait in a
+// spawned goroutine to add timeout / ctx awareness. That had a
+// goroutine-leak race: if Broadcast fired before the goroutine had
+// acquired the cond mutex, the wakeup was lost and the goroutine
+// blocked indefinitely (until an unrelated future signal). Under idle
+// load that's a permanent leak per WaitForJob call.
+//
+// The chan-close broadcast pattern (see jobWaiters / signalWaiters)
+// is naturally ctx-aware and has no "wait inside lock" step that can
+// be missed. No goroutine spawn either.
 func (s *Store) WaitForJob(ctx context.Context, timeout time.Duration) bool {
-	w := s.waiters()
-	done := make(chan struct{})
+	ch := s.waiters().currentChan()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	go func() {
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		w.cond.Wait()
-		select {
-		case done <- struct{}{}:
-		default:
-		}
-	}()
-
 	select {
-	case <-done:
+	case <-ch:
 		return true
 	case <-timer.C:
-		// Wake the goroutine so Wait() returns and we don't leak it.
-		// A spurious broadcast is cheaper than tracking per-waiter state.
-		w.mu.Lock()
-		w.cond.Broadcast()
-		w.mu.Unlock()
 		return false
 	case <-ctx.Done():
-		w.mu.Lock()
-		w.cond.Broadcast()
-		w.mu.Unlock()
 		return false
 	}
 }

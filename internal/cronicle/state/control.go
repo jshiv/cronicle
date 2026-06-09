@@ -185,10 +185,7 @@ func (s *Store) Retry(runID, newRunID string) (RetryResult, error) {
 		return RetryResult{}, fmt.Errorf("Retry: enqueue: %w", err)
 	}
 	// Wake any blocked long-poll waiters.
-	w := s.waiters()
-	w.mu.Lock()
-	w.cond.Broadcast()
-	w.mu.Unlock()
+	s.signalWaiters()
 
 	return RetryResult{
 		OriginalRunID: runID,
@@ -289,10 +286,7 @@ func (s *Store) RetryFailed(runID, newRunID string) (RetryResult, error) {
 	); err != nil {
 		return RetryResult{}, fmt.Errorf("RetryFailed: enqueue: %w", err)
 	}
-	w := s.waiters()
-	w.mu.Lock()
-	w.cond.Broadcast()
-	w.mu.Unlock()
+	s.signalWaiters()
 
 	return RetryResult{
 		OriginalRunID: runID,
@@ -388,10 +382,7 @@ func (s *Store) RetryTask(runID, taskName string, keep map[string]bool, newRunID
 	); err != nil {
 		return RetryResult{}, fmt.Errorf("RetryTask: enqueue: %w", err)
 	}
-	w := s.waiters()
-	w.mu.Lock()
-	w.cond.Broadcast()
-	w.mu.Unlock()
+	s.signalWaiters()
 
 	return RetryResult{
 		OriginalRunID: runID,
