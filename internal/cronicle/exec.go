@@ -641,7 +641,14 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 			retryCount = task.Retry.Count
 		}
 
-		return attempt < retryCount, err
+		// try.Do passes attempt=1 for the first run, 2 for the first
+		// retry, etc. Retry.Count is documented as "number of retry
+		// attempts after the first" — so for Count=N the loop should
+		// keep going through attempt=N+1 (one initial + N retries).
+		// The previous form `attempt < retryCount` stopped one attempt
+		// too early: Count=3 produced 3 total attempts (1 initial + 2
+		// retries) instead of the documented 4.
+		return attempt <= retryCount, err
 	})
 	if err != nil {
 		return result, err

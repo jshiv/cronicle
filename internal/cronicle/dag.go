@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -295,6 +296,30 @@ func walkDAG(deps map[string][]string, fn func(string) error, continueOnFailure 
 				}
 			}
 		}
+	}
+
+	// Cycle detection: any node whose inDegree is still > 0 after the
+	// walk is unreachable — its degree never decremented to zero, which
+	// means it depends on a node that itself was never visited. That
+	// only happens when those nodes form a dependency cycle (or depend
+	// on one). Without this check, a cyclic config would silently
+	// produce a zero-task no-op and return nil. Return the cycle members
+	// so the operator can see exactly what to break.
+	var unreached []string
+	for node, degree := range inDegree {
+		if degree > 0 {
+			unreached = append(unreached, node)
+		}
+	}
+	if len(unreached) > 0 {
+		sort.Strings(unreached)
+		cycleErr := fmt.Errorf("dependency cycle detected — tasks never executed: %s",
+			strings.Join(unreached, ", "))
+		// Cycle is a config-level fault. Surface it ahead of any
+		// task-level firstErr because firstErr can only happen for
+		// tasks outside the cycle, which is downstream noise compared
+		// to the structural problem.
+		return cycleErr
 	}
 
 	return firstErr

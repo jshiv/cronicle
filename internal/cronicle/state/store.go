@@ -171,7 +171,17 @@ func Open(dsn string) (*Store, error) {
 		return openPostgres(dsn)
 	}
 	conn := dsn
-	if dsn != ":memory:" {
+	if dsn == ":memory:" {
+		// WAL is meaningless for in-memory and not all sqlite builds
+		// accept it on :memory:; busy_timeout matters once MaxOpenConns
+		// is raised above 1. foreign_keys(on) MUST be applied here too
+		// — the tasks table has FOREIGN KEY (run_id) REFERENCES runs
+		// with ON DELETE CASCADE, and skipping the pragma in tests +
+		// workers (which use :memory: for the local projection) lets
+		// orphan rows and missing cascades pass silently in tests
+		// while production (file DSN) enforces them.
+		conn = ":memory:?_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)"
+	} else {
 		conn = dsn + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)"
 	}
 	db, err := sql.Open("sqlite", conn)
