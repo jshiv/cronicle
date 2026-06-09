@@ -342,12 +342,25 @@ func (s *Store) migrate() error {
 }
 
 // migrateV10Idempotent runs the v10 secrets-encryption columns ALTER
-// only when value_ct doesn't already exist. SQLite's ALTER TABLE ADD
-// COLUMN has no IF NOT EXISTS, so a crash between the DDL succeeding
-// and the version row landing would otherwise wedge startup. Probe via
-// PRAGMA table_info(secrets); if the columns are there, treat the
-// migration as already-applied.
+// only when the columns aren't already present. The probe shape is
+// dialect-specific because SQLite uses PRAGMA table_info while
+// Postgres uses information_schema.columns — running PRAGMA against
+// Postgres errors with "syntax error at or near 'PRAGMA'" and crashes
+// the producer on its first startup against PG. This was the original
+// M7 fix's blind spot.
+//
+// For Postgres specifically, we could just rely on `ADD COLUMN
+// IF NOT EXISTS` (which PG supports), but the same probe-then-DDL
+// pattern works cleanly across both dialects and keeps the
+// re-run-safety invariant identical.
 func (s *Store) migrateV10Idempotent() error {
+	if s.dialect == dialectPostgres {
+		return s.migrateV10IdempotentPG()
+	}
+	return s.migrateV10IdempotentSQLite()
+}
+
+func (s *Store) migrateV10IdempotentSQLite() error {
 	rows, err := s.db.Query(`PRAGMA table_info(secrets)`)
 	if err != nil {
 		return fmt.Errorf("probe secrets schema: %w", err)
@@ -360,6 +373,40 @@ func (s *Store) migrateV10Idempotent() error {
 		var notnull, pk int
 		var dflt sql.NullString
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan secrets schema: %w", err)
+		}
+		switch name {
+		case "value_ct":
+			hasCT = true
+		case "value_nonce":
+			hasNonce = true
+		}
+	}
+	if hasCT && hasNonce {
+		return nil
+	}
+	return s.execDDL(schemaSQL_v10)
+}
+
+// migrateV10IdempotentPG is the Postgres counterpart. PG supports
+// ALTER TABLE ADD COLUMN IF NOT EXISTS natively, but using it here
+// would couple migration semantics to the DDL string. Probing via
+// information_schema keeps the structural shape identical to the
+// SQLite path — both branches "check, then DDL when missing."
+func (s *Store) migrateV10IdempotentPG() error {
+	rows, err := s.db.Query(`
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_name = 'secrets'
+		  AND column_name IN ('value_ct', 'value_nonce')`)
+	if err != nil {
+		return fmt.Errorf("probe secrets schema: %w", err)
+	}
+	defer rows.Close()
+	hasCT, hasNonce := false, false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			return fmt.Errorf("scan secrets schema: %w", err)
 		}
 		switch name {
