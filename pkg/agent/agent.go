@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -430,9 +432,27 @@ func applyCacheBreakpoint(params *anthropic.MessageNewParams) {
 	}
 }
 
+// warnedUnknownModels remembers which model IDs we've already warned
+// about so a high-volume run doesn't flood logs with the same notice.
+// sync.Map (vs a plain map+mutex) keeps this lock-free on the hot
+// path; the rare first-encounter write happens at most once per id.
+var warnedUnknownModels sync.Map
+
 func computeCost(model string, in, out, cacheWrite, cacheRead int) float64 {
 	p, ok := pricing[priceKey(model)]
 	if !ok {
+		// L4: previously this just returned 0 silently. Result: an
+		// unattended cron with budget_usd = 5.00 configured against
+		// a model the pricing table didn't know about would NEVER
+		// trip the budget gate — the cost would stay zero regardless
+		// of token usage. Warn loudly the first time we see an
+		// unknown id so operators can either add the entry or set an
+		// alias-resolving priceKey rule. Repeat warnings would just
+		// be noise; sync.Map gates on first-sight per id.
+		if _, alreadyWarned := warnedUnknownModels.LoadOrStore(model, struct{}{}); !alreadyWarned {
+			slog.Warn("agent: model not in pricing table; cost reported as $0 (budget_usd will not trip)",
+				"model", model)
+		}
 		return 0
 	}
 	return (float64(in)*p.in +

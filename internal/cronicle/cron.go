@@ -131,7 +131,12 @@ func Run(ctx context.Context, cronicleFile string, runOptions RunOptions) {
 		}
 		go reaperLoop(ctx, stateStore)
 	} else {
-		queue := make(chan []byte)
+		// 64-slot buffer (matches the listener-mode enqueueChan) so a
+		// slow ConsumeSchedule can't stall the cron-tick goroutine on
+		// the channel send — the original unbuffered chan meant
+		// robfig/cron's serialized callback queue cascaded when any
+		// schedule body ran longer than the next tick interval (L3).
+		queue := make(chan []byte, 64)
 		triggerQueue = queue
 		closeQueue = func() { close(queue) }
 		go StartCron(ctx, cronicleFileAbs, queue)
@@ -371,10 +376,19 @@ func ConsumeSchedule(queue <-chan []byte, path string, wg *sync.WaitGroup) {
 	} else {
 		p = path
 	}
+	// L2: cap concurrent schedule goroutines so a burst (e.g. many
+	// schedules firing on the same tick or rapid HTTP triggers) can't
+	// fan out to thousands of goroutines, exhaust file descriptors, or
+	// hit API rate limits. 16 matches typical worker-pool sizing — a
+	// schedule that needs more parallelism should configure
+	// --worker-count, not rely on unbounded fan-out here.
+	sem := make(chan struct{}, 16)
 	for scheduleBytes := range queue {
+		sem <- struct{}{}
 		wg.Add(1)
 		go func(scheduleBytes []byte) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			var schedule Schedule
 			err := json.Unmarshal(scheduleBytes, &schedule)
 			if err != nil {
