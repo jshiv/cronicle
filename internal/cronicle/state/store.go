@@ -394,10 +394,20 @@ func (s *Store) migrateV10IdempotentSQLite() error {
 // information_schema keeps the structural shape identical to the
 // SQLite path — both branches "check, then DDL when missing."
 func (s *Store) migrateV10IdempotentPG() error {
+	// MUST scope to current_schema(). Each cronicle deployment gets its
+	// own Postgres schema via search_path (dep_<id>) inside a SHARED
+	// database, so an unscoped information_schema query sees the secrets
+	// table in EVERY deployment's schema. Without the filter, the probe
+	// finds value_ct in some other (already-migrated) deployment's
+	// schema, wrongly concludes this schema is migrated, skips the
+	// ALTER — and BackfillSecrets then fails with "column value_ct does
+	// not exist". table_schema = current_schema() pins the probe to the
+	// search_path schema the rest of the migration writes to.
 	rows, err := s.db.Query(`
 		SELECT column_name
 		FROM information_schema.columns
-		WHERE table_name = 'secrets'
+		WHERE table_schema = current_schema()
+		  AND table_name = 'secrets'
 		  AND column_name IN ('value_ct', 'value_nonce')`)
 	if err != nil {
 		return fmt.Errorf("probe secrets schema: %w", err)
