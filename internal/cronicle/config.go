@@ -316,6 +316,23 @@ type Repo struct {
 	// here so the struct field name matches the HCL key.
 	Branch string `hcl:"branch,optional"`
 	Commit string `hcl:"commit,optional"`
+	// KnownHosts is an optional path to an SSH known_hosts file used to
+	// verify the remote's host key on a deploy-key (SSH) clone. Layered
+	// on top of ~/.ssh/known_hosts, the CRONICLE_KNOWN_HOSTS env file,
+	// and cronicle's embedded keys for the major public git hosts
+	// (github.com, gitlab.com, bitbucket.org, ssh.dev.azure.com). When a
+	// host is in none of these sources the clone is refused unless
+	// AcceptNewHostKey is set (or the CRONICLE_SSH_NO_VERIFY escape hatch
+	// is used). Ignored for HTTPS clones.
+	KnownHosts string `hcl:"known_hosts,optional"`
+	// AcceptNewHostKey, when true, accepts an unknown host's key on a
+	// deploy-key clone instead of refusing it — the SSH equivalent of
+	// OpenSSH's StrictHostKeyChecking=accept-new, scoped to this repo.
+	// A key that MISMATCHES a known one is still always refused (that's
+	// the MITM signal). Does not persist the accepted key. Use for
+	// self-hosted git hosts not in the embedded set; prefer pinning via
+	// KnownHosts when you can.
+	AcceptNewHostKey bool `hcl:"accept_new_host_key,optional"`
 }
 
 // Retry defines the retry count and delay in number and seconds.

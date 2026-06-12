@@ -19,7 +19,6 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
 	"github.com/go-git/go-git/v6/plumbing/transport/ssh"
-	gossh "golang.org/x/crypto/ssh"
 )
 
 // redactGitURL strips userinfo from a git URL before logging so an
@@ -86,7 +85,17 @@ func (repo *Repo) Auth() ([]client.Option, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load ssh deploy key %q: %w", keyPath, err)
 		}
-		auth.HostKeyCallback = gossh.InsecureIgnoreHostKey()
+		// Verify the remote's host key (H4). The previous
+		// InsecureIgnoreHostKey accepted ANY key, making deploy-key
+		// clones — which fetch code cronicle then executes — vulnerable
+		// to MITM. sshHostKeyCallback verifies against known_hosts +
+		// cronicle's embedded major-host keys, with repo-level overrides
+		// and a logged escape hatch.
+		cb, err := sshHostKeyCallback(repo.KnownHosts, repo.AcceptNewHostKey)
+		if err != nil {
+			return nil, fmt.Errorf("ssh host-key verification setup: %w", err)
+		}
+		auth.HostKeyCallback = cb
 		return []client.Option{client.WithSSHAuth(auth)}, nil
 	}
 
@@ -102,7 +111,7 @@ func (repo *Repo) Auth() ([]client.Option, error) {
 
 }
 
-//Open populates a git struct for the given worktreePath
+// Open populates a git struct for the given worktreePath
 func (g *Git) Open(worktreePath string) error {
 	r, err := git.PlainOpen(worktreePath)
 	if err != nil {
@@ -139,13 +148,13 @@ func (g *Git) Open(worktreePath string) error {
 	return nil
 }
 
-//Clone checks for the existance of worktreeDir/.git and clones if it does not exist
-//then executes Git = GetGit(worktreeDir)
+// Clone checks for the existance of worktreeDir/.git and clones if it does not exist
+// then executes Git = GetGit(worktreeDir)
 //
-//Logs each step (clone / skip / open) so operators can see git activity
-//in the pretty/json/text stdout streams — previously these operations
-//were silent and the only signal that cloning happened was the
-//directory appearing on disk.
+// Logs each step (clone / skip / open) so operators can see git activity
+// in the pretty/json/text stdout streams — previously these operations
+// were silent and the only signal that cloning happened was the
+// directory appearing on disk.
 func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
@@ -230,10 +239,10 @@ func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 	return g, nil
 }
 
-//Checkout does a git fetch for task.Repo and does a git checkout for the
-//given task.Branch or task.Commit.
-//Note: Only one can be given, branch or commit.
-//Checkout requires task.Repo to be given
+// Checkout does a git fetch for task.Repo and does a git checkout for the
+// given task.Branch or task.Commit.
+// Note: Only one can be given, branch or commit.
+// Checkout requires task.Repo to be given
 func (g *Git) Checkout(branch string, commit string) error {
 	if branch != "" && commit != "" {
 		return ErrBranchAndCommitGiven
@@ -318,8 +327,8 @@ func (g *Git) Checkout(branch string, commit string) error {
 	return nil
 }
 
-//CleanGit nulls non-serlizable properties of a task
-//task.Git = Git{}
+// CleanGit nulls non-serlizable properties of a task
+// task.Git = Git{}
 func (task *Task) CleanGit() {
 	task.Git = Git{}
 }
