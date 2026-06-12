@@ -133,7 +133,13 @@ func TestPostgres_Backend_Integration(t *testing.T) {
 	}
 }
 
-// resetPublicSchema drops + recreates the public schema for a clean slate.
+// resetPublicSchema drops + recreates the public schema for a clean
+// slate. DESTRUCTIVE — it must only ever run against a throwaway test
+// database. guardThrowawayDB aborts if the target looks like a real
+// deployment (e.g. someone pointed TEST_PG_DSN at the cronicle-infra
+// api's shared Postgres, whose tables live in public). Learned the
+// hard way: without this guard, a stray TEST_PG_DSN wipes the platform
+// registry.
 func resetPublicSchema(t *testing.T, dsn string) {
 	t.Helper()
 	db, err := sql.Open("pgx", dsn)
@@ -141,8 +147,50 @@ func resetPublicSchema(t *testing.T, dsn string) {
 		t.Fatalf("open raw pg: %v", err)
 	}
 	defer db.Close()
+	guardThrowawayDB(t, db)
 	if _, err := db.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
 		t.Fatalf("reset schema: %v", err)
+	}
+}
+
+// guardThrowawayDB aborts the test (rather than wiping data) if the
+// target database holds tables that don't belong to cronicle's STATE
+// schema. The state package only ever creates: runs, tasks, events,
+// schema_versions, jobs, workers, schedule_state, task_state,
+// run_state, runner_state, secrets, secrets_meta. Anything else in
+// public — deployments, orgs, users, goose_db_version, … — means this
+// is a shared/real database (e.g. the cronicle-infra api's), and a
+// DROP SCHEMA public CASCADE would destroy it. Only run the destructive
+// PG integration tests against a dedicated throwaway database.
+func guardThrowawayDB(t *testing.T, db *sql.DB) {
+	t.Helper()
+	stateTables := map[string]bool{
+		"runs": true, "tasks": true, "events": true, "schema_versions": true,
+		"jobs": true, "workers": true, "schedule_state": true, "task_state": true,
+		"run_state": true, "runner_state": true, "secrets": true, "secrets_meta": true,
+	}
+	rows, err := db.Query(`
+		SELECT table_name FROM information_schema.tables
+		WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`)
+	if err != nil {
+		t.Fatalf("guard: list public tables: %v", err)
+	}
+	defer rows.Close()
+	var foreign []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("guard: scan: %v", err)
+		}
+		if !stateTables[name] {
+			foreign = append(foreign, name)
+		}
+	}
+	if len(foreign) > 0 {
+		t.Fatalf("REFUSING to reset public schema: it contains non-state tables %v — "+
+			"TEST_PG_DSN appears to point at a shared/real database (e.g. the cronicle-infra api). "+
+			"These tests DROP SCHEMA public CASCADE; point TEST_PG_DSN at a dedicated throwaway database instead.",
+			foreign)
 	}
 }
 
