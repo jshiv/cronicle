@@ -175,7 +175,8 @@ func TestClone_NonEmptyDir_WithSSH(t *testing.T) {
 	}
 
 	sshURL := "ssh://git@" + testSSHAddr + "/test_repo"
-	repo := cronicle.Repo{URL: sshURL, DeployKey: "./test/test_deploy_key"}
+	// AcceptNewHostKey: throwaway local test SSH server (H4).
+	repo := cronicle.Repo{URL: sshURL, DeployKey: "./test/test_deploy_key", AcceptNewHostKey: true}
 	opts, err := repo.Auth()
 	if err != nil {
 		t.Fatal(err)

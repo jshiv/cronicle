@@ -61,7 +61,9 @@ var _ = Describe("Init", func() {
 			It("conf.Init should authenticate, clone and checkout from a deploy-key SSH remote", func() {
 				conf := cronicle.Default()
 				sshURL := fmt.Sprintf("ssh://git@%s/test_repo", testSSHAddr)
-				conf.Repo = &cronicle.Repo{URL: sshURL, DeployKey: "./test/test_deploy_key", Branch: "test/checkout_specific_branch"}
+				// AcceptNewHostKey: throwaway local test SSH server, not
+				// in any known_hosts — see git_test.go (H4).
+				conf.Repo = &cronicle.Repo{URL: sshURL, DeployKey: "./test/test_deploy_key", Branch: "test/checkout_specific_branch", AcceptNewHostKey: true}
 				path, _ := filepath.Abs("./test_conf_init_ssh_auth")
 
 				err := conf.Init(path)

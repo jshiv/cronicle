@@ -41,7 +41,10 @@ var _ = Describe("git", func() {
 		conf := cronicle.Default()
 		path, _ := filepath.Abs("./test_ssh_auth")
 		sshURL := fmt.Sprintf("ssh://git@%s/test_repo", testSSHAddr)
-		conf.Schedules[0].Repo = &cronicle.Repo{URL: sshURL, DeployKey: "./test/test_deploy_key"}
+		// AcceptNewHostKey: the test SSH server is a throwaway local
+		// host not in any known_hosts; this exercises the deploy-key
+		// AUTH path without requiring host-key pinning (H4).
+		conf.Schedules[0].Repo = &cronicle.Repo{URL: sshURL, DeployKey: "./test/test_deploy_key", AcceptNewHostKey: true}
 
 		conf.PropigateTaskProperties(path)
 		task := conf.Schedules[0].Tasks[0]
