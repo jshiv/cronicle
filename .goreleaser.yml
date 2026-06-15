@@ -12,6 +12,11 @@ before:
 builds:
   - env:
       - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X github.com/jshiv/cronicle/cmd.version={{ .Version }}
+      - -X github.com/jshiv/cronicle/cmd.commit={{ .Commit }}
+      - -X github.com/jshiv/cronicle/cmd.date={{ .Date }}
     goos:
       - linux
       - darwin
