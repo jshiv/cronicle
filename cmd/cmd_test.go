@@ -29,6 +29,16 @@ import (
 // lets a single string assertion check either.
 func executeCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	// Cobra's --help / --version bool flags persist on the shared rootCmd
+	// across Execute calls; a prior test that ran --help would otherwise
+	// leave help=true and short-circuit a later --version run into help
+	// output. Reset them so each invocation starts clean.
+	if f := rootCmd.Flags().Lookup("help"); f != nil {
+		_ = f.Value.Set("false")
+	}
+	if f := rootCmd.Flags().Lookup("version"); f != nil {
+		_ = f.Value.Set("false")
+	}
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
@@ -69,11 +79,12 @@ func TestRoot_PersistentFlagsRegistered(t *testing.T) {
 // accidentally dropping the AddCommand wiring for a subcommand.
 func TestRoot_AllSubcommandsRegistered(t *testing.T) {
 	want := map[string]bool{
-		"init":   false,
-		"run":    false,
-		"exec":   false,
-		"worker": false,
-		"secret": false,
+		"init":    false,
+		"run":     false,
+		"exec":    false,
+		"worker":  false,
+		"secret":  false,
+		"version": false,
 	}
 	for _, c := range rootCmd.Commands() {
 		if _, ok := want[c.Name()]; ok {
@@ -94,7 +105,7 @@ func TestRoot_HelpListsAllSubcommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected --help error: %v", err)
 	}
-	for _, sub := range []string{"init", "run", "exec", "worker", "secret"} {
+	for _, sub := range []string{"init", "run", "exec", "worker", "secret", "version"} {
 		if !strings.Contains(out, sub) {
 			t.Errorf("--help output missing %q; output:\n%s", sub, out)
 		}
@@ -110,6 +121,38 @@ func TestRoot_UnknownSubcommand(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown command") {
 		t.Errorf("error message should name the problem; got: %v", err)
+	}
+}
+
+// ---- version subcommand -----------------------------------------------
+
+// TestVersionCmd_PrintsVersion: `cronicle version` prints the build
+// version string. With no ldflags injected (test binary) it reports the
+// "dev" default — the assertion just guards that the command runs and
+// emits the version var rather than empty output.
+func TestVersionCmd_PrintsVersion(t *testing.T) {
+	out, err := executeCmd(t, "version")
+	if err != nil {
+		t.Fatalf("unexpected version error: %v", err)
+	}
+	if !strings.Contains(out, version) {
+		t.Errorf("version output missing %q; got: %q", version, out)
+	}
+}
+
+// TestRoot_VersionFlagWired: cobra only emits a --version flag when
+// rootCmd.Version is set. Guard that wiring so the flag doesn't silently
+// disappear if the init order changes.
+func TestRoot_VersionFlagWired(t *testing.T) {
+	if rootCmd.Version == "" {
+		t.Fatal("rootCmd.Version is empty; --version flag will not be registered")
+	}
+	out, err := executeCmd(t, "--version")
+	if err != nil {
+		t.Fatalf("unexpected --version error: %v", err)
+	}
+	if !strings.Contains(out, version) {
+		t.Errorf("--version output missing %q; got: %q", version, out)
 	}
 }
 
