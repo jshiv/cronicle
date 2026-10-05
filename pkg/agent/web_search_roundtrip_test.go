@@ -14,8 +14,7 @@ import (
 // web_search_tool_result fail on the second API call because ToParam()
 // produces content the API rejects.
 //
-// This test uses the raw JSON passthrough (msgToParam) to verify the
-// workaround works.
+// This test verifies the official SDK's ToParam conversion against the API.
 func TestWebSearchMultiTurnRoundTrip(t *testing.T) {
 	if os.Getenv("ANTHROPIC_API_KEY") == "" {
 		t.Skip("ANTHROPIC_API_KEY not set")
@@ -59,7 +58,7 @@ func TestWebSearchMultiTurnRoundTrip(t *testing.T) {
 		t.Skip("model didn't use web_search on this turn — can't test round-trip")
 	}
 
-	// Build conversation using ToParam() — the SDK fork uses raw JSON passthrough
+	// Build conversation using the SDK's ToParam conversion.
 	conversation := []anthropic.MessageParam{
 		anthropic.NewUserMessage(
 			anthropic.NewTextBlock("Search the web for 'anthropic claude' and tell me what you find. Keep it brief."),
@@ -70,7 +69,7 @@ func TestWebSearchMultiTurnRoundTrip(t *testing.T) {
 		),
 	}
 
-	// Turn 2: this is where the bug manifests — ToParam() produces invalid content
+	// Turn 2 is where the original serialization bug manifested.
 	t.Log("Turn 2: sending conversation history with web_search_tool_result...")
 	msg2, err := client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.ModelClaudeSonnet4_6,
@@ -91,8 +90,8 @@ func TestWebSearchMultiTurnRoundTrip(t *testing.T) {
 
 }
 
-// TestToParamPreservesWebSearchContent verifies that ToParam (via the SDK
-// fork's raw JSON passthrough) produces valid JSON with web_search content.
+// TestToParamPreservesWebSearchContent verifies that ToParam produces valid
+// JSON with web_search content.
 func TestToParamPreservesWebSearchContent(t *testing.T) {
 	apiResponse := []byte(`{
 		"id": "msg_test",
