@@ -1,4 +1,4 @@
-// Package agent runs a Claude agent invocation and returns its result alongside
+// Package agent runs an LLM agent invocation and returns its result alongside
 // token/cost accounting and a JSONL transcript.
 package agent
 
@@ -26,6 +26,8 @@ const (
 
 // Config carries the inputs for a single agent invocation.
 type Config struct {
+	// Provider selects anthropic (the default) or openai.
+	Provider      string
 	Prompt        string
 	System        string
 	Model         string
@@ -142,6 +144,37 @@ var ErrBudgetExceeded = errors.New("agent run exceeded configured budget")
 // configured, the loop terminates after one turn (single-turn behavior
 // preserved). The transcript captures every turn and tool result.
 func Run(ctx context.Context, cfg Config) (Result, error) {
+	switch cfg.Provider {
+	case "openai":
+		return runOpenAI(ctx, cfg)
+	case "", "anthropic":
+		return runAnthropic(ctx, cfg)
+	default:
+		err := fmt.Errorf("unknown agent provider %q", cfg.Provider)
+		return Result{Result: exec.Result{Error: err, Stderr: err.Error(), ExitStatus: 1}}, err
+	}
+}
+
+// DefaultModelForProvider returns the model used when a task omits model.
+func DefaultModelForProvider(provider string) string {
+	if provider == "openai" {
+		return DefaultOpenAIModel
+	}
+	return DefaultModel
+}
+
+// FunctionDefinition describes a locally executed tool independently of a
+// provider's built-in tool type. Native tools can implement FunctionTool;
+// custom Anthropic definitions are already JSON Schema and need no adapter.
+type FunctionDefinition struct {
+	Description string
+	Parameters  map[string]any
+}
+type FunctionTool interface {
+	FunctionDefinition() FunctionDefinition
+}
+
+func runAnthropic(ctx context.Context, cfg Config) (Result, error) {
 	model := cfg.Model
 	if model == "" {
 		model = DefaultModel

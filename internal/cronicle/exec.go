@@ -35,20 +35,21 @@ func lastRunEpoch(t time.Time) string {
 	return strconv.FormatInt(t.Unix(), 10)
 }
 
-// splitAPIKey pulls an ANTHROPIC_API_KEY entry out of the env slice
-// and returns (value, remainder). Used by the agent dispatch path so
-// the Anthropic API key flows to cfg.APIKey (which is passed to the
-// SDK via option.WithAPIKey) without ever needing to be in any
-// subprocess's env. Returns ("", env) when no such entry is present
-// — the agent then falls back to whatever the SDK's own env lookup
-// finds, which is fine for direct-run scenarios where the operator
-// set ANTHROPIC_API_KEY on cronicle's own process.
-func splitAPIKey(env []string) (apiKey string, rest []string) {
-	const prefix = "ANTHROPIC_API_KEY="
+// splitAPIKey selects the provider's credential and removes BOTH providers'
+// keys (including duplicates) before task env reaches bash or MCP children.
+// An absent key leaves the SDK's process-environment fallback intact.
+func splitAPIKey(env []string, provider string) (apiKey string, rest []string) {
+	name := "ANTHROPIC_API_KEY"
+	if provider == "openai" {
+		name = "OPENAI_API_KEY"
+	}
 	rest = make([]string, 0, len(env))
 	for _, entry := range env {
-		if strings.HasPrefix(entry, prefix) && apiKey == "" {
-			apiKey = entry[len(prefix):]
+		key, value, _ := strings.Cut(entry, "=")
+		if key == "ANTHROPIC_API_KEY" || key == "OPENAI_API_KEY" {
+			if key == name && apiKey == "" {
+				apiKey = value
+			}
 			continue
 		}
 		rest = append(rest, entry)
@@ -314,6 +315,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	}
 
 	cfg := agent.Config{
+		Provider:      task.Agent.Provider,
 		Prompt:        r.Replace(task.Agent.Prompt),
 		System:        system,
 		Model:         task.Agent.Model,
@@ -327,7 +329,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	streaming := IsStreamingPretty()
 	effectiveModel := cfg.Model
 	if effectiveModel == "" {
-		effectiveModel = agent.DefaultModel
+		effectiveModel = agent.DefaultModelForProvider(cfg.Provider)
 	}
 	var skillsAvailable []string
 	if skillTool != nil {
@@ -424,15 +426,9 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 			ExitStatus: 1,
 		}
 	}
-	// Pull ANTHROPIC_API_KEY (if present in resolved env) out and into
-	// cfg.APIKey explicitly. This means we DON'T have to put it in the
-	// agent process's env to make the SDK happy, and we DON'T leak it
-	// into the bash tool / MCP children that get resolvedEnv passed
-	// through. Other env entries continue to flow to subprocesses.
-	if apiKey, restEnv := splitAPIKey(resolvedEnv); apiKey != "" {
-		cfg.APIKey = apiKey
-		resolvedEnv = restEnv
-	}
+	// Pass the selected credential directly to the SDK; neither provider's key
+	// belongs in the tool environment, even when both were configured.
+	cfg.APIKey, resolvedEnv = splitAPIKey(resolvedEnv, cfg.Provider)
 	cfg.Tools = buildAgentTools(task.Agent.Tools, task.Path, resolvedEnv, gitAuth, task.ScratchDir, toolWriter)
 	if skillTool != nil {
 		cfg.Tools = append(cfg.Tools, skillTool)

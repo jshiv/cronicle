@@ -136,12 +136,14 @@ type Task struct {
 // When a task has an Agent block instead of a Command, the task is dispatched
 // to pkg/agent rather than exec'd as a shell process.
 type Agent struct {
+	// Provider selects anthropic (default) or openai.
+	Provider string `hcl:"provider,optional"`
 	// Prompt is the user message sent to the model. ${date}/${datetime}/
 	// ${timestamp}/${path} are substituted at execution time. Optional when
 	// Skills is non-empty (the skill metadata can stand in for a literal
 	// prompt by describing the work).
 	Prompt string `hcl:"prompt,optional"`
-	// Model selects the Claude model id, e.g. "claude-opus-4-7". Empty uses
+	// Model selects the provider model id. Empty uses
 	// the pkg/agent default.
 	Model string `hcl:"model,optional"`
 	// System is an optional system prompt.
@@ -216,6 +218,7 @@ type AgentTask struct {
 	Env     []string `hcl:"env,optional"`
 
 	// Flattened Agent fields — identical semantics to the Agent struct.
+	Provider  string   `hcl:"provider,optional"`
 	Prompt    string   `hcl:"prompt,optional"`
 	Model     string   `hcl:"model,optional"`
 	System    string   `hcl:"system,optional"`
@@ -239,6 +242,7 @@ func (a AgentTask) ToTask() Task {
 		Retry:   a.Retry,
 		Env:     a.Env,
 		Agent: &Agent{
+			Provider:  a.Provider,
 			Prompt:    a.Prompt,
 			Model:     a.Model,
 			System:    a.System,
@@ -402,6 +406,11 @@ func (task *Task) Validate() error {
 	}
 
 	if task.Agent != nil {
+		switch task.Agent.Provider {
+		case "", "anthropic", "openai":
+		default:
+			return fmt.Errorf("unknown agent provider %q (known: anthropic, openai)", task.Agent.Provider)
+		}
 		if len(task.Command) > 0 {
 			return ErrCommandAndAgentBothGiven
 		}
@@ -409,6 +418,9 @@ func (task *Task) Validate() error {
 			return ErrAgentNeedsPromptOrSkills
 		}
 		for _, name := range task.Agent.Tools {
+			if task.Agent.Provider == "openai" && (name == "web_search" || name == "web_fetch") {
+				return fmt.Errorf("agent tool %q is only supported by the anthropic provider", name)
+			}
 			if !knownAgentTool(name) {
 				return fmt.Errorf("unknown agent tool %q (known: bash, text_editor, web_search, web_fetch)", name)
 			}

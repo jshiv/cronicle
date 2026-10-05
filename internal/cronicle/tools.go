@@ -529,3 +529,27 @@ func buildAgentTools(names []string, workspace string, env []string, gitAuth []c
 	}
 	return out
 }
+
+// FunctionDefinition exposes the same local bash executor to providers that
+// do not have Anthropic's built-in bash tool schema.
+func (b *BashTool) FunctionDefinition() agent.FunctionDefinition {
+	return agent.FunctionDefinition{
+		Description: "Run a shell command in the task workspace and return stdout, stderr, and exit status.",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}, "required": []string{"command"}},
+	}
+}
+
+func (t *TextEditorTool) FunctionDefinition() agent.FunctionDefinition {
+	return agent.FunctionDefinition{
+		Description: "Read or edit files in the task workspace. view reads a file or lists a directory; create writes file_text; str_replace replaces a unique old_str with new_str; insert adds new_str after insert_line (0 prepends). view_range is [start, end], 1-based, with -1 meaning end of file.",
+		Parameters: map[string]any{"type": "object", "properties": map[string]any{
+			"command":     map[string]any{"type": "string", "enum": []string{"view", "create", "str_replace", "insert"}},
+			"path":        map[string]any{"type": "string"},
+			"file_text":   map[string]any{"type": "string"},
+			"old_str":     map[string]any{"type": "string"},
+			"new_str":     map[string]any{"type": "string"},
+			"insert_line": map[string]any{"type": "integer"},
+			"view_range":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "minItems": 2, "maxItems": 2},
+		}, "required": []string{"command", "path"}},
+	}
+}
