@@ -359,7 +359,8 @@ it can think, call tools, observe results, and continue until it stops calling
 tools, hits `max_turns`, or the `wallclock` deadline fires. With
 `--log-to-file`, each run writes a JSONL transcript (request, response per
 turn, tool results, accounting) to `.cronicle/runs/`. Requires
-`ANTHROPIC_API_KEY` in the environment.
+`ANTHROPIC_API_KEY` for the default Anthropic provider, or `OPENAI_API_KEY`
+for OpenAI (see below).
 
 ```hcl
 schedule "morning" {
@@ -408,6 +409,55 @@ schedule "morning" {
 `prompt` is optional when `skills` is non-empty — the loaded skill drives
 the run on its own. Skill paths must resolve under the task workspace; `..`
 traversal and absolute paths are rejected at config load.
+
+#### OpenAI agents
+
+Set `provider = "openai"` to use the official [OpenAI Go SDK](https://github.com/openai/openai-go)
+and the [Responses API](https://developers.openai.com/api/docs/guides/responses).
+Omitting `provider` keeps the existing Anthropic behavior. Both the first-class
+and nested agent forms support this field.
+
+```hcl
+schedule "openai-check" {
+  cron = "0 8 * * *"
+  agent "check" {
+    provider   = "openai"
+    model      = "gpt-4.1-mini"
+    env        = ["OPENAI_API_KEY=$secret.OPENAI_API_KEY"]
+    prompt     = "Run the repository's tests and summarize the result."
+    tools      = ["bash", "text_editor", "git"]
+    max_tokens = 2000
+    max_turns  = 12
+    wallclock  = "10m"
+    budget_usd = 0.10
+  }
+}
+```
+
+Seed `OPENAI_API_KEY` with `cronicle secret set OPENAI_API_KEY --workdir .`
+(reads stdin; requires the initialized secret store), or export it in the
+Cronicle process environment. Task-level OpenAI and Anthropic keys are removed
+before environment values reach bash or MCP subprocesses.
+
+OpenAI defaults to `gpt-4.1-mini`. Local bash, text editing, git, skills, and
+MCP tools share Cronicle's existing implementations. Anthropic's hosted
+`web_search` and `web_fetch` are not supported by this provider; requesting
+them fails validation before an API call.
+
+Streaming output, tool events, JSONL transcripts, cancellation, and per-turn
+usage accounting use the existing reporting path. Requests use `store=false`
+and carry conversation history (including encrypted reasoning) between turns.
+An incomplete response or exhausted turn limit fails the task rather than
+reporting unfinished work as successful. Automatic SDK retries are disabled;
+the task's configured retry policy controls retries.
+
+Costs currently cover `gpt-4.1-mini`, `gpt-4.1`, and `gpt-4o-mini`, including dated
+snapshots, at standard text-token rates. Cached input is charged separately.
+Other models can run with `budget_usd = 0`; their reported cost is unavailable
+and shown as zero with a warning. A positive budget rejects an unpriced model.
+Budgets are checked **after each completed response**, before tool execution;
+one response can overshoot the limit. `max_tokens`, `max_turns`, and `wallclock`
+provide the other bounds.
 
 #### Legacy nested form
 
