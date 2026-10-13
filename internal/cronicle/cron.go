@@ -3,6 +3,7 @@ package cronicle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -518,7 +519,7 @@ func ProduceSchedule(schedule Schedule, queue chan<- []byte) func() {
 
 // ExecTasks parses the cronicle.hcl config, filters for a specified task
 // and executes the task
-func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time) {
+func ExecTasks(cronicleFile string, taskName string, scheduleName string, now time.Time) error {
 
 	cronicleFileAbs, err := filepath.Abs(cronicleFile)
 	if err != nil {
@@ -558,15 +559,22 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 	nowInLoc := now.In(loc)
 	var schedules []Schedule
 	if scheduleName != "" {
-		schedules = []Schedule{conf.ScheduleMap()[scheduleName]}
+		selected, ok := conf.ScheduleMap()[scheduleName]
+		if !ok {
+			return fmt.Errorf("unknown schedule %q", scheduleName)
+		}
+		schedules = []Schedule{selected}
 	} else {
 		schedules = conf.Schedules
 	}
 
+	var failures []error
+	matchedTask := false
 	for _, schedule := range schedules {
 		taskMap := schedule.TaskMap()
 		if taskName != "" {
 			if task, ok := taskMap[taskName]; ok {
+				matchedTask = true
 				// Set the schedule-scoped scratch dir so single-task
 				// `cronicle exec --task X` produces the same ${scratch}
 				// artifacts as a full schedule run. The dir is created
@@ -602,7 +610,13 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 			// Foreground one-shot dispatch: resolve ${last_run} from the
 			// authoritative store before ExecuteTasks (which never reads it).
 			resolveLastRun(StateStore(), &schedule)
-			schedule.ExecuteTasks()
+			if err := schedule.ExecuteTasks(); err != nil {
+				failures = append(failures, fmt.Errorf("schedule %s: %w", schedule.Name, err))
+			}
 		}
 	}
+	if taskName != "" && !matchedTask {
+		return fmt.Errorf("unknown task %q in selected schedules", taskName)
+	}
+	return errors.Join(failures...)
 }
