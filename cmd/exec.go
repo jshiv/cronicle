@@ -17,6 +17,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,7 @@ the range.
 
 cronicle init
 cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		path, _ := cmd.Flags().GetString("path")
 		task, _ := cmd.Flags().GetString("task")
 		schedule, _ := cmd.Flags().GetString("schedule")
@@ -111,9 +112,13 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 				end = n
 			}
 		}
+		var failures []error
 		for t := now; t.After(end) == false; t = t.AddDate(0, 0, 1) {
-			cronicle.ExecTasks(path, task, schedule, t)
+			if err := cronicle.ExecTasks(path, task, schedule, t); err != nil {
+				failures = append(failures, err)
+			}
 		}
+		return errors.Join(failures...)
 	},
 }
 

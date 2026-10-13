@@ -62,7 +62,7 @@ func resolveLastRun(st state.Backend, sch *Schedule) {
 }
 
 // ExecuteTasks executes all tasks in dependency order, running independent tasks concurrently.
-func (schedule Schedule) ExecuteTasks() {
+func (schedule Schedule) ExecuteTasks() error {
 	var now time.Time
 	if (schedule.Now == time.Time{}) {
 		now = time.Now().In(time.Local)
@@ -214,6 +214,7 @@ func (schedule Schedule) ExecuteTasks() {
 			"success", true,
 		)
 	}
+	return walkErr
 }
 
 // walkDAG executes fn for each node in topological order, running independent
