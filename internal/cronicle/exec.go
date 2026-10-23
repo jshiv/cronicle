@@ -174,7 +174,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			// parallel shell tasks still overlap their compute.
 			sw = NewStreamingWriter()
 			defer sw.Close()
-			WriteShellRunHeader(sw, task.ScheduleName, task.Name, shellQuote(cmd))
+			WriteShellRunHeader(sw, task.ScheduleName, task.Name, cmd)
 			gw = newGutterWriter(sw, shellAccent)
 			stdoutInner = gw
 			stderrInner = gw
@@ -200,6 +200,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			"schedule", task.ScheduleName,
 			"task", task.Name,
 			"command", shellQuote(cmd),
+			"argv", cmd,
 		)
 
 		// Honor the per-run cancel context when one is plumbed in
@@ -244,7 +245,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 
 		if streaming {
 			gw.EndLine()
-			WriteShellRunFooter(sw, task.Name,
+			WriteShellRunFooter(sw, task.Name, shellQuote(cmd),
 				int64(result.ExitStatus), task.lastDurationMs, task.lastTranscript)
 			task.shellStreamed = true
 		}
@@ -685,6 +686,7 @@ func (task *Task) Log(res exec.Result) {
 		"commit", commit,
 		"email", email,
 		"command", shellQuote(res.Command),
+		"argv", res.Command,
 		"duration_ms", task.lastDurationMs,
 		"stdout", res.Stdout,
 		"stderr", res.Stderr,

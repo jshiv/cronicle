@@ -1025,11 +1025,20 @@ func renderAgentRunFooter(out io.Writer, r slog.Record) error {
 func renderShellRunStart(out io.Writer, r slog.Record) error {
 	schedule := attrString(r, "schedule")
 	task := attrString(r, "task")
-	command := attrString(r, "command")
 	var b bytes.Buffer
-	WriteShellRunHeader(&b, schedule, task, command)
+	writeShellRunHeader(&b, schedule, task, recordCommand(r))
 	_, err := out.Write(b.Bytes())
 	return err
+}
+
+// recordCommand formats a shell_run(_start) record's command for the
+// header. Records from before the `argv` attr existed carry only the
+// single-line `command` string, which is shown as-is.
+func recordCommand(r slog.Record) []string {
+	if argv := attrStrings(r, "argv"); len(argv) > 0 {
+		return commandLines(argv)
+	}
+	return []string{attrString(r, "command")}
 }
 
 // renderShellRunFooter writes the bracketed footer line for a shell run.
@@ -1038,7 +1047,7 @@ func renderShellRunFooter(out io.Writer, r slog.Record) error {
 	durationMs := attrInt64(r, "duration_ms")
 	transcript := attrString(r, "transcript")
 	var b bytes.Buffer
-	WriteShellRunFooter(&b, attrString(r, "task"), exit, durationMs, transcript)
+	WriteShellRunFooter(&b, attrString(r, "task"), attrString(r, "command"), exit, durationMs, transcript)
 	_, err := out.Write(b.Bytes())
 	return err
 }
@@ -1150,7 +1159,7 @@ func WriteAgentRunHeader(w io.Writer, schedule, task, model string, skills []str
 	for _, mc := range mcpCommands {
 		rows = append(rows, frameRow{key: "mcp", val: mc})
 	}
-	writeFrameHeader(w, agentAccent, task, strings.Join(meta, " · "), rows)
+	writeFrameHeader(w, agentAccent, task, strings.Join(meta, " · "), rows, nil)
 }
 
 // WriteAgentRunFooter closes an agent run block's frame.
@@ -1168,7 +1177,7 @@ func WriteAgentRunFooter(w io.Writer, task string, success bool, in, out, cacheR
 	if transcriptPath != "" {
 		parts = append(parts, filepath.Base(transcriptPath))
 	}
-	writeFrameFooter(w, agentAccent, task, success, parts)
+	writeFrameFooter(w, agentAccent, task, success, parts, "")
 }
 
 // formatCost trims the fixed 6-decimal cost string to what's worth reading:
@@ -1188,72 +1197,29 @@ func formatCost(costStr string) string {
 
 // WriteShellRunHeader writes the top of a shell run block's frame: the task
 // chip, then the resolved command (post ${date}/${path}/${scratch}
-// substitution) on a `$ …` row. command is expected to be a shellQuote'd
-// line, and the row is written verbatim — never wrapped or truncated — so
-// a user can copy it after the "$" and run it to reproduce a failure.
-func WriteShellRunHeader(w io.Writer, schedule, task, command string) {
-	writeFrameHeader(w, shellAccent, task, "shell · "+schedule,
-		[]frameRow{{key: "$", val: command, verbatim: true}})
+// substitution) for reading — an inline script on its own highlighted
+// lines (see commandLines). The pasteable form is the rerun line a failed
+// block ends with.
+func WriteShellRunHeader(w io.Writer, schedule, task string, argv []string) {
+	writeShellRunHeader(w, schedule, task, commandLines(argv))
 }
 
-// shellQuote renders argv as a single line that can be pasted into bash or
-// zsh and runs the same argv. Plain words stay bare, anything else is
-// single-quoted, and args holding newlines or other control characters
-// (sh -c heredoc scripts) use $'…' so the line never breaks.
-func shellQuote(argv []string) string {
-	out := make([]string, len(argv))
-	for i, a := range argv {
-		out[i] = shellQuoteArg(a)
-	}
-	return strings.Join(out, " ")
+func writeShellRunHeader(w io.Writer, schedule, task string, command []string) {
+	writeFrameHeader(w, shellAccent, task, "shell · "+schedule, nil, command)
 }
 
-func shellQuoteArg(a string) string {
-	if a == "" {
-		return "''"
-	}
-	if !strings.ContainsFunc(a, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
-			strings.ContainsRune("_-./:,+@%", r))
-	}) {
-		return a
-	}
-	if !strings.ContainsFunc(a, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-		return "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
-	}
-	var b strings.Builder
-	b.WriteString("$'")
-	for _, r := range a {
-		switch r {
-		case '\\':
-			b.WriteString(`\\`)
-		case '\'':
-			b.WriteString(`\'`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\t':
-			b.WriteString(`\t`)
-		case '\r':
-			b.WriteString(`\r`)
-		default:
-			if r < 0x20 || r == 0x7f {
-				fmt.Fprintf(&b, `\x%02x`, r)
-			} else {
-				b.WriteRune(r)
-			}
-		}
-	}
-	b.WriteString("'")
-	return b.String()
-}
-
-// WriteShellRunFooter closes a shell run block's frame.
-func WriteShellRunFooter(w io.Writer, task string, exit int64, durationMs int64, transcriptPath string) {
+// WriteShellRunFooter closes a shell run block's frame. On failure it adds
+// rerun — the shellQuote'd command — alone on a flush-left line, so a
+// triple-click selects exactly a command that reproduces the failure.
+func WriteShellRunFooter(w io.Writer, task, rerun string, exit int64, durationMs int64, transcriptPath string) {
 	parts := []string{fmt.Sprintf("exit %d", exit), formatDuration(durationMs)}
 	if transcriptPath != "" {
 		parts = append(parts, filepath.Base(transcriptPath))
 	}
-	writeFrameFooter(w, shellAccent, task, exit == 0, parts)
+	if exit == 0 {
+		rerun = ""
+	}
+	writeFrameFooter(w, shellAccent, task, exit == 0, parts, rerun)
 }
 
 // A task block is drawn as a frame so what was run reads apart from what
@@ -1288,12 +1254,9 @@ func (a accent) color() *color.Color {
 	return color.New(38, 5, color.Attribute(a))
 }
 
-// frameRow is one labeled line in a frame header ("$ cmd", "prompt …").
-// A verbatim row is written exactly as given — no splitting, escaping or
-// truncation — for values the user must be able to copy intact.
+// frameRow is one labeled line in a frame header ("prompt …", "tools …").
 type frameRow struct {
 	key, val string
-	verbatim bool
 }
 
 const (
@@ -1302,7 +1265,9 @@ const (
 	frameRowMaxLines = 20
 )
 
-func writeFrameHeader(w io.Writer, accent accent, task, meta string, rows []frameRow) {
+// writeFrameHeader writes "╭─ task  meta", the labeled rows and the
+// command lines (if any) inside the gutter, then the divider.
+func writeFrameHeader(w io.Writer, accent accent, task, meta string, rows []frameRow, command []string) {
 	frame, name, dim := frameColors(accent)
 
 	width := utf8.RuneCountInString(task) + utf8.RuneCountInString(meta) + 5
@@ -1316,10 +1281,7 @@ func writeFrameHeader(w io.Writer, accent accent, task, meta string, rows []fram
 		// Multi-line values (prompts, system text) keep their line breaks:
 		// continuation lines indent under the first, capped at
 		// frameRowMaxLines so a long prompt can't bury the output.
-		lines := []string{r.val}
-		if !r.verbatim {
-			lines = strings.Split(strings.TrimRight(r.val, "\n"), "\n")
-		}
+		lines := strings.Split(strings.TrimRight(r.val, "\n"), "\n")
 		if len(lines) > frameRowMaxLines {
 			more := len(lines) - frameRowMaxLines + 1
 			lines = append(lines[:frameRowMaxLines-1], dim(fmt.Sprintf("… %d more lines", more)))
@@ -1329,9 +1291,7 @@ func writeFrameHeader(w io.Writer, accent accent, task, meta string, rows []fram
 			// Color the key only; keep the value plain so terminals without
 			// color still read naturally and search-in-page finds the
 			// literal command / prompt text.
-			if !r.verbatim {
-				line = truncate(escapeControl(line), 200)
-			}
+			line = truncate(escapeControl(line), 200)
 			fmt.Fprintf(w, "%s %s %s\n", frame("│"), dim(key), line)
 			width = max(width, keyWidth+utf8.RuneCountInString(line)+3)
 			if i == 0 {
@@ -1339,16 +1299,36 @@ func writeFrameHeader(w io.Writer, accent accent, task, meta string, rows []fram
 			}
 		}
 	}
+	if len(command) > frameRowMaxLines {
+		more := len(command) - frameRowMaxLines + 1
+		command = append(command[:frameRowMaxLines-1:frameRowMaxLines-1],
+			"  "+dim(fmt.Sprintf("… %d more lines", more)))
+	}
+	for i, line := range command {
+		prompt := "  "
+		if i == 0 {
+			prompt = dim("$") + " "
+		}
+		fmt.Fprintf(w, "%s %s%s\n", frame("│"), prompt, line)
+		width = max(width, utf8.RuneCountInString(stripANSI(line))+4)
+	}
 	width = min(max(width, frameDividerMin), frameDividerMax)
 	fmt.Fprintln(w, frame("├"+strings.Repeat("─", width-1)))
 }
 
-func writeFrameFooter(w io.Writer, accent accent, task string, success bool, parts []string) {
+func writeFrameFooter(w io.Writer, accent accent, task string, success bool, parts []string, rerun string) {
 	frame, name, dim := frameColors(accent)
 	if !success {
 		bad := color.New(color.FgRed).SprintFunc()
-		fmt.Fprintf(w, "%s %s  %s %s\n\n", frame("╰─"), name(task),
+		fmt.Fprintf(w, "%s %s  %s %s\n", frame("╰─"), name(task),
 			bad("failed"), dim("· "+strings.Join(parts, " · ")))
+		if rerun != "" {
+			// The label sits on its own line: a trailing "# rerun" comment
+			// would break the paste in zsh, which doesn't allow comments at
+			// the interactive prompt by default.
+			fmt.Fprintf(w, "%s\n%s\n", dim("↻ rerun "+task+":"), rerun)
+		}
+		fmt.Fprintln(w)
 		return
 	}
 	fmt.Fprintf(w, "%s %s  %s\n\n", frame("╰─"), name(task), dim(strings.Join(parts, " · ")))
@@ -1603,7 +1583,6 @@ func renderShellRun(out io.Writer, r slog.Record) error {
 
 	schedule := attrString(r, "schedule")
 	task := attrString(r, "task")
-	command := attrString(r, "command")
 	stdout := attrString(r, "stdout")
 	stderr := attrString(r, "stderr")
 	transcript := attrString(r, "transcript")
@@ -1612,7 +1591,7 @@ func renderShellRun(out io.Writer, r slog.Record) error {
 	success := attrBool(r, "success")
 
 	var b bytes.Buffer
-	WriteShellRunHeader(&b, schedule, task, command)
+	writeShellRunHeader(&b, schedule, task, recordCommand(r))
 
 	if success {
 		body := strings.TrimRight(stdout, "\n")
@@ -1627,7 +1606,7 @@ func renderShellRun(out io.Writer, r slog.Record) error {
 		}
 		b.WriteString(guttered(errc(fmt.Sprintf("ERROR (exit %d):", exit))+"\n"+body, shellAccent))
 	}
-	WriteShellRunFooter(&b, task, exit, durationMs, transcript)
+	WriteShellRunFooter(&b, task, attrString(r, "command"), exit, durationMs, transcript)
 
 	_, err := out.Write(b.Bytes())
 	return err

@@ -3,6 +3,7 @@ module github.com/jshiv/cronicle
 go 1.26
 
 require (
+	github.com/alecthomas/chroma/v2 v2.14.0
 	github.com/anthropics/anthropic-sdk-go v1.78.0
 	github.com/aws/aws-sdk-go-v2 v1.43.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.37
@@ -56,6 +57,7 @@ require (
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/cheekybits/is v0.0.0-20150225183255-68e9c0620927 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
+	github.com/dlclark/regexp2 v1.11.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/go-git/gcfg/v2 v2.0.2 // indirect

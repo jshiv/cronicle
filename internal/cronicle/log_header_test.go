@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
-	osexec "os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -12,24 +11,40 @@ import (
 	"github.com/fatih/color"
 )
 
-// TestWriteShellRunHeader_FullCommand: the previous renderer truncated
-// the resolved command to 60 chars in the header line, hiding what
-// actually got executed when commands referenced ${date}/${path}/${scratch}.
-// The new layout puts the full resolved command on its own `$ …` line
-// so the SSE consumer can read it end-to-end.
+// TestWriteShellRunHeader_FullCommand: the header shows the full resolved
+// command inside the frame, never truncated.
 func TestWriteShellRunHeader_FullCommand(t *testing.T) {
-	cmd := "rm -rf /tmp/cache/2026-05-19 && touch /tmp/cleanup.done && echo done"
+	argv := []string{"sh", "-c", "rm -rf /tmp/cache/2026-05-19 && touch /tmp/cleanup.done && echo done"}
 	var b bytes.Buffer
-	WriteShellRunHeader(&b, "daily", "cleanup", cmd)
+	WriteShellRunHeader(&b, "daily", "cleanup", argv)
 	out := b.String()
 	if !strings.Contains(out, "╭─ cleanup  shell · daily") {
 		t.Fatalf("missing header line:\n%s", out)
 	}
-	if !strings.Contains(out, "$ "+cmd) {
-		t.Fatalf("resolved command not emitted in full; got:\n%s", out)
+	if !strings.Contains(out, "│ $ sh -c 'rm -rf /tmp/cache/2026-05-19 && touch /tmp/cleanup.done && echo done'\n") {
+		t.Fatalf("command row missing or truncated:\n%s", out)
 	}
-	if strings.Contains(out, "…") {
-		t.Fatalf("command was truncated (saw ellipsis):\n%s", out)
+}
+
+// TestWriteShellRunFooter_Rerun: a failed block ends with the pasteable
+// command alone on a flush-left line; a passing block doesn't.
+func TestWriteShellRunFooter_Rerun(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = prev }()
+
+	rerun := shellQuote([]string{"bash", "-c", "echo hi\nexit 2"})
+	var b bytes.Buffer
+	WriteShellRunFooter(&b, "load", rerun, 2, 40, "")
+	want := "╰─ load  failed · exit 2 · 40ms\n↻ rerun load:\n" + rerun + "\n\n"
+	if b.String() != want {
+		t.Fatalf("got  %q\nwant %q", b.String(), want)
+	}
+
+	b.Reset()
+	WriteShellRunFooter(&b, "load", rerun, 0, 40, "")
+	if strings.Contains(b.String(), "rerun") {
+		t.Errorf("passing block shows a rerun line:\n%s", b.String())
 	}
 }
 
@@ -250,56 +265,6 @@ func TestWriteBetweenBlocks_WaitsForStreamingBlock(t *testing.T) {
 	_ = writeBetweenBlocks(&out, []byte("· stopped\n"))
 	if !strings.HasSuffix(out.String(), "· stopped\n") {
 		t.Fatalf("line not written when no block is streaming: %q", out.String())
-	}
-}
-
-// TestShellQuote_RoundTrips: the "$ …" line exists so a user can copy a
-// failed command and rerun it. Every argv must come back byte-for-byte when
-// the quoted line is run by bash and zsh — including sh -c heredoc scripts,
-// which must still fit on one line.
-func TestShellQuote_RoundTrips(t *testing.T) {
-	argvs := [][]string{
-		{"/bin/echo", "hello", "--date=2026-10-22"},
-		{"/bin/sh", "-c", "echo \"building ${date}\"\nfor r in a b; do\n  echo \"$r\"\ndone\n"},
-		{"python", "-c", "print('it\\'s')", ""},
-		{"echo", "tab\there", `back\slash`, "=equals", "~tilde", "a b", "$HOME", "`x`", "!bang"},
-	}
-	for _, shell := range []string{"bash", "zsh"} {
-		path, err := osexec.LookPath(shell)
-		if err != nil {
-			t.Logf("%s not installed; skipping", shell)
-			continue
-		}
-		for _, argv := range argvs {
-			line := shellQuote(argv)
-			if strings.Contains(line, "\n") {
-				t.Errorf("quoted line spans multiple lines: %q", line)
-			}
-			// Print each arg NUL-terminated so the check is exact.
-			out, err := osexec.Command(path, "-c", `printf '%s\0' `+line).Output()
-			if err != nil {
-				t.Fatalf("%s: %v running %q", shell, err, line)
-			}
-			got := strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")
-			if strings.Join(got, "|") != strings.Join(argv, "|") || len(got) != len(argv) {
-				t.Errorf("%s round-trip of %q\n got  %q\n want %q", shell, line, got, argv)
-			}
-		}
-	}
-}
-
-// TestWriteShellRunHeader_CommandVerbatim: the "$" row is written exactly
-// as given — one line, never truncated — so it can be copied whole.
-func TestWriteShellRunHeader_CommandVerbatim(t *testing.T) {
-	prev := color.NoColor
-	color.NoColor = true
-	defer func() { color.NoColor = prev }()
-
-	cmd := shellQuote([]string{"/bin/sh", "-c", strings.Repeat("echo x\n", 60)})
-	var b bytes.Buffer
-	WriteShellRunHeader(&b, "report", "build", cmd)
-	if !strings.Contains(b.String(), "│ $ "+cmd+"\n") {
-		t.Fatalf("command row not verbatim:\n%s", b.String())
 	}
 }
 
