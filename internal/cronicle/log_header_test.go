@@ -11,24 +11,40 @@ import (
 	"github.com/fatih/color"
 )
 
-// TestWriteShellRunHeader_FullCommand: the previous renderer truncated
-// the resolved command to 60 chars in the header line, hiding what
-// actually got executed when commands referenced ${date}/${path}/${scratch}.
-// The new layout puts the full resolved command on its own `command:` line
-// so the SSE consumer can read it end-to-end.
+// TestWriteShellRunHeader_FullCommand: the header shows the full resolved
+// command inside the frame, never truncated.
 func TestWriteShellRunHeader_FullCommand(t *testing.T) {
-	cmd := "rm -rf /tmp/cache/2026-05-19 && touch /tmp/cleanup.done && echo done"
+	argv := []string{"sh", "-c", "rm -rf /tmp/cache/2026-05-19 && touch /tmp/cleanup.done && echo done"}
 	var b bytes.Buffer
-	WriteShellRunHeader(&b, "daily", "cleanup", cmd)
+	WriteShellRunHeader(&b, "daily", "cleanup", argv)
 	out := b.String()
-	if !strings.Contains(out, "shell run · schedule=daily · task=cleanup") {
+	if !strings.Contains(out, "╭─ cleanup  shell · daily") {
 		t.Fatalf("missing header line:\n%s", out)
 	}
-	if !strings.Contains(out, "command: "+cmd) {
-		t.Fatalf("resolved command not emitted in full; got:\n%s", out)
+	if !strings.Contains(out, "│ $ sh -c 'rm -rf /tmp/cache/2026-05-19 && touch /tmp/cleanup.done && echo done'\n") {
+		t.Fatalf("command row missing or truncated:\n%s", out)
 	}
-	if strings.Contains(out, "…") {
-		t.Fatalf("command was truncated (saw ellipsis):\n%s", out)
+}
+
+// TestWriteShellRunFooter_Rerun: a failed block ends with the pasteable
+// command alone on a flush-left line; a passing block doesn't.
+func TestWriteShellRunFooter_Rerun(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = prev }()
+
+	rerun := shellQuote([]string{"bash", "-c", "echo hi\nexit 2"})
+	var b bytes.Buffer
+	WriteShellRunFooter(&b, "load", rerun, 2, 40, "")
+	want := "╰─ load  failed · exit 2 · 40ms\n↻ rerun load:\n" + rerun + "\n\n"
+	if b.String() != want {
+		t.Fatalf("got  %q\nwant %q", b.String(), want)
+	}
+
+	b.Reset()
+	WriteShellRunFooter(&b, "load", rerun, 0, 40, "")
+	if strings.Contains(b.String(), "rerun") {
+		t.Errorf("passing block shows a rerun line:\n%s", b.String())
 	}
 }
 
@@ -46,11 +62,11 @@ func TestWriteAgentRunHeader_PromptAndTools(t *testing.T) {
 		prompt, system, tools, mcps)
 	out := b.String()
 	for _, want := range []string{
-		"agent run · schedule=morning_brief · task=brief · model=claude-haiku-4-5",
-		"prompt: " + prompt,
-		"system: " + system,
-		"tools: web_search, web_fetch",
-		"mcp: github: npx -y @modelcontextprotocol/server-github",
+		"╭─ brief  agent · morning_brief · claude-haiku-4-5",
+		"prompt " + prompt,
+		"system " + system,
+		"tools  web_search, web_fetch",
+		"mcp    github: npx -y @modelcontextprotocol/server-github",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in header:\n%s", want, out)
@@ -66,7 +82,7 @@ func TestWriteAgentRunHeader_OmitsEmpty(t *testing.T) {
 	var b bytes.Buffer
 	WriteAgentRunHeader(&b, "s", "t", "claude-x", nil, "", "", nil, nil)
 	out := b.String()
-	for _, unwanted := range []string{"prompt:", "system:", "tools:", "mcp:"} {
+	for _, unwanted := range []string{"prompt", "system", "tools", "mcp"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("expected no %q row when value is empty; got:\n%s", unwanted, out)
 		}
@@ -161,5 +177,116 @@ func TestLiveSinkPrettyHandler_RestoresGlobal(t *testing.T) {
 	}
 	if color.NoColor != true {
 		t.Fatalf("global color.NoColor not restored: got %v, want true", color.NoColor)
+	}
+}
+
+// TestGutterWriter_SplitWrites: subprocess output reaches the gutter in
+// arbitrary chunks. Every line must get exactly one gutter regardless of
+// where the chunk boundaries fall, and EndLine must close a partial line.
+func TestGutterWriter_SplitWrites(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = prev }()
+
+	var b bytes.Buffer
+	g := newGutterWriter(&b, shellAccent)
+	for _, chunk := range []string{"fir", "st\nsec", "ond\n", "\n", "no newline"} {
+		_, _ = g.Write([]byte(chunk))
+	}
+	g.EndLine()
+	g.EndLine() // idempotent
+	want := "│ first\n│ second\n│ \n│ no newline\n"
+	if got := b.String(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// TestRenderLogLine_Lifecycle: routine lines are reworded for pretty mode,
+// lead with the schedule name, drop internal tags, and show self-describing
+// values without their keys. Warnings keep their original message.
+func TestRenderLogLine_Lifecycle(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = prev }()
+
+	at := time.Date(2026, 10, 22, 22, 41, 6, 0, time.Local)
+	render := func(level slog.Level, msg string, attrs ...slog.Attr) string {
+		r := slog.NewRecord(at, level, msg, 0)
+		r.AddAttrs(attrs...)
+		var b bytes.Buffer
+		if err := renderLogLine(&b, r); err != nil {
+			t.Fatalf("renderLogLine: %v", err)
+		}
+		return b.String()
+	}
+
+	cases := []struct{ got, want string }{
+		{render(slog.LevelInfo, "Starting cron...",
+			slog.String("schedule", "nightly"), slog.String("cron", "@every 30s"),
+			slog.Int64("seq", 3), slog.String("lifetime", "abc")),
+			"22:41:06 · scheduled nightly  @every 30s\n"},
+		{render(slog.LevelInfo, "config loaded",
+			slog.String("path", "/nonexistent/cronicle.hcl"), slog.Int("schedules", 1), slog.Int("tasks", 5)),
+			"22:41:06 · config loaded  /nonexistent/cronicle.hcl · 1 schedule · 5 tasks\n"},
+		{render(slog.LevelInfo, "heartbeat", slog.String("cronicle", "alive"), slog.Int("schedules", 2)),
+			"22:41:06 · alive  2 schedules\n"},
+		{render(slog.LevelWarn, "config refresh failed; keeping previous schedules in place",
+			slog.String("error", "boom")),
+			"22:41:06 ▲ config refresh failed; keeping previous schedules in place  error=boom\n"},
+	}
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Errorf("got  %q\nwant %q", c.got, c.want)
+		}
+	}
+}
+
+// TestWriteBetweenBlocks_WaitsForStreamingBlock: a routine line (heartbeat,
+// "queued") logged while a task block is streaming must not land inside
+// that block — it prints right after the block closes, and immediately
+// when nothing is streaming.
+func TestWriteBetweenBlocks_WaitsForStreamingBlock(t *testing.T) {
+	var out bytes.Buffer
+	sw := &StreamingWriter{out: &out}
+	if !streamLock.TryLock() {
+		t.Fatal("streamLock unexpectedly held")
+	}
+	sw.leader = true
+
+	_, _ = sw.Write([]byte("╭─ task\n"))
+	_ = writeBetweenBlocks(&out, []byte("· alive\n"))
+	_, _ = sw.Write([]byte("╰─ task\n"))
+	sw.Close()
+
+	if got, want := out.String(), "╭─ task\n╰─ task\n· alive\n"; got != want {
+		t.Fatalf("line leaked into the block:\ngot  %q\nwant %q", got, want)
+	}
+
+	_ = writeBetweenBlocks(&out, []byte("· stopped\n"))
+	if !strings.HasSuffix(out.String(), "· stopped\n") {
+		t.Fatalf("line not written when no block is streaming: %q", out.String())
+	}
+}
+
+// TestWriteAgentRunHeader_MultilinePrompt: prompts keep their line breaks,
+// indented under the label and capped so a long prompt can't bury output.
+func TestWriteAgentRunHeader_MultilinePrompt(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = prev }()
+
+	var b bytes.Buffer
+	WriteAgentRunHeader(&b, "s", "t", "m", nil, "line one\nline two", "", nil, nil)
+	if !strings.Contains(b.String(), "│ prompt line one\n│        line two\n") {
+		t.Fatalf("prompt lines not aligned:\n%s", b.String())
+	}
+
+	b.Reset()
+	WriteAgentRunHeader(&b, "s", "t", "m", nil, strings.Repeat("more\n", 30), "", nil, nil)
+	if got := strings.Count(b.String(), "more"); got != frameRowMaxLines-1+1 { // rows + "more lines" marker
+		t.Errorf("expected %d prompt rows before the cap, got %d", frameRowMaxLines-1, got-1)
+	}
+	if !strings.Contains(b.String(), "… 11 more lines") {
+		t.Errorf("missing overflow marker:\n%s", b.String())
 	}
 }

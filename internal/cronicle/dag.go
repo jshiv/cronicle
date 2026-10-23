@@ -126,7 +126,8 @@ func (schedule Schedule) ExecuteTasks() error {
 		"clock", now.Format(time.Kitchen),
 		"date", now.Format(time.RFC850),
 		"tasks", taskNames,
-		"dag", dagString(deps),
+		"depends", dependsAttr(taskNames, deps),
+		"dag", dagString(taskNames, deps),
 	}
 	if scratchDir != "" {
 		startAttrs = append(startAttrs, "scratch", scratchDir)
@@ -389,11 +390,26 @@ func (schedule Schedule) downstreamTasks(root string) []string {
 	return out
 }
 
-// dagString produces a human-readable representation of the DAG for logging.
-func dagString(deps map[string][]string) string {
+// dependsAttr encodes each task's dependencies as a comma-joined string,
+// index-aligned with the schedule_start `tasks` attr ("" for a root). A
+// []string survives the worker→runner JSON round-trip (rehydrateRecord)
+// with its kind intact, where a map would collapse to a JSON blob — so
+// the pretty renderer can draw the real DAG on both stdout and the SSE wire.
+func dependsAttr(taskNames []string, deps map[string][]string) []string {
+	out := make([]string, len(taskNames))
+	for i, name := range taskNames {
+		out[i] = strings.Join(deps[name], ",")
+	}
+	return out
+}
+
+// dagString produces a human-readable representation of the DAG for logging,
+// in task declaration order so the output is stable run to run.
+func dagString(taskNames []string, deps map[string][]string) string {
 	var sb strings.Builder
 	sb.WriteString("DAG:\n")
-	for node, nodeDeps := range deps {
+	for _, node := range taskNames {
+		nodeDeps := deps[node]
 		if len(nodeDeps) == 0 {
 			fmt.Fprintf(&sb, "  %s\n", node)
 		} else {
