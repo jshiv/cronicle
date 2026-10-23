@@ -44,35 +44,75 @@ schedule "example" {
 
 `cronicle run --path cron/cronicle.hcl`
 ```
-21:44:16 config loaded path=./cronicle/cronicle.hcl schedules=1 tasks=1
-21:44:16 Starting Scheduler... cronicle=start
-21:44:16 Starting cron... schedule=example cron="@every 5s"
-21:44:21 Queuing... schedule=example
-──── 21:44:21 · schedule "example" ──────────────────────────────────
-DAG:
-  └─ hello
+21:44:16 · config loaded  cron/cronicle.hcl · 1 schedule · 1 task
+21:44:16 · scheduler started
+21:44:16 · scheduled example  @every 5s
+21:44:21 · queued example
+◆ example  21:44:21 · 1 task · run 20261023T214421Z-0b2d002b
+  hello
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-shell run · schedule=example · task=hello · python run.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+╭─ hello  shell · example
+│ $ python run.py
+├─────────────────
+│ X: 0.360346904169
+╰─ hello  exit 0 · 12ms
 
-X: 0.360346904169
-
-[exit=0 · 12ms]
-
-✓ schedule "example" complete · 1 task · 0.5s
+● example succeeded  1 task · 0.5s
 ```
 
-Agent tasks render in the same shape, with token usage and cost in the footer:
+A run opens with its DAG drawn as a tree: each task nests under its
+deepest dependency, and a task that waits on more than one names them
+all after `←`. Every task then gets its own framed block: the command
+at the top, its output in the gutter, and exit code and duration at the
+bottom. Shell tasks are framed in teal, agent tasks in coral, so the two
+are easy to tell apart in a busy run:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-agent run · schedule=example · task=summarize · model=claude-opus-4-7
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+◆ etl  07:00:40 · 5 tasks · run 20261023T140040Z-ec124730
+  extract
+  ├─ transform
+  │  └─ load  ← transform, audit
+  └─ summary
+  audit
 
-Today's deploy added agent task support, fixed a queue race, and bumped Go to 1.26.
+╭─ transform  shell · etl
+│ $ sh -c
+│     # normalize and dedupe
+│     for f in raw/*.csv; do
+│       echo "cleaning $f"
+│     done
+│     echo "1,198 rows after dedupe"
+├───────────────────────────────────
+│ cleaning raw/*.csv
+│ 1,198 rows after dedupe
+╰─ transform  exit 0 · 3ms
 
-[64 in / 25 out tokens · $0.001050 · 873ms · stop=end_turn]
+╭─ summary  agent · etl · claude-haiku-4-5
+│ prompt In one sentence, summarize tonight's ETL run.
+├────────────────────────────────────────────────────
+│ The nightly ETL extracted 1,204 rows and deduped them to 1,198.
+╰─ summary  64 in · 25 out · $0.0001 · 873ms · end_turn
+
+╭─ load  shell · etl
+│ $ python3 -c
+│     import sys
+│     print("loading 1,198 rows")
+│     sys.exit("connection refused: warehouse:5432")
+├───────────────────────────────────────────────────
+│ loading 1,198 rows
+│ connection refused: warehouse:5432
+╰─ load  failed · exit 1 · 28ms
+↻ rerun load:
+python3 -c $'import sys\nprint("loading 1,198 rows")\nsys.exit("connection refused: warehouse:5432")\n'
+
+● etl failed  exit status 1 · 5 tasks · 1.4s
 ```
+
+Inline scripts (`sh -c`, `bash -c`, `python -c`, `node -e`, `ruby -e`,
+`perl -e`, including behind wrappers like `uv run … python -c`) are
+shown on their own lines with syntax highlighting. When a shell task
+fails, the block ends with a `↻ rerun` line: the exact command as a
+single line, flush left so a triple-click selects all of it, quoted so
+it pastes into bash or zsh and runs the same argv.
 
 ### Output formats
 
@@ -80,9 +120,17 @@ Today's deploy added agent task support, fixed a queue race, and bumped Go to 1.
 
 | flag | shape | best for |
 |---|---|---|
-| `--log-format=pretty` | bordered blocks, dim lifecycle | humans at a TTY |
+| `--log-format=pretty` | DAG tree, framed task blocks, one-line lifecycle | humans at a TTY |
 | `--log-format=text` | `time=... level=INFO msg=... key=val` | piping to a log consumer |
 | `--log-format=json` | one JSON object per line | strictest machine parsing |
+
+In pretty mode, routine scheduler lines (config loads, heartbeats,
+queueing, shutdown) are one short line each, marked `·` for info, `▲`
+for warnings and `■` for errors. They never cut into a task block: a
+line logged while a block is printing waits and prints after it.
+`text` and `json` are unchanged by the pretty renderer. Shell events
+carry the command both as `command` (the single pasteable line) and
+`argv` (the exact argument list).
 
 `--log-to-file` is independent of stdout: when set, structured JSON is mirrored to `.cronicle/log/cronicle.jsonl` (rotated by lumberjack: 500MB × 3 backups × 28 days, gzipped). Pretty stdout + tail-able JSON file at the same time is the intended composition.
 
@@ -661,25 +709,23 @@ composes paths to bundled scripts correctly across multi-skill runs.
 #### Run shape
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-agent run · schedule=daily · task=morning_brief · model=claude-haiku-4-5 · skills=[morning-brief]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-I'll load the morning-brief skill and follow its instructions.
-→ skill: morning-brief
-← exit=0 0ms
-
-— turn 2 —
-→ bash: skills/morning-brief/scripts/today.sh
-2026-05-10
-← exit=0 20ms
-
-— turn 3 —
-- On 2026-05-10, ...
-- ...
-BRIEF COMPLETE
-
-[5742 in / 247 out tokens · $0.006977 · 3705ms · stop=end_turn]
+╭─ morning_brief  agent · daily · claude-haiku-4-5 · skills morning-brief
+│ prompt Write today's morning brief.
+├──────────────────────────────────────
+│ I'll load the morning-brief skill and follow its instructions.
+│ → skill: morning-brief
+│ ← exit=0 0ms
+│
+│ — turn 2 —
+│ → bash: skills/morning-brief/scripts/today.sh
+│ 2026-05-10
+│ ← exit=0 20ms
+│
+│ — turn 3 —
+│ - On 2026-05-10, ...
+│ - ...
+│ BRIEF COMPLETE
+╰─ morning_brief  5742 in · 247 out · $0.0070 · 3.7s · end_turn
 ```
 
 The `agent_run` slog event carries `skills_available` (the catalog the agent
@@ -713,12 +759,12 @@ agent {
 In the pretty stream, git calls render as `→ git: <subcommand> <key arg>`:
 
 ```
-→ git: log
-← exit=0 4ms
-→ git: diff abc1234~1..abc1234
-← exit=0 6ms
-→ editor: create ./CHANGELOG.md
-← exit=0 0ms
+│ → git: log
+│ ← exit=0 4ms
+│ → git: diff abc1234~1..abc1234
+│ ← exit=0 6ms
+│ → editor: create ./CHANGELOG.md
+│ ← exit=0 0ms
 ```
 
 `push` reuses the auth method captured at clone time; an agent that ran on a task with no `repo` block won't have credentials for a private remote.
@@ -757,11 +803,11 @@ Lifecycle and isolation:
 In the pretty stream, MCP tool calls render with `<server>.<tool>`:
 
 ```
-→ fs.list_directory: {"path":"/data"}
-← exit=0 3ms
-
-→ github.create_issue: {"title":"...","body":"..."}
-← exit=0 412ms
+│ → fs.list_directory: {"path":"/data"}
+│ ← exit=0 3ms
+│
+│ → github.create_issue: {"title":"...","body":"..."}
+│ ← exit=0 412ms
 ```
 
 The `agent_run` slog event carries `mcp_servers=[fs,github]` so an audit
@@ -948,10 +994,10 @@ A typical frame:
 
 ```
 event: cronicle
-data: hello from tick
+data: │ hello from tick
 
 event: cronicle
-data: step 2
+data: │ step 2
 ```
 
 Multi-line records (a pretty-rendered shell_run header, or an agent text
@@ -1014,7 +1060,7 @@ curl -N -H "Authorization: Bearer smoke" \
      "http://localhost:7766/v1/runs/$RUN_ID/events"
 ```
 
-Frames you'll see: `shell_run_start` (header rule + command), six `stdout_chunk` lines (`[step] fetching` …), footer `[exit=0 · 6062ms · transcript=…]`, `schedule_complete` ✓.
+Frames you'll see: `schedule_start` (the DAG tree), `shell_run_start` (frame header + command), five `stdout_chunk` lines in the gutter (`│ [step] fetching` …), the footer `╰─ compile  exit 0 · 5.0s · …`, then `schedule_complete` (`● long-build succeeded`).
 
 **Per-schedule** — open SSE first, then trigger twice. Both runs flow through one connection:
 
