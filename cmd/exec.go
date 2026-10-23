@@ -49,6 +49,9 @@ the range.
 cronicle init
 cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Flags parsed fine; from here on an error is a task failure,
+		// not a usage mistake, so don't bury it under the help text.
+		cmd.SilenceUsage = true
 		path, _ := cmd.Flags().GetString("path")
 		task, _ := cmd.Flags().GetString("task")
 		schedule, _ := cmd.Flags().GetString("schedule")

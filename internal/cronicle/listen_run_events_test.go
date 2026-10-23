@@ -108,7 +108,7 @@ func TestRunEvents_LivePrettyStream(t *testing.T) {
 		if !strings.HasPrefix(frame, "event: cronicle") {
 			t.Errorf("missing SSE event prefix; frame=%q", frame)
 		}
-		if !strings.Contains(frame, "data: hello from live") {
+		if !strings.Contains(frame, "hello from live") {
 			t.Errorf("missing rendered stdout_chunk in frame; frame=%q", frame)
 		}
 	case <-time.After(2 * time.Second):
@@ -211,7 +211,7 @@ func TestScheduleEvents_LiveStream(t *testing.T) {
 
 	select {
 	case frame := <-got:
-		if !strings.Contains(frame, "data: live from new run") {
+		if !strings.Contains(frame, "live from new run") {
 			t.Fatalf("schedule subscriber missed the frame: %q", frame)
 		}
 	case <-time.After(2 * time.Second):
@@ -306,10 +306,10 @@ func TestEventsStream_Firehose(t *testing.T) {
 	for len(seen) < 2 {
 		select {
 		case f := <-frames:
-			if strings.Contains(f, "data: story line") {
+			if strings.Contains(f, "story line") {
 				seen["story"] = true
 			}
-			if strings.Contains(f, "data: tick line") {
+			if strings.Contains(f, "tick line") {
 				seen["tick"] = true
 			}
 		case <-deadline:

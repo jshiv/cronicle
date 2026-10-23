@@ -250,10 +250,10 @@ func TestIngest_FanoutsToLiveSink(t *testing.T) {
 		}
 		// After rehydrate + re-encode, the subscriber sees the runner's
 		// pretty form, NOT the worker's raw JSON. renderStdoutChunk
-		// renders only the message line; the run_id stays in the
+		// renders the message line behind the block gutter; the run_id stays in the
 		// routing tags (used by fan-out filter) but doesn't appear in
 		// the encoded payload.
-		if !strings.Contains(frame, "data: hello from worker") {
+		if !strings.Contains(frame, "hello from worker") {
 			t.Fatalf("subscriber missed pretty-rendered chunk; frame=%q", frame)
 		}
 		// JSON wire-shape leakage check: if the run_id key appears in

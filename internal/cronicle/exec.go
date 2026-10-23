@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/jshiv/cronicle/internal/cronicle/secretstore"
 	"github.com/jshiv/cronicle/pkg/agent"
@@ -165,6 +166,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 
 		streaming := IsStreamingPretty()
 		var sw *StreamingWriter
+		var gw *gutterWriter
 		var stdoutInner, stderrInner io.Writer = io.Discard, io.Discard
 		if streaming {
 			// Per-task writer: leader streams to stdout, followers buffer.
@@ -173,9 +175,9 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			sw = NewStreamingWriter()
 			defer sw.Close()
 			WriteShellRunHeader(sw, task.ScheduleName, task.Name, strings.Join(cmd, " "))
-			fmt.Fprintln(sw)
-			stdoutInner = sw
-			stderrInner = sw
+			gw = newGutterWriter(sw, shellAccent)
+			stdoutInner = gw
+			stderrInner = gw
 		}
 
 		// Per-line slog emission feeds LiveSink (live SSE) and the JSONL
@@ -241,8 +243,8 @@ func (task *Task) Exec(t time.Time) exec.Result {
 		}
 
 		if streaming {
-			fmt.Fprintln(sw)
-			WriteShellRunFooter(sw,
+			gw.EndLine()
+			WriteShellRunFooter(sw, task.Name,
 				int64(result.ExitStatus), task.lastDurationMs, task.lastTranscript)
 			task.shellStreamed = true
 		}
@@ -350,6 +352,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 			fmt.Sprintf("%s: %s", m.Name, strings.Join(expanded, " ")))
 	}
 	var sw *StreamingWriter
+	var gw *gutterWriter
 	var downstream agent.StreamHandler
 	if streaming {
 		// Per-task writer: the leader streams live to stdout; followers
@@ -360,8 +363,8 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		defer sw.Close()
 		WriteAgentRunHeader(sw, task.ScheduleName, task.Name, effectiveModel, skillsAvailable,
 			cfg.Prompt, system, resolvedTools, resolvedMCPCommands)
-		fmt.Fprintln(sw)
-		downstream = NewAgentStreamRenderer(sw)
+		gw = newGutterWriter(sw, agentAccent)
+		downstream = NewAgentStreamRenderer(gw)
 	}
 	// Always wire the slog bridge so text_delta / thinking_delta /
 	// tool_use_start / tool_result / turn_start records flow to
@@ -488,9 +491,13 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	durationMs := time.Since(startedAt).Milliseconds()
 
 	if streaming {
-		fmt.Fprintln(sw)
-		fmt.Fprintln(sw)
-		WriteAgentRunFooter(sw,
+		gw.EndLine()
+		if err != nil {
+			// Show the failure inside the block; the schedule summary only
+			// repeats its first line.
+			fmt.Fprintln(gw, color.New(color.FgRed).Sprint(err.Error()))
+		}
+		WriteAgentRunFooter(sw, task.Name, err == nil,
 			int64(res.InputTokens), int64(res.OutputTokens), int64(res.CacheReadIn),
 			fmt.Sprintf("%.6f", res.CostUSD), durationMs,
 			res.StopReason, res.TranscriptPath)

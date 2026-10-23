@@ -303,7 +303,10 @@ func StartCron(ctx context.Context, cronicleFile string, queue chan<- []byte) {
 //schedules to the cron.
 func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool) {
 
-	slog.Info("Loading config...", "cronicle", "heartbeat", "path", cronicleFile)
+	// Debug: this runs every ConfigRefresh tick (1s by default), so at Info
+	// it floods the terminal and splits task output blocks. "Refreshing
+	// config..." below still logs at Info when the file actually changes.
+	slog.Debug("Loading config...", "cronicle", "heartbeat", "path", cronicleFile)
 
 	rawHCL, err := os.ReadFile(cronicleFile)
 	if err != nil {
@@ -325,7 +328,11 @@ func LoadCron(cronicleFile string, c *cron.Cron, queue chan<- []byte, force bool
 	}
 
 	if !globalRuntime.hclEquals(rawHCL) || force {
-		slog.Info("Refreshing config...", "cronicle", "heartbeat", "path", cronicleFile)
+		// The forced load at startup is already announced by "config
+		// loaded"; only log the reloads that follow an actual edit.
+		if !force {
+			slog.Info("Refreshing config...", "cronicle", "heartbeat", "path", cronicleFile)
+		}
 		// NOTE: do NOT call c.Stop() / c.Start() here. Stop() returns
 		// before the run goroutine has actually exited (it returns a
 		// context the caller can wait on), so a Start() immediately

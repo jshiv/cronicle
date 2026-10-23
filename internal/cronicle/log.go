@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fatih/color"
 	"github.com/jshiv/cronicle/internal/cronicle/state"
@@ -234,15 +236,75 @@ func (s *StreamingWriter) Write(p []byte) (int, error) {
 func (s *StreamingWriter) Close() {
 	s.closeOnce.Do(func() {
 		if s.leader {
-			streamLock.Unlock()
+			releaseStream()
 			return
 		}
 		streamLock.Lock()
 		s.mu.Lock()
 		_, _ = s.out.Write(s.buf.Bytes())
 		s.mu.Unlock()
-		streamLock.Unlock()
+		releaseStream()
 	})
+}
+
+// Lines rendered outside a task block (heartbeat, "queued", a skipped-task
+// notice from another branch of the DAG) can fire on any goroutine while a
+// task holds streamLock. Writing them straight to stdout would land them
+// inside that task's frame; blocking on streamLock instead would stall the
+// cron tick and deadlock a task that logs from its own goroutine. So they
+// queue here, and whoever holds the lock prints the queue as it releases.
+var (
+	pendingMu  sync.Mutex
+	pendingOut []pendingWrite
+)
+
+type pendingWrite struct {
+	w io.Writer
+	b []byte
+}
+
+// writeBetweenBlocks writes b now if no task block is streaming, or queues
+// it to print as soon as the current block closes.
+func writeBetweenBlocks(w io.Writer, b []byte) error {
+	pendingMu.Lock()
+	pendingOut = append(pendingOut, pendingWrite{w, b})
+	pendingMu.Unlock()
+	if streamLock.TryLock() {
+		releaseStream()
+	}
+	return nil
+}
+
+// releaseStream flushes queued lines and unlocks streamLock (which the
+// caller holds). A line queued after the flush but before the unlock saw
+// the lock held and left it for us, so re-check once the lock is free.
+func releaseStream() {
+	for {
+		pendingMu.Lock()
+		queued := pendingOut
+		pendingOut = nil
+		pendingMu.Unlock()
+		for _, p := range queued {
+			_, _ = p.w.Write(p.b)
+		}
+		streamLock.Unlock()
+
+		pendingMu.Lock()
+		empty := len(pendingOut) == 0
+		pendingMu.Unlock()
+		if empty || !streamLock.TryLock() {
+			return
+		}
+	}
+}
+
+// betweenBlocks adapts a render function to writeBetweenBlocks.
+func betweenBlocks(out io.Writer, r slog.Record, render func(io.Writer, slog.Record) error) error {
+	var b bytes.Buffer
+	if err := render(&b, r); err != nil {
+		return err
+	}
+	return writeBetweenBlocks(out, b.Bytes())
 }
 
 // FileLoggingEnabled reports whether --log-to-file was passed on the
@@ -635,31 +697,36 @@ func (p *stdoutPrettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
 	return p.fallback.Enabled(ctx, l)
 }
 
+// Everything this handler renders goes through betweenBlocks so it never
+// lands inside a task block another goroutine is streaming.
 func (p *stdoutPrettyHandler) Handle(_ context.Context, r slog.Record) error {
 	switch entryType(r) {
 	case "agent_run":
 		// Non-streaming agent path (stdout is JSON-mode, no
 		// StreamingWriter for agent text). Render the full block here.
-		return renderAgentRun(p.out, r)
+		return betweenBlocks(p.out, r, renderAgentRun)
 	case "shell_run":
 		// Same idea for shell — only fires when the streaming
 		// dispatch didn't claim the bytes.
-		return renderShellRun(p.out, r)
+		return betweenBlocks(p.out, r, renderShellRun)
 	case "schedule_start":
-		return renderScheduleStart(p.out, r)
+		return betweenBlocks(p.out, r, renderScheduleStart)
 	case "schedule_complete":
-		return renderScheduleComplete(p.out, r)
+		return betweenBlocks(p.out, r, renderScheduleComplete)
+	case "task_skipped", "task_canceled", "task_dep_failed":
+		return betweenBlocks(p.out, r, renderTaskNotice)
 	case "agent_run_start", "shell_run_start",
 		"agent_run_streamed", "shell_run_streamed",
 		"stdout_chunk", "stderr_chunk",
 		"text_delta", "thinking_delta",
-		"tool_use_start", "tool_result",
+		"tool_use_start", "tool_result", "turn_start",
 		"task_start":
-		// StreamingWriter already wrote these bytes; task_start is
-		// subsumed by block headers in pretty mode.
+		// StreamingWriter already wrote these bytes (turn_start as the
+		// agent renderer's "— turn N —"); task_start is subsumed by block
+		// headers in pretty mode.
 		return nil
 	default:
-		return renderDimLine(p.out, r)
+		return betweenBlocks(p.out, r, renderLogLine)
 	}
 }
 
@@ -727,6 +794,8 @@ func (p *liveSinkPrettyHandler) handle(r slog.Record) error {
 		return renderScheduleStart(p.out, r)
 	case "schedule_complete":
 		return renderScheduleComplete(p.out, r)
+	case "task_skipped", "task_canceled", "task_dep_failed":
+		return renderTaskNotice(p.out, r)
 	case "stdout_chunk":
 		return renderStdoutChunk(p.out, r, false)
 	case "stderr_chunk":
@@ -739,13 +808,17 @@ func (p *liveSinkPrettyHandler) handle(r slog.Record) error {
 		return renderToolUseStart(p.out, r)
 	case "tool_result":
 		return renderToolResult(p.out, r)
+	case "turn_start":
+		dim := color.New(color.Faint).SprintFunc()
+		_, err := fmt.Fprintln(p.out, dim(fmt.Sprintf("\n— turn %d —", attrInt64(r, "turn_index")+1)))
+		return err
 	case "task_start":
 		// Block headers subsume task_start in pretty rendering — the
 		// agent_run_start / shell_run_start records carry the same
 		// signal with richer context.
 		return nil
 	default:
-		return renderDimLine(p.out, r)
+		return renderLogLine(p.out, r)
 	}
 }
 
@@ -892,7 +965,6 @@ func renderAgentRunStart(out io.Writer, r slog.Record) error {
 	})
 	var b bytes.Buffer
 	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, tools, mcpCommands)
-	b.WriteByte('\n')
 	_, err := out.Write(b.Bytes())
 	return err
 }
@@ -904,12 +976,17 @@ func renderAgentRunStart(out io.Writer, r slog.Record) error {
 // terminal metrics line.
 func renderAgentRunFooter(out io.Writer, r slog.Record) error {
 	var (
-		costStr                              string
+		costStr, task, errMsg                string
 		stop, transcript                     string
 		durationMs, in, outTokens, cacheRead int64
+		success                              bool
 	)
 	r.Attrs(func(a slog.Attr) bool {
 		switch a.Key {
+		case "task":
+			task = a.Value.String()
+		case "success":
+			success = a.Value.Kind() == slog.KindBool && a.Value.Bool()
 		case "cost_usd":
 			// Worker-shipped events round-trip through JSON; a float value
 			// of 0 (or any whole number) arrives as Int64 after the
@@ -929,11 +1006,16 @@ func renderAgentRunFooter(out io.Writer, r slog.Record) error {
 			stop = a.Value.String()
 		case "transcript":
 			transcript = a.Value.String()
+		case "error":
+			errMsg = a.Value.String()
 		}
 		return true
 	})
 	var b bytes.Buffer
-	WriteAgentRunFooter(&b, in, outTokens, cacheRead, costStr, durationMs, stop, transcript)
+	if errMsg != "" {
+		b.WriteString(guttered(color.New(color.FgRed).Sprint(errMsg), agentAccent))
+	}
+	WriteAgentRunFooter(&b, task, success, in, outTokens, cacheRead, costStr, durationMs, stop, transcript)
 	_, err := out.Write(b.Bytes())
 	return err
 }
@@ -946,7 +1028,6 @@ func renderShellRunStart(out io.Writer, r slog.Record) error {
 	command := attrString(r, "command")
 	var b bytes.Buffer
 	WriteShellRunHeader(&b, schedule, task, command)
-	b.WriteByte('\n')
 	_, err := out.Write(b.Bytes())
 	return err
 }
@@ -957,7 +1038,7 @@ func renderShellRunFooter(out io.Writer, r slog.Record) error {
 	durationMs := attrInt64(r, "duration_ms")
 	transcript := attrString(r, "transcript")
 	var b bytes.Buffer
-	WriteShellRunFooter(&b, exit, durationMs, transcript)
+	WriteShellRunFooter(&b, attrString(r, "task"), exit, durationMs, transcript)
 	_, err := out.Write(b.Bytes())
 	return err
 }
@@ -1023,30 +1104,25 @@ func renderAgentRun(out io.Writer, r slog.Record) error {
 
 	var b bytes.Buffer
 	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, tools, mcpCommands)
-	b.WriteByte('\n')
 
 	footerColor := color.New(color.Faint).SprintFunc()
 	errc := color.New(color.FgRed, color.Bold).SprintFunc()
 	if success {
 		if response == "" {
-			b.WriteString(footerColor("(no text response)\n"))
+			b.WriteString(guttered(footerColor("(no text response)"), agentAccent))
 		} else {
-			b.WriteString(strings.TrimRight(response, "\n"))
-			b.WriteByte('\n')
+			b.WriteString(guttered(strings.TrimRight(response, "\n"), agentAccent))
 		}
 	} else {
-		b.WriteString(errc("ERROR: "))
-		b.WriteString(errMsg)
-		b.WriteByte('\n')
+		b.WriteString(guttered(errc("ERROR: ")+errMsg, agentAccent))
 	}
-	b.WriteByte('\n')
-	WriteAgentRunFooter(&b, in, outTokens, cacheRead, costStr, durationMs, stop, transcript)
+	WriteAgentRunFooter(&b, task, success, in, outTokens, cacheRead, costStr, durationMs, stop, transcript)
 
 	_, err := out.Write(b.Bytes())
 	return err
 }
 
-// WriteAgentRunHeader writes the bordered header for an agent run block.
+// WriteAgentRunHeader writes the top of an agent run block's frame.
 // Shared by the slog renderAgentRun path and the streaming dispatch path.
 // `skills` is the available-skills list to surface in the header (empty/nil
 // omits the segment). `prompt` and `system` are the RESOLVED (post template
@@ -1055,132 +1131,218 @@ func renderAgentRun(out io.Writer, r slog.Record) error {
 // debug `${date}`/`${path}` expansion at a glance. `tools` and `mcpCommands`
 // list the tool surface available for the run.
 func WriteAgentRunHeader(w io.Writer, schedule, task, model string, skills []string,
-	prompt, system string, tools []string, mcpCommands []string) {
-	header := color.New(color.FgCyan, color.Bold).SprintFunc()
-	rule := color.New(color.FgCyan).SprintFunc()
-	label := color.New(color.FgCyan, color.Faint).SprintFunc()
-
-	headerLine := fmt.Sprintf("agent run · schedule=%s · task=%s · model=%s",
-		schedule, task, model)
+	prompt, system string, tools, mcpCommands []string) {
+	meta := []string{"agent", schedule, model}
 	if len(skills) > 0 {
-		headerLine += " · skills=[" + strings.Join(skills, ",") + "]"
+		meta = append(meta, "skills "+strings.Join(skills, ", "))
 	}
-	// Compose the meta lines first so the bar can width-match the widest
-	// line in the block — keeps the framing visually balanced when prompt
-	// or system is the longest line.
-	type metaLine struct {
-		key, val string
-	}
-	var meta []metaLine
+
+	var rows []frameRow
 	if p := strings.TrimSpace(prompt); p != "" {
-		meta = append(meta, metaLine{"prompt", p})
+		rows = append(rows, frameRow{"prompt", p})
 	}
 	if s := strings.TrimSpace(system); s != "" {
-		meta = append(meta, metaLine{"system", s})
+		rows = append(rows, frameRow{"system", s})
 	}
 	if len(tools) > 0 {
-		meta = append(meta, metaLine{"tools", strings.Join(tools, ", ")})
+		rows = append(rows, frameRow{"tools", strings.Join(tools, ", ")})
 	}
 	for _, mc := range mcpCommands {
-		meta = append(meta, metaLine{"mcp", mc})
+		rows = append(rows, frameRow{"mcp", mc})
 	}
-
-	width := len(headerLine)
-	rendered := make([]string, 0, len(meta))
-	for _, m := range meta {
-		line := truncate(escapeControl(fmt.Sprintf("%s: %s", m.key, m.val)), 200)
-		if len(line) > width {
-			width = len(line)
-		}
-		rendered = append(rendered, line)
-	}
-	bar := strings.Repeat("━", width+8)
-
-	fmt.Fprintln(w, rule(bar))
-	fmt.Fprintln(w, header(headerLine))
-	for i, m := range meta {
-		// Color the key prefix only; keep the value plain so terminals
-		// without color still read naturally and so search-in-page finds
-		// the literal prompt/system text.
-		colon := strings.Index(rendered[i], ":")
-		if colon < 0 {
-			fmt.Fprintln(w, rendered[i])
-			continue
-		}
-		_ = m
-		fmt.Fprintln(w, label(rendered[i][:colon+1])+rendered[i][colon+1:])
-	}
-	fmt.Fprintln(w, rule(bar))
+	writeFrameHeader(w, agentAccent, task, strings.Join(meta, " · "), rows)
 }
 
-// WriteAgentRunFooter writes the bracketed metadata footer for an agent run.
+// WriteAgentRunFooter closes an agent run block's frame.
 // cacheRead is the cumulative cache-read tokens; >0 indicates a cache hit
 // occurred during the run (turn 2+ replayed the cached prefix at 0.1× cost).
-func WriteAgentRunFooter(w io.Writer, in, out, cacheRead int64, costStr string, durationMs int64, stopReason, transcriptPath string) {
-	footer := color.New(color.Faint).SprintFunc()
-
-	parts := []string{
-		fmt.Sprintf("%d in / %d out tokens", in, out),
-	}
+func WriteAgentRunFooter(w io.Writer, task string, success bool, in, out, cacheRead int64, costStr string, durationMs int64, stopReason, transcriptPath string) {
+	parts := []string{fmt.Sprintf("%d in · %d out", in, out)}
 	if cacheRead > 0 {
-		parts = append(parts, fmt.Sprintf("cached=%d", cacheRead))
+		parts = append(parts, fmt.Sprintf("%d cached", cacheRead))
 	}
-	parts = append(parts,
-		fmt.Sprintf("$%s", costStr),
-		fmt.Sprintf("%dms", durationMs),
-	)
+	parts = append(parts, formatCost(costStr), formatDuration(durationMs))
 	if stopReason != "" {
-		parts = append(parts, fmt.Sprintf("stop=%s", stopReason))
+		parts = append(parts, stopReason)
 	}
 	if transcriptPath != "" {
-		parts = append(parts, fmt.Sprintf("transcript=%s", filepath.Base(transcriptPath)))
+		parts = append(parts, filepath.Base(transcriptPath))
 	}
-	fmt.Fprintln(w, footer("["+strings.Join(parts, " · ")+"]"))
-	fmt.Fprintln(w)
+	writeFrameFooter(w, agentAccent, task, success, parts)
 }
 
-// WriteShellRunHeader writes the bordered header for a shell task run block.
-// The resolved command (post ${date}/${path}/${scratch} substitution) is
-// emitted on its own `command: …` line so the full string is visible — the
-// header line stays compact for the schedule/task chip while the command
-// line tells the whole story of what got executed. Control chars in the
-// command are escaped (newlines for sh -c bodies); the line is capped at
-// 200 chars so an enormous shell payload doesn't blow out the framing.
+// formatCost trims the fixed 6-decimal cost string to what's worth reading:
+// "$0" for a free or failed run, four decimals under a cent, two above.
+func formatCost(costStr string) string {
+	v, err := strconv.ParseFloat(costStr, 64)
+	switch {
+	case err != nil:
+		return "$" + costStr
+	case v == 0:
+		return "$0"
+	case v < 0.01:
+		return fmt.Sprintf("$%.4f", v)
+	}
+	return fmt.Sprintf("$%.2f", v)
+}
+
+// WriteShellRunHeader writes the top of a shell run block's frame: the task
+// chip, then the resolved command (post ${date}/${path}/${scratch}
+// substitution) on a `$ …` row so the full string is visible. Control chars
+// in the command are escaped (newlines for sh -c bodies); the row is capped
+// at 200 chars so an enormous shell payload doesn't blow out the layout.
 func WriteShellRunHeader(w io.Writer, schedule, task, command string) {
-	header := color.New(color.FgCyan, color.Bold).SprintFunc()
-	rule := color.New(color.FgCyan).SprintFunc()
-	label := color.New(color.FgCyan, color.Faint).SprintFunc()
-
-	headerLine := fmt.Sprintf("shell run · schedule=%s · task=%s", schedule, task)
-	cmdLine := "command: " + truncate(escapeControl(command), 200)
-
-	width := len(headerLine)
-	if len(cmdLine) > width {
-		width = len(cmdLine)
-	}
-	bar := strings.Repeat("━", width+8)
-
-	fmt.Fprintln(w, rule(bar))
-	fmt.Fprintln(w, header(headerLine))
-	// Color the "command:" label only; keep the resolved string plain so
-	// users can search/copy the exact text without escape codes in the way.
-	fmt.Fprintln(w, label("command:")+cmdLine[len("command:"):])
-	fmt.Fprintln(w, rule(bar))
+	writeFrameHeader(w, shellAccent, task, "shell · "+schedule, []frameRow{{"$", command}})
 }
 
-// WriteShellRunFooter writes the bracketed metadata footer for a shell run.
-func WriteShellRunFooter(w io.Writer, exit int64, durationMs int64, transcriptPath string) {
-	footer := color.New(color.Faint).SprintFunc()
-
-	parts := []string{
-		fmt.Sprintf("exit=%d", exit),
-		fmt.Sprintf("%dms", durationMs),
-	}
+// WriteShellRunFooter closes a shell run block's frame.
+func WriteShellRunFooter(w io.Writer, task string, exit int64, durationMs int64, transcriptPath string) {
+	parts := []string{fmt.Sprintf("exit %d", exit), formatDuration(durationMs)}
 	if transcriptPath != "" {
-		parts = append(parts, fmt.Sprintf("transcript=%s", filepath.Base(transcriptPath)))
+		parts = append(parts, filepath.Base(transcriptPath))
 	}
-	fmt.Fprintln(w, footer("["+strings.Join(parts, " · ")+"]"))
-	fmt.Fprintln(w)
+	writeFrameFooter(w, shellAccent, task, exit == 0, parts)
+}
+
+// A task block is drawn as a frame so what was run reads apart from what
+// it printed:
+//
+//	╭─ clean  shell · nightly
+//	│ $ /bin/sh -c ./clean.sh
+//	├──────────────────────────
+//	│ cleaning batch 1/4
+//	╰─ clean  exit 0 · 1.2s
+//
+// The frame takes the accent of its task kind (shellAccent / agentAccent);
+// a failed run says so in red on the closing line.
+func frameColors(accent accent) (frame, name, dim func(...any) string) {
+	return accent.color().SprintFunc(),
+		color.New(color.Bold).SprintFunc(),
+		color.New(color.Faint).SprintFunc()
+}
+
+// accent is an xterm-256 color code. 256-color rather than truecolor so it
+// renders the same in Terminal.app.
+type accent int
+
+// Shell and agent blocks get distinct accents so the kind of work reads at
+// a glance. The ◆ schedule header shares the shell teal.
+const (
+	shellAccent accent = 44  // bright teal
+	agentAccent accent = 209 // coral
+)
+
+func (a accent) color() *color.Color {
+	return color.New(38, 5, color.Attribute(a))
+}
+
+// frameRow is one labeled line in a frame header ("$ cmd", "prompt …").
+type frameRow struct {
+	key, val string
+}
+
+const (
+	frameDividerMin = 24
+	frameDividerMax = 72
+)
+
+func writeFrameHeader(w io.Writer, accent accent, task, meta string, rows []frameRow) {
+	frame, name, dim := frameColors(accent)
+
+	width := utf8.RuneCountInString(task) + utf8.RuneCountInString(meta) + 5
+	fmt.Fprintf(w, "%s %s  %s\n", frame("╭─"), name(task), dim(meta))
+
+	keyWidth := 0
+	for _, r := range rows {
+		keyWidth = max(keyWidth, len(r.key))
+	}
+	for _, r := range rows {
+		// Color the key only; keep the value plain so terminals without
+		// color still read naturally and search-in-page finds the literal
+		// command / prompt text.
+		val := truncate(escapeControl(r.val), 200)
+		fmt.Fprintf(w, "%s %s %s\n", frame("│"), dim(fmt.Sprintf("%-*s", keyWidth, r.key)), val)
+		width = max(width, keyWidth+utf8.RuneCountInString(val)+3)
+	}
+	width = min(max(width, frameDividerMin), frameDividerMax)
+	fmt.Fprintln(w, frame("├"+strings.Repeat("─", width-1)))
+}
+
+func writeFrameFooter(w io.Writer, accent accent, task string, success bool, parts []string) {
+	frame, name, dim := frameColors(accent)
+	if !success {
+		bad := color.New(color.FgRed).SprintFunc()
+		fmt.Fprintf(w, "%s %s  %s %s\n\n", frame("╰─"), name(task),
+			bad("failed"), dim("· "+strings.Join(parts, " · ")))
+		return
+	}
+	fmt.Fprintf(w, "%s %s  %s\n\n", frame("╰─"), name(task), dim(strings.Join(parts, " · ")))
+}
+
+// frameGutter is the left edge drawn before every output line in a block.
+func frameGutter(accent accent) string {
+	frame, _, _ := frameColors(accent)
+	return frame("│") + " "
+}
+
+// gutterWriter prefixes every line written through it with the frame
+// gutter so task output sits visibly inside its block. Bytes arrive in
+// arbitrary chunks from concurrent stdout/stderr pipes, so it tracks
+// whether it is mid-line across writes.
+type gutterWriter struct {
+	mu      sync.Mutex
+	w       io.Writer
+	gutter  string
+	midLine bool
+}
+
+func newGutterWriter(w io.Writer, accent accent) *gutterWriter {
+	return &gutterWriter{w: w, gutter: frameGutter(accent)}
+}
+
+func (g *gutterWriter) Write(p []byte) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var b bytes.Buffer
+	for rest := p; len(rest) > 0; {
+		if !g.midLine {
+			b.WriteString(g.gutter)
+			g.midLine = true
+		}
+		i := bytes.IndexByte(rest, '\n')
+		if i < 0 {
+			b.Write(rest)
+			break
+		}
+		b.Write(rest[:i+1])
+		rest = rest[i+1:]
+		g.midLine = false
+	}
+	if _, err := g.w.Write(b.Bytes()); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// EndLine terminates a dangling partial line (output without a trailing
+// newline) so the frame footer starts at column 0.
+func (g *gutterWriter) EndLine() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.midLine {
+		_, _ = g.w.Write([]byte("\n"))
+		g.midLine = false
+	}
+}
+
+// guttered returns body with the frame gutter before every line, for the
+// non-streaming renderers that have the whole output in hand.
+func guttered(body string, accent accent) string {
+	var b bytes.Buffer
+	g := newGutterWriter(&b, accent)
+	_, _ = g.Write([]byte(body))
+	g.EndLine()
+	return b.String()
 }
 
 // NewAgentStreamRenderer returns a StreamHandler that writes the body of an
@@ -1359,7 +1521,7 @@ func displayToolName(name string) string {
 }
 
 // renderShellRun renders a shell task as a block with the same shape as
-// agent_run: header rule, header line, body (stdout or stderr), footer.
+// agent_run: header, body (stdout or stderr), status footer.
 func renderShellRun(out io.Writer, r slog.Record) error {
 	footer := color.New(color.Faint).SprintFunc()
 	errc := color.New(color.FgRed, color.Bold).SprintFunc()
@@ -1376,79 +1538,53 @@ func renderShellRun(out io.Writer, r slog.Record) error {
 
 	var b bytes.Buffer
 	WriteShellRunHeader(&b, schedule, task, command)
-	b.WriteByte('\n')
 
 	if success {
 		body := strings.TrimRight(stdout, "\n")
 		if body == "" {
-			b.WriteString(footer("(no stdout)\n"))
-		} else {
-			b.WriteString(body)
-			b.WriteByte('\n')
+			body = footer("(no stdout)")
 		}
+		b.WriteString(guttered(body, shellAccent))
 	} else {
-		b.WriteString(errc("ERROR (exit "))
-		fmt.Fprintf(&b, "%d", exit)
-		b.WriteString(errc("):\n"))
 		body := strings.TrimRight(stderr, "\n")
 		if body == "" {
 			body = strings.TrimRight(stdout, "\n")
 		}
-		b.WriteString(body)
-		b.WriteByte('\n')
+		b.WriteString(guttered(errc(fmt.Sprintf("ERROR (exit %d):", exit))+"\n"+body, shellAccent))
 	}
-
-	b.WriteByte('\n')
-	footerParts := []string{
-		fmt.Sprintf("exit=%d", exit),
-		fmt.Sprintf("%dms", durationMs),
-	}
-	if transcript != "" {
-		footerParts = append(footerParts, fmt.Sprintf("transcript=%s", filepath.Base(transcript)))
-	}
-	b.WriteString(footer("[" + strings.Join(footerParts, " · ") + "]"))
-	b.WriteString("\n\n")
+	WriteShellRunFooter(&b, task, exit, durationMs, transcript)
 
 	_, err := out.Write(b.Bytes())
 	return err
 }
 
 // renderScheduleStart renders the section header above a schedule's task
-// blocks: a horizontal rule, the schedule name, and the DAG list.
+// blocks: the schedule name with run metadata, then the DAG drawn as a
+// tree from the `tasks` + `depends` attrs.
 func renderScheduleStart(out io.Writer, r slog.Record) error {
-	rule := color.New(color.FgMagenta).SprintFunc()
-	header := color.New(color.FgMagenta, color.Bold).SprintFunc()
+	accent := shellAccent.color().Add(color.Bold).SprintFunc()
+	name := color.New(color.Bold).SprintFunc()
 	dim := color.New(color.Faint).SprintFunc()
 
 	schedule := attrString(r, "schedule")
 	tasks := attrStrings(r, "tasks")
 
-	timeStr := r.Time.Format("15:04:05")
-	headerLine := fmt.Sprintf("%s · schedule \"%s\"", timeStr, schedule)
-	const totalWidth = 70
-	const leftRule = 4 // "────"
-	trailingCount := totalWidth - leftRule - 1 - len(headerLine) - 1
-	if trailingCount < 0 {
-		trailingCount = 0
+	meta := []string{r.Time.Format("15:04:05")}
+	if len(tasks) > 0 {
+		meta = append(meta, pluralize(len(tasks), "task", "tasks"))
+	}
+	if runID := attrString(r, "run_id"); runID != "" {
+		meta = append(meta, "run "+runID)
 	}
 
 	var b bytes.Buffer
-	b.WriteString(rule(strings.Repeat("─", leftRule)))
-	b.WriteByte(' ')
-	b.WriteString(header(headerLine))
-	b.WriteByte(' ')
-	b.WriteString(rule(strings.Repeat("─", trailingCount)))
+	b.WriteString(accent("◆ "))
+	b.WriteString(name(schedule))
+	b.WriteString(dim("  " + strings.Join(meta, " · ")))
 	b.WriteByte('\n')
 
 	if len(tasks) > 0 {
-		b.WriteString(dim("DAG:\n"))
-		for i, t := range tasks {
-			prefix := "  ├─ "
-			if i == len(tasks)-1 {
-				prefix = "  └─ "
-			}
-			b.WriteString(dim(prefix + t + "\n"))
-		}
+		writeDAGTree(&b, tasks, dependsMap(tasks, attrStrings(r, "depends")), "  ")
 	}
 	b.WriteByte('\n')
 
@@ -1456,10 +1592,136 @@ func renderScheduleStart(out io.Writer, r slog.Record) error {
 	return err
 }
 
-// renderScheduleComplete renders the summary line at the bottom of a schedule.
+// dependsMap decodes the schedule_start `depends` attr (see dependsAttr)
+// back into task → deps. A missing or misaligned attr — e.g. an event from
+// an older worker — yields an empty map, which renders every task as a root.
+func dependsMap(tasks, depends []string) map[string][]string {
+	deps := make(map[string][]string, len(tasks))
+	if len(depends) != len(tasks) {
+		return deps
+	}
+	for i, t := range tasks {
+		if depends[i] != "" {
+			deps[t] = strings.Split(depends[i], ",")
+		}
+	}
+	return deps
+}
+
+// writeDAGTree draws the DAG as a `tree`-style outline. Each task hangs
+// under one "primary" parent — its deepest dependency, so a fan-in node
+// lands after every branch that feeds it — and any dependencies the tree
+// position doesn't fully express are listed after a dim "←". Roots and
+// siblings keep declaration order. Unknown deps (tasks filtered out of an
+// exec) are annotated, not drawn; cycles are guarded so a bad config can't
+// hang the renderer.
+func writeDAGTree(b *bytes.Buffer, tasks []string, deps map[string][]string, indent string) {
+	dim := color.New(color.Faint).SprintFunc()
+
+	order := make(map[string]int, len(tasks))
+	for i, t := range tasks {
+		order[t] = i
+	}
+
+	// depth = longest path from a root.
+	depth := make(map[string]int, len(tasks))
+	visiting := make(map[string]bool)
+	var depthOf func(string) int
+	depthOf = func(n string) int {
+		if d, ok := depth[n]; ok {
+			return d
+		}
+		if visiting[n] {
+			return 0
+		}
+		visiting[n] = true
+		d := 0
+		for _, p := range deps[n] {
+			if _, known := order[p]; known {
+				d = max(d, depthOf(p)+1)
+			}
+		}
+		visiting[n] = false
+		depth[n] = d
+		return d
+	}
+
+	parent := make(map[string]string, len(tasks))
+	children := make(map[string][]string)
+	var roots []string
+	for _, t := range tasks {
+		best := ""
+		for _, p := range deps[t] {
+			if _, known := order[p]; !known || p == t {
+				continue
+			}
+			if best == "" || depthOf(p) > depthOf(best) ||
+				(depthOf(p) == depthOf(best) && order[p] > order[best]) {
+				best = p
+			}
+		}
+		if best == "" {
+			roots = append(roots, t)
+			continue
+		}
+		parent[t] = best
+		children[best] = append(children[best], t)
+	}
+
+	seen := make(map[string]bool, len(tasks))
+	var walk func(n, prefix string, last, root bool)
+	walk = func(n, prefix string, last, root bool) {
+		if seen[n] {
+			return
+		}
+		seen[n] = true
+
+		b.WriteString(indent)
+		childPrefix := prefix
+		if !root {
+			conn := "├─ "
+			childPrefix += "│  "
+			if last {
+				conn = "└─ "
+				childPrefix = prefix + "   "
+			}
+			b.WriteString(dim(prefix + conn))
+		}
+		b.WriteString(n)
+
+		// Fan-in (or an unknown dep): list everything this task waits on.
+		if ds := deps[n]; len(ds) > 1 || (len(ds) == 1 && ds[0] != parent[n]) {
+			b.WriteString(dim("  ← " + strings.Join(ds, ", ")))
+		}
+		b.WriteByte('\n')
+
+		kids := children[n]
+		for i, c := range kids {
+			walk(c, childPrefix, i == len(kids)-1, false)
+		}
+	}
+	for _, r := range roots {
+		walk(r, "", false, true)
+	}
+	// Anything left is on a cycle (no root reaches it). Draw it anyway so
+	// the outline never silently drops a task.
+	for _, t := range tasks {
+		walk(t, "", false, true)
+	}
+}
+
+// pluralize renders "1 task" / "3 tasks".
+func pluralize(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+// renderScheduleComplete renders the summary line at the bottom of a
+// schedule, led by a status dot: green on success, red on failure.
 func renderScheduleComplete(out io.Writer, r slog.Record) error {
-	ok := color.New(color.FgGreen, color.Bold).SprintFunc()
-	bad := color.New(color.FgRed, color.Bold).SprintFunc()
+	name := color.New(color.Bold).SprintFunc()
 	dim := color.New(color.Faint).SprintFunc()
 
 	schedule := attrString(r, "schedule")
@@ -1467,32 +1729,65 @@ func renderScheduleComplete(out io.Writer, r slog.Record) error {
 	durationMs := attrInt64(r, "duration_ms")
 	success := attrBool(r, "success")
 
-	var b bytes.Buffer
-	if success {
-		b.WriteString(ok("✓ "))
-		fmt.Fprintf(&b, "schedule \"%s\" complete ", schedule)
-	} else {
-		b.WriteString(bad("✗ "))
-		fmt.Fprintf(&b, "schedule \"%s\" failed ", schedule)
-		errMsg := attrString(r, "error")
-		if errMsg != "" {
-			b.WriteString(dim("(" + errMsg + ") "))
+	status := color.New(color.FgGreen, color.Bold).SprintFunc()
+	verb := "succeeded"
+	meta := []string{
+		pluralize(int(taskCount), "task", "tasks"),
+		formatDuration(durationMs),
+	}
+	if !success {
+		status = color.New(color.FgRed, color.Bold).SprintFunc()
+		verb = "failed"
+		if errMsg := attrString(r, "error"); errMsg != "" {
+			// Multi-line errors (SDK auth help, stack-ish output) are shown
+			// in full inside the failing task's block; one line is enough here.
+			first, _, _ := strings.Cut(errMsg, "\n")
+			meta = append([]string{strings.TrimRight(first, ": ")}, meta...)
 		}
 	}
-	taskWord := "tasks"
-	if taskCount == 1 {
-		taskWord = "task"
-	}
-	b.WriteString(dim(fmt.Sprintf("· %d %s · %s", taskCount, taskWord, formatDuration(durationMs))))
+
+	var b bytes.Buffer
+	b.WriteString(status("● "))
+	b.WriteString(name(schedule))
+	b.WriteString(status(" " + verb))
+	b.WriteString(dim("  " + strings.Join(meta, " · ")))
 	b.WriteString("\n\n")
 
 	_, err := out.Write(b.Bytes())
 	return err
 }
 
-// renderDimLine renders a record as a faint single line. Used for lifecycle
-// events (Loading, executing tasks, heartbeat, refreshing config, etc.) that
-// don't carry a structural entry_type.
+// renderTaskNotice renders the one-line events the DAG walker emits for a
+// task that never ran: skipped by an operator, canceled via the API, or
+// skipped because an upstream dependency failed.
+func renderTaskNotice(out io.Writer, r slog.Record) error {
+	warn := color.New(color.FgYellow).SprintFunc()
+	dim := color.New(color.Faint).SprintFunc()
+
+	task := attrString(r, "task")
+	var verb, why string
+	switch entryType(r) {
+	case "task_dep_failed":
+		verb, why = "skipped", "upstream "+attrString(r, "failed_dependency")+" failed"
+	case "task_canceled":
+		verb, why = "canceled", attrString(r, "reason")
+	default:
+		verb, why = "skipped", attrString(r, "reason")
+	}
+
+	var b bytes.Buffer
+	b.WriteString(warn("⊘ "))
+	b.WriteString(task)
+	b.WriteString(warn(" " + verb))
+	if why != "" {
+		b.WriteString(dim("  " + why))
+	}
+	b.WriteString("\n\n")
+
+	_, err := out.Write(b.Bytes())
+	return err
+}
+
 // renderStdoutChunk writes one line of streaming task output. The slog
 // record carries the line as msg. stderr is rendered in red (matching
 // what a TTY would show); stdout is rendered plain.
@@ -1502,10 +1797,10 @@ func renderStdoutChunk(out io.Writer, r slog.Record, isStderr bool) error {
 		// Faint red so error output is visible without overpowering normal
 		// stdout. Mirrors what users see when running the command locally.
 		errc := color.New(color.FgRed, color.Faint).SprintFunc()
-		_, err := fmt.Fprintln(out, errc(line))
+		_, err := fmt.Fprintln(out, frameGutter(shellAccent)+errc(line))
 		return err
 	}
-	_, err := fmt.Fprintln(out, line)
+	_, err := fmt.Fprintln(out, frameGutter(shellAccent)+line)
 	return err
 }
 
@@ -1554,24 +1849,118 @@ func renderToolResult(out io.Writer, r slog.Record) error {
 	return err
 }
 
-func renderDimLine(out io.Writer, r slog.Record) error {
+// renderLogLine renders a routine record — lifecycle events (config
+// loaded, cron started, heartbeat, shutdown) and warnings/errors without a
+// structural entry_type — as one line:
+//
+//	22:39:44 · config loaded  cronicle.hcl · 1 schedule · 5 tasks
+//	22:39:44 · scheduled nightly  @every 30s
+//	22:39:44 ▲ config refresh failed  error="…"
+//
+// Info recedes behind the task frames; warnings and errors take the level's
+// color so they stand out in a long-running `cronicle run`.
+func renderLogLine(out io.Writer, r slog.Record) error {
 	dim := color.New(color.Faint).SprintFunc()
+	bold := color.New(color.Bold).SprintFunc()
+	marker, msg := dim("·"), fmt.Sprint
+	switch {
+	case r.Level >= slog.LevelError:
+		c := color.New(color.FgRed, color.Bold).SprintFunc()
+		marker, msg = c("■"), color.New(color.FgRed).Sprint
+	case r.Level >= slog.LevelWarn:
+		c := color.New(color.FgYellow).SprintFunc()
+		marker, msg = c("▲"), c
+	}
+
+	text, ok := prettyMessages[r.Message]
+	if !ok {
+		text = strings.TrimRight(r.Message, ".…")
+	}
+
+	var subject string
+	var attrs []string
+	r.Attrs(func(a slog.Attr) bool {
+		val := formatValue(a.Value)
+		switch a.Key {
+		case "entry_type", "seq", "lifetime", "cronicle":
+			// seq/lifetime are Loki correlation tags and `cronicle` is an
+			// internal phase tag (start/heartbeat/exec); noise on a terminal.
+		case "schedule":
+			subject = a.Value.String()
+		case "path", "scratch", "transcript", "spec", "cron":
+			// Self-describing values read fine without their key — and
+			// without quotes, since nothing follows them on the line to
+			// be confused with.
+			val = a.Value.String()
+			if a.Key != "cron" {
+				val = shortPath(val)
+			}
+			attrs = append(attrs, dim(val))
+		case "schedules", "tasks":
+			if n := a.Value.Int64(); a.Value.Kind() == slog.KindInt64 {
+				attrs = append(attrs, dim(pluralize(int(n), strings.TrimSuffix(a.Key, "s"), a.Key)))
+			} else {
+				attrs = append(attrs, dim(a.Key+"="+val))
+			}
+		case "error", "err":
+			if r.Level >= slog.LevelWarn {
+				attrs = append(attrs, dim(a.Key+"=")+msg(val))
+			} else {
+				attrs = append(attrs, dim(a.Key+"="+val))
+			}
+		default:
+			attrs = append(attrs, dim(a.Key+"="+val))
+		}
+		return true
+	})
 
 	var b bytes.Buffer
 	b.WriteString(dim(r.Time.Format("15:04:05")))
-	b.WriteByte(' ')
-	b.WriteString(dim(r.Message))
-	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == "entry_type" {
-			return true
-		}
-		fmt.Fprintf(&b, " %s", dim(a.Key+"="+formatValue(a.Value)))
-		return true
-	})
+	b.WriteString(" " + marker + " ")
+	b.WriteString(msg(text))
+	if subject != "" {
+		b.WriteString(" " + bold(subject))
+	}
+	if len(attrs) > 0 {
+		b.WriteString("  ")
+		b.WriteString(strings.Join(attrs, dim(" · ")))
+	}
 	b.WriteByte('\n')
 
 	_, err := out.Write(b.Bytes())
 	return err
+}
+
+// prettyMessages rewords the routine lines every `cronicle run` prints on
+// start, tick and shutdown into short phrases. Keyed by the exact slog
+// message, so text/JSON output (and anything querying it) keeps the
+// original wording; an unlisted message renders as-is.
+var prettyMessages = map[string]string{
+	"Starting Scheduler...":            "scheduler started",
+	"Starting cron...":                 "scheduled",
+	"Refreshing config...":             "config reloaded",
+	"Queuing...":                       "queued",
+	"heartbeat":                        "alive",
+	"shutdown: ctx canceled, draining": "shutting down, draining in-flight tasks",
+	"shutdown: complete":               "stopped",
+}
+
+// shortPath makes a file path readable on a terminal line: relative to the
+// working directory when it lives under it, ~-prefixed when under $HOME,
+// unchanged otherwise (including non-paths such as "state://").
+func shortPath(p string) string {
+	if !filepath.IsAbs(p) {
+		return p
+	}
+	if wd, err := os.Getwd(); err == nil {
+		if rel, err := filepath.Rel(wd, p); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(p, home+string(filepath.Separator)) {
+		return "~" + p[len(home):]
+	}
+	return p
 }
 
 // escapeControl replaces newlines and tabs with their literal escape forms so
