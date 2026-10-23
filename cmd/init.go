@@ -24,24 +24,23 @@ import (
 // initCmd represents the init command
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Creates a Cronicle git repo including a default cronicle.hcl file and repos folder.",
-	Long: `The cronicle init command will instantiate a Cronicle repository in the current directory
-For example:
+	Short: "Create a cronicle project: a starter cronicle.hcl, AGENTS.md guide, and .cronicle/",
+	Long: `init sets up a cronicle project in --path:
 
-cronicle init --path ./cronicle
-tree -a cronicle
-├── cronicle.hcl
-└── .repos
+  cronicle.hcl   a starter schedule: a small DAG of inline commands
+  AGENTS.md      the guide to writing schedules (also: cronicle guide)
+  CLAUDE.md      imports AGENTS.md, for Claude Code
+  .cronicle/     local state, secrets, scratch and repo clones (gitignored)
 
-This directory will contain the root cronicle.hcl file and git repository. This is where
-the main schedule will be defined and run. Subsequent schedules will be cloned into the 
-repos folder.
-`,
+Files that already exist are left as they are.`,
+	Example: `  cronicle init
+  cronicle init --path ./ops
+  cronicle init --path ./ops --clone git@github.com:org/ops.git --key ~/.ssh/deploy_key`,
 	Run: func(cmd *cobra.Command, args []string) {
 		croniclePath, _ := cmd.Flags().GetString("path")
 		clone, _ := cmd.Flags().GetString("clone")
 		deployKey, _ := cmd.Flags().GetString("key")
-		cronicle.Init(croniclePath, clone, deployKey, cronicle.Default())
+		cronicle.InitStarter(croniclePath, clone, deployKey)
 	},
 }
 

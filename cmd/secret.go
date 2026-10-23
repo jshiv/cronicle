@@ -57,7 +57,13 @@ For a remote / Postgres-backed cronicle, pass --remote http://host:port
 --token T to route through the listener's /v1/secrets API. The
 listener is backend-agnostic, so this works against any state.Backend
 (sqlite, Postgres, future). Falls back to env CRONICLE_REMOTE and
-CRONICLE_LISTEN_TOKEN.`,
+CRONICLE_LISTEN_TOKEN.
+
+Reference a secret from cronicle.hcl as $secret.NAME, e.g. in a task's
+env = ["DATABASE_URL=$secret.DATABASE_URL"].`,
+	Example: `  printf %s "$DATABASE_URL" | cronicle secret set DATABASE_URL
+  cronicle secret list
+  cronicle secret rm DATABASE_URL`,
 }
 
 var secretSetCmd = &cobra.Command{

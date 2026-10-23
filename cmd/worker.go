@@ -54,6 +54,7 @@ one host with --queue self, then point one or more workers at it:
 Multiple workers can connect to the same producer; SQLite WAL serializes
 job claims so only one worker executes any given run.
 `,
+	Example: `  cronicle worker --producer http://producer:8765 --producer-token "$CRONICLE_LISTEN_TOKEN"`,
 	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
 		path, _ := cmd.Flags().GetString("path")

@@ -31,23 +31,18 @@ import (
 // execCmd represents the exec command
 var execCmd = &cobra.Command{
 	Use:   "exec",
-	Short: "cronicle exec executes a specified task or schedule",
-	Long: `exec allows for task execution outside of the cron context.
+	Short: "Run schedules or tasks once, now, in the foreground",
+	Long: `exec runs tasks immediately instead of on their cron, and exits non-zero if
+any task fails. With no filters it runs every schedule in --path; --schedule
+and --task narrow that down. Dependencies of a selected task are not run.
 
-For example to load the local cronicle file and execute task "bar" in 
-schedule "foo" you could run:
-	cronicle exec --path ./cronicle.hcl --schedule foo --task bar --time 2020-01-02T15:04:05-08:00
-The schedule/task list will be filtered down and executed.
-Any ${date} or ${timestamp} command templates will be filled with 
-the timestamp given by --time which defaults to the current timestamp. 
-
-In order to provide a backfill mechanism, the flag --end is provided,
-and if given cronicle will loop over a date range from --time to --end 
-filling any ${date} values and executing the given tasks for each date in 
-the range.
-
-cronicle init
-cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
+--time sets the trigger time that fills ${date}, ${datetime} and
+${timestamp}. Add --end to backfill: one run per day from --time to --end.`,
+	Example: `  cronicle exec
+  cronicle exec --schedule daily
+  cronicle exec --schedule daily --task fetch
+  cronicle exec --time 2026-01-01T00:00:00Z --end 2026-01-07T00:00:00Z
+  cronicle exec --log-format json | jq .`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Flags parsed fine; from here on an error is a task failure,
 		// not a usage mistake, so don't bury it under the help text.
@@ -128,7 +123,7 @@ cronicle exec --time 2020-10-01T00:00:00-08:00 --end 2020-10-03T00:00:00-08:00`,
 func init() {
 	rootCmd.AddCommand(execCmd)
 	execCmd.Flags().String("path", "./cronicle.hcl", "Path to a cronicle.hcl file")
-	execCmd.Flags().String("task", "", "Name of the task to execute (required)")
+	execCmd.Flags().String("task", "", "Name of the task to run; its depends are not run (default: every task)")
 	execCmd.Flags().String("schedule", "", "Name of the schedule that contains the task to execute")
 	execCmd.Flags().String("time", "", "Timestamp to execute task [2006-01-02T15:04:05-08:00]")
 	execCmd.Flags().String("end", "", "date range end Timestamp [2006-01-02T15:04:05-08:00]")

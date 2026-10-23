@@ -31,14 +31,17 @@ import (
 // runCmd represents the run command
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Cronicle run reads in the cronicle.hcl schedule and starts running tasks",
-	Long: `The cronicle run command starts the cron scheduler for the specified cronicle.hcl file.
-For example:
+	Short: "Start the scheduler: run every schedule in cronicle.hcl on its cron",
+	Long: `run starts the scheduler and keeps running until interrupted. cronicle.hcl
+is reloaded when it changes, and each schedule fires on its cron. Ctrl-C
+waits for in-flight tasks to finish before exiting.
 
-cronicle init --path cronicle
-cronicle run --path cronicle/cronicle.hcl
-
-The run command will log schedule information to stdout including git commit info.`,
+--listen adds an HTTP API for triggering schedules, inspecting runs, and
+streaming live output; it requires --listen-token (or $CRONICLE_LISTEN_TOKEN).`,
+	Example: `  cronicle run
+  cronicle run --path ./ops/cronicle.hcl --log-to-file
+  cronicle run --listen :8765 --listen-token "$TOKEN"
+  cronicle run --cron "@every 5s" --command "/bin/echo hello"`,
 	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
 		path, _ := cmd.Flags().GetString("path")

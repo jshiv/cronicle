@@ -27,40 +27,117 @@ cronicle run --command "/bin/echo cronicle" --cron "@every 5s"
 
 The `cronicle.hcl` file maintains the `schedule as code` for task execution.
 
-`cronicle init --path cron` will produce a default file:
-```hcl
-//cronicle.hcl
-schedule "example" {
-  cron       = "@every 5s"
+`cronicle init --path cron` creates a project with a starter
+`cronicle.hcl`: a small DAG of inline commands you can run right away
+with `cronicle exec --path cron/cronicle.hcl`. It also writes
+`AGENTS.md`, a guide to the commands, the `cronicle.hcl` format, and how
+to structure schedules, plus a `CLAUDE.md` that imports it, so an AI
+assistant working in the project picks it up. `cronicle guide` prints
+the same guide.
 
-  task "hello" {
-    command = ["python", "run.py"]
-    repo {
-      url = "https://github.com/jshiv/cronicle-sample.git"
-    }
+Cronicle is built to make every run transparent: it draws the DAG,
+prints each task's exact command above its output, and gives a
+pasteable rerun line when a task fails. Schedules read best when each
+task is one small step with its command written inline, and larger jobs
+are built by chaining tasks with `depends`:
+
+```hcl
+schedule "example" {
+  // Cron expression, "@every 1m", "@once", or "" (only run with exec).
+  cron = "@every 1m"
+
+  // ${scratch} is a directory shared by every task in one run of this
+  // schedule: the place to hand files from one step to the next.
+  task "numbers" {
+    command = ["sh", "-c", "seq 1 10 > ${scratch}/numbers.txt && echo 'wrote 10 numbers'"]
+  }
+
+  // `numbers` must succeed first. `total` and `evens` share that one
+  // dependency, so they run in parallel.
+  task "total" {
+    depends = ["numbers"]
+    command = ["python3", "-c", <<-EOT
+      nums = [int(n) for n in open("${scratch}/numbers.txt")]
+      print("total", sum(nums))
+      open("${scratch}/total.txt", "w").write(str(sum(nums)))
+    EOT
+    ]
+  }
+
+  task "evens" {
+    depends = ["numbers"]
+    command = ["sh", "-c", "grep -cE '[02468]$' ${scratch}/numbers.txt | tee ${scratch}/evens.txt"]
+  }
+
+  // Waits on both branches. If either fails, `report` is skipped.
+  task "report" {
+    depends = ["total", "evens"]
+    command = ["sh", "-c", <<-EOT
+      echo "report for ${date}"
+      echo "  total: $(cat ${scratch}/total.txt)"
+      echo "  evens: $(cat ${scratch}/evens.txt)"
+    EOT
+    ]
   }
 }
 ```
 
-`cronicle run --path cron/cronicle.hcl`
+`cronicle exec --path cron/cronicle.hcl` runs it once, now (the
+resolved `.cronicle/scratch/…` paths are shortened to `${scratch}` here):
 ```
-21:44:16 · config loaded  cron/cronicle.hcl · 1 schedule · 1 task
+◆ example  07:11:29 · 4 tasks · run 20261023T141129Z-2add7c27
+  numbers
+  ├─ total
+  └─ evens
+     └─ report  ← total, evens
+
+╭─ numbers  shell · example
+│ $ sh -c 'seq 1 10 > ${scratch}/numbers.txt && echo '\''wrote 10 numbers'\'''
+├───────────────────────────────────────────────────────────────────────
+│ wrote 10 numbers
+╰─ numbers  exit 0 · 5ms
+
+╭─ evens  shell · example
+│ $ sh -c 'grep -cE '\''[02468]$'\'' ${scratch}/numbers.txt | tee ${scratch}/evens.txt'
+├───────────────────────────────────────────────────────────────────────
+│ 5
+╰─ evens  exit 0 · 5ms
+
+╭─ total  shell · example
+│ $ python3 -c
+│     nums = [int(n) for n in open("${scratch}/numbers.txt")]
+│     print("total", sum(nums))
+│     open("${scratch}/total.txt", "w").write(str(sum(nums)))
+├───────────────────────────────────────────────────────────────────────
+│ total 55
+╰─ total  exit 0 · 17ms
+
+╭─ report  shell · example
+│ $ sh -c
+│     echo "report for 2026-10-23"
+│     echo "  total: $(cat ${scratch}/total.txt)"
+│     echo "  evens: $(cat ${scratch}/evens.txt)"
+├───────────────────────────────────────────────────────────────────────
+│ report for 2026-10-23
+│   total: 55
+│   evens: 5
+╰─ report  exit 0 · 6ms
+
+● example succeeded  4 tasks · 34ms
+```
+
+`cronicle run --path cron/cronicle.hcl` starts the scheduler, which logs
+one short line per routine event and fires the same run every minute:
+```
+21:44:16 · config loaded  cron/cronicle.hcl · 1 schedule · 4 tasks
 21:44:16 · scheduler started
-21:44:16 · scheduled example  @every 5s
-21:44:21 · queued example
-◆ example  21:44:21 · 1 task · run 20261023T214421Z-0b2d002b
-  hello
-
-╭─ hello  shell · example
-│ $ python run.py
-├─────────────────
-│ X: 0.360346904169
-╰─ hello  exit 0 · 12ms
-
-● example succeeded  1 task · 0.5s
+21:44:16 · scheduled example  @every 1m
+21:45:16 · queued example
+◆ example  21:45:16 · 4 tasks · run 20261023T214516Z-0b2d002b
+  …
 ```
 
-A run opens with its DAG drawn as a tree: each task nests under its
+Every run opens with its DAG drawn as a tree: each task nests under its
 deepest dependency, and a task that waits on more than one names them
 all after `←`. Every task then gets its own framed block: the command
 at the top, its output in the gutter, and exit code and duration at the
@@ -831,13 +908,21 @@ heartbeat = "@every 60s"
 
 ## Bash Commands
 
-The init command sets up a new schedule repository with a sample conicle.hcl file
+The init command sets up a new project with a starter cronicle.hcl and the guide
 ```bash
 cronicle init
-tree
+tree -a -L 1
 .
-├── cronicle.hcl
-└── .repos
+├── .cronicle
+├── .gitignore
+├── AGENTS.md
+├── CLAUDE.md
+└── cronicle.hcl
+```
+
+The `guide` command prints the guide to writing schedules (the same text as `AGENTS.md`).
+```bash
+cronicle guide
 ```
 
 The `run` command starts the scheduler.

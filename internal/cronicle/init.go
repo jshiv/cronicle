@@ -22,6 +22,38 @@ import (
 //Init initializes a default croniclePath with a .git repository,
 //Basic schedule as code in a cronicle.hcl file and a repos folder.
 func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf Config) {
+	initProject(croniclePath, cloneRepo, deployKey, func(cronicleFile string) {
+		MarshallHcl(defaultConf, cronicleFile)
+	})
+}
+
+// InitStarter is what `cronicle init` runs: Init with the commented
+// starter schedule in place of Default(), plus the guide as AGENTS.md
+// (and a CLAUDE.md that imports it) so an AI working in the project
+// learns how cronicle schedules are meant to be written. Files that
+// already exist are left alone.
+func InitStarter(croniclePath string, cloneRepo string, deployKey string) {
+	initProject(croniclePath, cloneRepo, deployKey, func(cronicleFile string) {
+		if err := os.WriteFile(cronicleFile, starterHCL, 0644); err != nil {
+			slog.Error("cronicle.hcl write failed", "error", err.Error())
+		}
+	})
+	absCroniclePath, _ := filepath.Abs(croniclePath)
+	for name, body := range map[string]string{
+		"AGENTS.md": Guide,
+		"CLAUDE.md": "@AGENTS.md\n",
+	} {
+		file := path.Join(absCroniclePath, name)
+		if fileExists(file) {
+			continue
+		}
+		if err := os.WriteFile(file, []byte(body), 0644); err != nil {
+			slog.Error(name+" write failed", "error", err.Error())
+		}
+	}
+}
+
+func initProject(croniclePath string, cloneRepo string, deployKey string, writeConfig func(cronicleFile string)) {
 
 	absCroniclePath, err := filepath.Abs(croniclePath)
 	if err != nil {
@@ -68,7 +100,7 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 		fmt.Printf("%s", slantyedCyan(string(src)))
 		// CloneRepos(absCroniclePath, conf)
 	} else {
-		MarshallHcl(defaultConf, cronicleFile)
+		writeConfig(cronicleFile)
 		f, err := os.OpenFile(path.Join(absCroniclePath, ".gitignore"),
 			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
