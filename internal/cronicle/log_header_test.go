@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	osexec "os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -249,5 +250,78 @@ func TestWriteBetweenBlocks_WaitsForStreamingBlock(t *testing.T) {
 	_ = writeBetweenBlocks(&out, []byte("· stopped\n"))
 	if !strings.HasSuffix(out.String(), "· stopped\n") {
 		t.Fatalf("line not written when no block is streaming: %q", out.String())
+	}
+}
+
+// TestShellQuote_RoundTrips: the "$ …" line exists so a user can copy a
+// failed command and rerun it. Every argv must come back byte-for-byte when
+// the quoted line is run by bash and zsh — including sh -c heredoc scripts,
+// which must still fit on one line.
+func TestShellQuote_RoundTrips(t *testing.T) {
+	argvs := [][]string{
+		{"/bin/echo", "hello", "--date=2026-10-22"},
+		{"/bin/sh", "-c", "echo \"building ${date}\"\nfor r in a b; do\n  echo \"$r\"\ndone\n"},
+		{"python", "-c", "print('it\\'s')", ""},
+		{"echo", "tab\there", `back\slash`, "=equals", "~tilde", "a b", "$HOME", "`x`", "!bang"},
+	}
+	for _, shell := range []string{"bash", "zsh"} {
+		path, err := osexec.LookPath(shell)
+		if err != nil {
+			t.Logf("%s not installed; skipping", shell)
+			continue
+		}
+		for _, argv := range argvs {
+			line := shellQuote(argv)
+			if strings.Contains(line, "\n") {
+				t.Errorf("quoted line spans multiple lines: %q", line)
+			}
+			// Print each arg NUL-terminated so the check is exact.
+			out, err := osexec.Command(path, "-c", `printf '%s\0' `+line).Output()
+			if err != nil {
+				t.Fatalf("%s: %v running %q", shell, err, line)
+			}
+			got := strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")
+			if strings.Join(got, "|") != strings.Join(argv, "|") || len(got) != len(argv) {
+				t.Errorf("%s round-trip of %q\n got  %q\n want %q", shell, line, got, argv)
+			}
+		}
+	}
+}
+
+// TestWriteShellRunHeader_CommandVerbatim: the "$" row is written exactly
+// as given — one line, never truncated — so it can be copied whole.
+func TestWriteShellRunHeader_CommandVerbatim(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = prev }()
+
+	cmd := shellQuote([]string{"/bin/sh", "-c", strings.Repeat("echo x\n", 60)})
+	var b bytes.Buffer
+	WriteShellRunHeader(&b, "report", "build", cmd)
+	if !strings.Contains(b.String(), "│ $ "+cmd+"\n") {
+		t.Fatalf("command row not verbatim:\n%s", b.String())
+	}
+}
+
+// TestWriteAgentRunHeader_MultilinePrompt: prompts keep their line breaks,
+// indented under the label and capped so a long prompt can't bury output.
+func TestWriteAgentRunHeader_MultilinePrompt(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = prev }()
+
+	var b bytes.Buffer
+	WriteAgentRunHeader(&b, "s", "t", "m", nil, "line one\nline two", "", nil, nil)
+	if !strings.Contains(b.String(), "│ prompt line one\n│        line two\n") {
+		t.Fatalf("prompt lines not aligned:\n%s", b.String())
+	}
+
+	b.Reset()
+	WriteAgentRunHeader(&b, "s", "t", "m", nil, strings.Repeat("more\n", 30), "", nil, nil)
+	if got := strings.Count(b.String(), "more"); got != frameRowMaxLines-1+1 { // rows + "more lines" marker
+		t.Errorf("expected %d prompt rows before the cap, got %d", frameRowMaxLines-1, got-1)
+	}
+	if !strings.Contains(b.String(), "… 11 more lines") {
+		t.Errorf("missing overflow marker:\n%s", b.String())
 	}
 }

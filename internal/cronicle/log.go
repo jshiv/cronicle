@@ -1139,16 +1139,16 @@ func WriteAgentRunHeader(w io.Writer, schedule, task, model string, skills []str
 
 	var rows []frameRow
 	if p := strings.TrimSpace(prompt); p != "" {
-		rows = append(rows, frameRow{"prompt", p})
+		rows = append(rows, frameRow{key: "prompt", val: p})
 	}
 	if s := strings.TrimSpace(system); s != "" {
-		rows = append(rows, frameRow{"system", s})
+		rows = append(rows, frameRow{key: "system", val: s})
 	}
 	if len(tools) > 0 {
-		rows = append(rows, frameRow{"tools", strings.Join(tools, ", ")})
+		rows = append(rows, frameRow{key: "tools", val: strings.Join(tools, ", ")})
 	}
 	for _, mc := range mcpCommands {
-		rows = append(rows, frameRow{"mcp", mc})
+		rows = append(rows, frameRow{key: "mcp", val: mc})
 	}
 	writeFrameHeader(w, agentAccent, task, strings.Join(meta, " · "), rows)
 }
@@ -1188,11 +1188,63 @@ func formatCost(costStr string) string {
 
 // WriteShellRunHeader writes the top of a shell run block's frame: the task
 // chip, then the resolved command (post ${date}/${path}/${scratch}
-// substitution) on a `$ …` row so the full string is visible. Control chars
-// in the command are escaped (newlines for sh -c bodies); the row is capped
-// at 200 chars so an enormous shell payload doesn't blow out the layout.
+// substitution) on a `$ …` row. command is expected to be a shellQuote'd
+// line, and the row is written verbatim — never wrapped or truncated — so
+// a user can copy it after the "$" and run it to reproduce a failure.
 func WriteShellRunHeader(w io.Writer, schedule, task, command string) {
-	writeFrameHeader(w, shellAccent, task, "shell · "+schedule, []frameRow{{"$", command}})
+	writeFrameHeader(w, shellAccent, task, "shell · "+schedule,
+		[]frameRow{{key: "$", val: command, verbatim: true}})
+}
+
+// shellQuote renders argv as a single line that can be pasted into bash or
+// zsh and runs the same argv. Plain words stay bare, anything else is
+// single-quoted, and args holding newlines or other control characters
+// (sh -c heredoc scripts) use $'…' so the line never breaks.
+func shellQuote(argv []string) string {
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		out[i] = shellQuoteArg(a)
+	}
+	return strings.Join(out, " ")
+}
+
+func shellQuoteArg(a string) string {
+	if a == "" {
+		return "''"
+	}
+	if !strings.ContainsFunc(a, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			strings.ContainsRune("_-./:,+@%", r))
+	}) {
+		return a
+	}
+	if !strings.ContainsFunc(a, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	var b strings.Builder
+	b.WriteString("$'")
+	for _, r := range a {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '\'':
+			b.WriteString(`\'`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\x%02x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteString("'")
+	return b.String()
 }
 
 // WriteShellRunFooter closes a shell run block's frame.
@@ -1237,13 +1289,17 @@ func (a accent) color() *color.Color {
 }
 
 // frameRow is one labeled line in a frame header ("$ cmd", "prompt …").
+// A verbatim row is written exactly as given — no splitting, escaping or
+// truncation — for values the user must be able to copy intact.
 type frameRow struct {
 	key, val string
+	verbatim bool
 }
 
 const (
-	frameDividerMin = 24
-	frameDividerMax = 72
+	frameDividerMin  = 24
+	frameDividerMax  = 72
+	frameRowMaxLines = 20
 )
 
 func writeFrameHeader(w io.Writer, accent accent, task, meta string, rows []frameRow) {
@@ -1257,12 +1313,31 @@ func writeFrameHeader(w io.Writer, accent accent, task, meta string, rows []fram
 		keyWidth = max(keyWidth, len(r.key))
 	}
 	for _, r := range rows {
-		// Color the key only; keep the value plain so terminals without
-		// color still read naturally and search-in-page finds the literal
-		// command / prompt text.
-		val := truncate(escapeControl(r.val), 200)
-		fmt.Fprintf(w, "%s %s %s\n", frame("│"), dim(fmt.Sprintf("%-*s", keyWidth, r.key)), val)
-		width = max(width, keyWidth+utf8.RuneCountInString(val)+3)
+		// Multi-line values (prompts, system text) keep their line breaks:
+		// continuation lines indent under the first, capped at
+		// frameRowMaxLines so a long prompt can't bury the output.
+		lines := []string{r.val}
+		if !r.verbatim {
+			lines = strings.Split(strings.TrimRight(r.val, "\n"), "\n")
+		}
+		if len(lines) > frameRowMaxLines {
+			more := len(lines) - frameRowMaxLines + 1
+			lines = append(lines[:frameRowMaxLines-1], dim(fmt.Sprintf("… %d more lines", more)))
+		}
+		key := fmt.Sprintf("%-*s", keyWidth, r.key)
+		for i, line := range lines {
+			// Color the key only; keep the value plain so terminals without
+			// color still read naturally and search-in-page finds the
+			// literal command / prompt text.
+			if !r.verbatim {
+				line = truncate(escapeControl(line), 200)
+			}
+			fmt.Fprintf(w, "%s %s %s\n", frame("│"), dim(key), line)
+			width = max(width, keyWidth+utf8.RuneCountInString(line)+3)
+			if i == 0 {
+				key = strings.Repeat(" ", keyWidth)
+			}
+		}
 	}
 	width = min(max(width, frameDividerMin), frameDividerMax)
 	fmt.Fprintln(w, frame("├"+strings.Repeat("─", width-1)))
