@@ -840,6 +840,11 @@ func (task *Task) checkout() error {
 // resolveMCPs fills placeholders (${path}, each.*, …) into each server's
 // command, url, and header values, and resolves $secret.NAME in headers.
 // A header naming an unset secret fails the run before any server starts.
+//
+// Order matters for headers: secrets are resolved in the config's own
+// text, and a for_each item's values are filled in last. Filling first
+// let an item whose value contained "$secret.NAME" (a PR title, say)
+// expand a secret into a header, sent to a url the item might also set.
 func (task *Task) resolveMCPs(r *strings.Replacer) ([]MCP, error) {
 	mcps := make([]MCP, len(task.Agent.MCPs))
 	for i, m := range task.Agent.MCPs {
@@ -854,7 +859,7 @@ func (task *Task) resolveMCPs(r *strings.Replacer) ([]MCP, error) {
 		}
 		mcps[i].Headers = make(map[string]string, len(m.Headers))
 		for k, v := range m.Headers {
-			v = task.fillEach(r.Replace(v))
+			v = r.Replace(v)
 			if strings.Contains(v, "$secret.") {
 				if store := secretstore.Default(); store.Configured() {
 					expanded, err := store.ExpandValue(v)
@@ -864,7 +869,7 @@ func (task *Task) resolveMCPs(r *strings.Replacer) ([]MCP, error) {
 					v = expanded
 				}
 			}
-			mcps[i].Headers[k] = v
+			mcps[i].Headers[k] = task.fillEach(v)
 		}
 	}
 	return mcps, nil

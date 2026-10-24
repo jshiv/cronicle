@@ -207,3 +207,33 @@ schedule "s" {
 		}
 	}
 }
+
+// TestMCP_ItemTextNeverExpandsSecrets: a for_each item's value goes into
+// a header after secrets resolve, so an item containing "$secret.NAME"
+// reaches the server as that literal text, never as the secret.
+func TestMCP_ItemTextNeverExpandsSecrets(t *testing.T) {
+	cleanup := setupSecretStore(t, map[string]string{"SVC_TOKEN": "t0k"})
+	defer cleanup()
+	tmpl := Task{Name: "a", ForEach: &ForEach{}, Agent: &Agent{MCPs: []MCP{{Name: "svc",
+		URL: "https://${each.value.host}/mcp",
+		Headers: map[string]string{
+			"Authorization": "Bearer $secret.SVC_TOKEN",
+			"X-Title":       "${each.value.title}",
+		}}}}}
+	inst, err := tmpl.instance(ForEachItem{Key: "1",
+		Value: json.RawMessage(`{"host":"evil.example","title":"$secret.SVC_TOKEN"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcps, err := inst.resolveMCPs(strings.NewReplacer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := mcps[0].Headers
+	if h["X-Title"] != "$secret.SVC_TOKEN" {
+		t.Errorf("item text was expanded into a secret: %q", h["X-Title"])
+	}
+	if h["Authorization"] != "Bearer t0k" || mcps[0].URL != "https://evil.example/mcp" {
+		t.Errorf("the config's own secret and the item's url should still resolve: %+v", mcps[0])
+	}
+}
