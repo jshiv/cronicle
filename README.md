@@ -13,7 +13,7 @@ Shell tasks still work the way they always did. Agent tasks share the same sched
 One-liner (Linux, macOS):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jshiv/cronicle/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/jshiv/cronicle/main/install.sh | sh
 ```
 
 Detects OS/arch, downloads the matching release artifact, installs to `/usr/local/bin` (or `$HOME/.local/bin` if `/usr/local/bin` isn't writable). Pin a version with `CRONICLE_VERSION=v0.5.0` or override the path with `CRONICLE_INSTALL_DIR=$HOME/.local/bin`.
