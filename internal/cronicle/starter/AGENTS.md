@@ -461,6 +461,60 @@ string and number set. For example:
 - `cronicle exec --task review` can't run a collection read from another
   task, since that task won't run. Run the whole schedule instead.
 
+### MCP servers: more tools for an agent
+
+An agent's built-in tools are `bash`, `text_editor`, `git`, `web_search`,
+and `web_fetch`. An `mcp` block adds a [Model Context Protocol](https://modelcontextprotocol.io)
+server's tools: an issue tracker, a database, a vendor API. Reach for one
+when the agent needs to act on a service. For a fixed call you could
+write yourself, a plain task with `curl` or a CLI is simpler, and you can
+see exactly what it runs.
+
+```hcl
+// Defined once, used by name. Also allowed inside a schedule, where it
+// wins over a top-level block of the same name.
+mcp "github" {
+  url     = "https://api.githubcopilot.com/mcp/"       // a remote server
+  headers = { Authorization = "Bearer $secret.GITHUB_TOKEN" }
+  tools   = ["get_pull_request", "add_issue_comment"]  // only these
+}
+
+schedule "triage" {
+  cron = "0 9 * * *"
+
+  agent "label" {
+    model       = "claude-haiku-4-5"
+    prompt      = "Label today's new issues in org/app."
+    mcp_servers = ["github"]
+
+    mcp "fs" {                                         // a local server, inline
+      command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "${scratch}"]
+    }
+  }
+}
+```
+
+- **Local vs. remote.** `command` launches a local server for the run.
+  Use `env` to name the variables it may see; nothing else is passed.
+  `url` connects to a remote one over Streamable HTTP
+  (`transport = "sse"` for older servers), with `headers` for auth.
+  Header values take `$secret.NAME`, and are never logged or shown.
+- **Limit `tools`.** Without a `tools` list, the agent gets every tool
+  the server offers, including ones that write or delete. For an
+  unattended run, list just the tools the job needs. A name the server
+  doesn't offer fails the run, and the error lists every name it does
+  offer: an easy way to look them up.
+- **Tool names.** The agent sees each tool as `<server>__<tool>`
+  (`github__add_issue_comment`). The run output shows calls as
+  `→ github.add_issue_comment: {…}`, and the block header has an `mcp`
+  row per server.
+- **Lifetime.** Servers start or connect when the agent run begins and
+  stop when it ends. If one fails to start, the run fails before any
+  model call, so the agent never sees half of its tools.
+- **In `for_each`.** `each.*`, `${path}`, and `${scratch}` work in
+  `command`, `url`, and header values, so each item can point a server at
+  its own checkout.
+
 ### Repos
 
 A `repo` block runs tasks against a git repository. Cronicle uses an
