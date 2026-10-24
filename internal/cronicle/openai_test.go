@@ -49,11 +49,16 @@ func TestOpenAIConfigForms(t *testing.T) {
 	}
 }
 func TestAgentProviderValidation(t *testing.T) {
-	for _, a := range []Agent{{Provider: "typo", Prompt: "hi"}, {Provider: "openai", Prompt: "hi", Tools: []string{"web_search"}}, {Provider: "openai", Prompt: "hi", Tools: []string{"web_fetch"}}} {
+	for _, a := range []Agent{{Provider: "typo", Prompt: "hi"}, {Provider: "openai", Prompt: "hi", Tools: []string{"web_fetch"}}} {
 		task := Task{Name: "test", Agent: &a}
 		if task.Validate() == nil {
 			t.Errorf("accepted unsupported config: %+v", a)
 		}
+	}
+	// OpenAI runs web_search as a hosted tool.
+	task := Task{Name: "test", Agent: &Agent{Provider: "openai", Prompt: "hi", Tools: []string{"web_search"}}}
+	if err := task.Validate(); err != nil {
+		t.Errorf("rejected openai web_search: %v", err)
 	}
 }
 func TestProviderAPIKeyIsolation(t *testing.T) {

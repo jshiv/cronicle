@@ -441,11 +441,11 @@ func (task *Task) Validate() error {
 			return ErrAgentNeedsPromptOrSkills
 		}
 		for _, name := range task.Agent.Tools {
-			if task.Agent.Provider == "openai" && (name == "web_search" || name == "web_fetch") {
+			if task.Agent.Provider == "openai" && name == "web_fetch" {
 				return fmt.Errorf("agent tool %q is only supported by the anthropic provider", name)
 			}
 			if !knownAgentTool(name) {
-				return fmt.Errorf("unknown agent tool %q (known: bash, text_editor, web_search, web_fetch)", name)
+				return fmt.Errorf("unknown agent tool %q (known: bash, text_editor, git, web_search, web_fetch)", name)
 			}
 		}
 		// Skill paths are workspace-relative; reject absolute paths and

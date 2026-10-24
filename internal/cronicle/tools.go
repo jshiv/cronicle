@@ -14,6 +14,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/jshiv/cronicle/pkg/agent"
 	"github.com/jshiv/cronicle/pkg/exec"
+	"github.com/openai/openai-go/v3/responses"
 )
 
 // MaxToolOutputBytes caps how much bash output we feed back to the model in
@@ -451,8 +452,15 @@ func (WebSearchTool) Execute(_ context.Context, _ json.RawMessage) (string, bool
 	return "Error: web_search is a server-side tool; should not be dispatched client-side", true
 }
 
+// OpenAIDefinition maps web_search to OpenAI's hosted web search tool when
+// the agent's provider is "openai". OpenAI runs it, like Anthropic does.
+func (WebSearchTool) OpenAIDefinition() responses.ToolUnionParam {
+	return responses.ToolParamOfWebSearch(responses.WebSearchToolTypeWebSearch)
+}
+
 // WebFetchTool exposes Anthropic's server-side web_fetch tool. Same model
-// as WebSearchTool — server-side, no client dispatch.
+// as WebSearchTool — server-side, no client dispatch. OpenAI has no hosted
+// equivalent, so it stays Anthropic-only.
 type WebFetchTool struct{}
 
 func (WebFetchTool) Name() string { return "web_fetch" }

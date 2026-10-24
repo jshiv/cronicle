@@ -648,9 +648,9 @@ schedule "morning" {
     //   text_editor  — view/create/edit files (workspace-confined)
     //   git          — read+write git operations via embedded go-git
     //                  (no host git CLI required)
-    // Opt-in (server-side, billed per call on Anthropic):
-    //   web_search   — server-side web search
-    //   web_fetch    — server-side URL fetch
+    // Opt-in (run by the provider, billed per call):
+    //   web_search   — web search (Anthropic and OpenAI)
+    //   web_fetch    — URL fetch (Anthropic only)
     tools = ["bash", "text_editor", "git", "web_search"]
 
     // Anthropic Agent Skills (progressive disclosure). Each entry is a
@@ -712,9 +712,11 @@ Cronicle process environment. Task-level OpenAI and Anthropic keys are removed
 before environment values reach bash or MCP subprocesses.
 
 OpenAI defaults to `gpt-4.1-mini`. Local bash, text editing, git, skills, and
-MCP tools share Cronicle's existing implementations. Anthropic's hosted
-`web_search` and `web_fetch` are not supported by this provider; requesting
-them fails validation before an API call.
+MCP tools share Cronicle's existing implementations. `web_search` maps to
+OpenAI's hosted web search tool, and each search shows in the stream as
+`→ web_search: <query>`. OpenAI has no hosted URL fetch, so `web_fetch` fails
+validation before an API call; use `bash` with `curl` instead. As with
+Anthropic, `budget_usd` counts tokens only, not the per-search fee.
 
 Streaming output, tool events, JSONL transcripts, cancellation, and per-turn
 usage accounting use the existing reporting path. Requests use `store=false`

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/openai/openai-go/v3/responses"
 )
 
 type echoTool struct{ calls int }
@@ -192,6 +193,56 @@ func TestOpenAIUnsupportedHostedTool(t *testing.T) {
 }
 
 type hostedTestTool struct{ echoTool }
+
+type openAIWebSearchTool struct{ echoTool }
+
+func (openAIWebSearchTool) Name() string { return "web_search" }
+func (openAIWebSearchTool) OpenAIDefinition() responses.ToolUnionParam {
+	return responses.ToolParamOfWebSearch(responses.WebSearchToolTypeWebSearch)
+}
+
+// TestOpenAIHostedWebSearch: a hosted tool is sent as its own Responses
+// tool type, the search OpenAI ran is reported on the stream, and the
+// web_search_call item stays in the history for the next turn.
+func TestOpenAIHostedWebSearch(t *testing.T) {
+	echo := &echoTool{}
+	calls := 0
+	var events []StreamEvent
+	openAIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		tools, _ := json.Marshal(body["tools"])
+		if !strings.Contains(string(tools), `{"type":"web_search"}`) {
+			t.Errorf("web_search not sent as a hosted tool: %s", tools)
+		}
+		if calls == 1 {
+			emitResponse(w, "completed", []any{
+				map[string]any{"type": "web_search_call", "id": "ws_1", "status": "completed", "action": map[string]any{"type": "search", "query": "cronicle release"}},
+				map[string]any{"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "echo", "arguments": `{"value":"hi"}`, "status": "completed"},
+			})
+			return
+		}
+		input, _ := json.Marshal(body["input"])
+		if !strings.Contains(string(input), "ws_1") {
+			t.Errorf("history dropped the web_search_call: %s", input)
+		}
+		emitResponse(w, "completed", textOutput())
+	})
+	_, err := Run(context.Background(), Config{Provider: "openai", Prompt: "search", Tools: []Tool{&openAIWebSearchTool{}, echo}, StreamHandler: func(e StreamEvent) { events = append(events, e) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || echo.calls != 1 {
+		t.Fatalf("calls=%d echo=%d", calls, echo.calls)
+	}
+	if len(events) < 2 || events[0].ToolName != "web_search" || events[0].ToolInput != `{"query":"cronicle release"}` ||
+		events[1].Type != StreamEventToolResult || events[1].IsError {
+		t.Errorf("web search not reported on the stream: %+v", events)
+	}
+}
 
 func (hostedTestTool) Definition() anthropic.ToolUnionParam {
 	return anthropic.ToolUnionParam{OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{}}

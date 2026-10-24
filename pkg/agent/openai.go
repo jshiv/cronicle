@@ -41,7 +41,17 @@ func openAIPrice(model string) (modelPrice, bool) {
 	return modelPrice{}, false
 }
 
+// OpenAIHostedTool is a tool that OpenAI runs on its side (web search),
+// sent as its own Responses tool type rather than as a function. Calls to
+// it come back as output items, never as function calls to dispatch.
+type OpenAIHostedTool interface {
+	OpenAIDefinition() responses.ToolUnionParam
+}
+
 func openAIToolDefinition(tool Tool) (responses.ToolUnionParam, error) {
+	if hosted, ok := tool.(OpenAIHostedTool); ok {
+		return hosted.OpenAIDefinition(), nil
+	}
 	var def FunctionDefinition
 	if function, ok := tool.(FunctionTool); ok {
 		def = function.FunctionDefinition()
@@ -211,8 +221,11 @@ func runOpenAI(ctx context.Context, cfg Config) (res Result, runErr error) {
 				return res, fmt.Errorf("OpenAI conversation item: %w", err)
 			}
 			conversation = append(conversation, input)
-			if item.Type == "function_call" {
+			switch item.Type {
+			case "function_call":
 				calls = append(calls, item.AsFunctionCall())
+			case "web_search_call":
+				emitWebSearch(emit, item.AsWebSearchCall())
 			}
 		}
 		if len(calls) == 0 {
@@ -250,4 +263,23 @@ func runOpenAI(ctx context.Context, cfg Config) (res Result, runErr error) {
 		}
 	}
 	return res, nil
+}
+
+// emitWebSearch reports a hosted web search OpenAI already ran, so the
+// stream shows `→ web_search: <query>` like any other tool call.
+func emitWebSearch(emit func(StreamEvent), ws responses.ResponseFunctionWebSearch) {
+	input := map[string]string{}
+	switch ws.Action.Type {
+	case "search":
+		input["query"] = ws.Action.Query
+		if input["query"] == "" {
+			input["query"] = strings.Join(ws.Action.Queries, "; ")
+		}
+	case "open_page", "find_in_page":
+		input["url"] = ws.Action.URL
+	}
+	raw, _ := json.Marshal(input)
+	emit(StreamEvent{Type: StreamEventToolUseStart, ToolID: ws.ID, ToolName: "web_search", ToolInput: string(raw)})
+	failed := ws.Status == "failed" || ws.Status == "incomplete"
+	emit(StreamEvent{Type: StreamEventToolResult, ToolID: ws.ID, ToolName: "web_search", ToolOutput: string(ws.Status), IsError: failed})
 }

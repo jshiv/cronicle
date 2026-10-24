@@ -229,7 +229,7 @@ schedule "name" {
     model      = "claude-haiku-4-5"
     prompt     = "..."
     system     = "..."                              // optional
-    tools      = ["bash", "text_editor", "git", "web_search", "web_fetch"]  // web_* are Anthropic only
+    tools      = ["bash", "text_editor", "git", "web_search", "web_fetch"]  // web_fetch is Anthropic only
     skills     = ["skills/triage/SKILL.md"]         // Agent Skills, loaded on demand
     max_turns  = 10
     max_tokens = 4000
@@ -249,7 +249,8 @@ Every shell task runs with its working directory set to the task's path:
 the directory holding `cronicle.hcl`, or the task's repo checkout (see
 below). Agent tasks need `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` with
 `provider = "openai"`) in their environment or `env`. With no `tools`,
-an agent gets `bash`, `text_editor`, `web_search`, and `web_fetch`.
+an agent gets `bash`, `text_editor`, and `git`; `web_search` and
+`web_fetch` are opt-in because the provider bills each call.
 
 ### Placeholders
 
