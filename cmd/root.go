@@ -69,6 +69,18 @@ and build larger jobs by chaining tasks with depends:
     }
   }
 
+To run the same step for every item of a list, use for_each rather than a
+loop inside one task; each item becomes its own task in the DAG:
+
+  task "list_prs" {
+    command = ["gh", "pr", "list", "--json", "number,headRefOid"]
+  }
+
+  task "review" {
+    for_each = { for pr in task.list_prs.output : pr.number => pr }
+    command  = ["./review.sh", each.key, each.value.headRefOid]
+  }
+
 Run "cronicle guide" for the full guide to writing schedules.`,
 	Example: `  cronicle init                      # starter cronicle.hcl + AGENTS.md guide
   cronicle exec                      # run every schedule once, now

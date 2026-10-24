@@ -28,12 +28,17 @@ advantage of that.
 3. **Build complexity with `depends`, not inside one task.** Chain small
    tasks into a DAG. Independent steps run in parallel, a failure stops
    only what depends on it, and the output shows exactly which step broke.
-4. **Hand data between tasks through `${scratch}`.** Each run of a
+4. **Fan out with `for_each`, not a loop.** When the same step runs for
+   every item in a list (each PR, each region, each file), use `for_each`
+   instead of a loop inside one task. Each item becomes its own task with
+   its own output, status, and rerun line, so one bad item is visible and
+   doesn't hide the rest. See [`for_each`](#for_each-one-task-per-item).
+5. **Hand data between tasks through `${scratch}`.** Each run of a
    schedule gets its own shared directory. One task writes a file there,
    and the next one reads it.
-5. **Split schedules by trigger.** Work that runs on a different cron, or
+6. **Split schedules by trigger.** Work that runs on a different cron, or
    is unrelated, belongs in its own `schedule` block.
-6. **Reach for an external script only when you need one.** Long programs,
+7. **Reach for an external script only when you need one.** Long programs,
    code with its own tests, or code that lives in another repo can stay
    in files (use a `repo` block for a remote repo). Keep the DAG in
    `cronicle.hcl` and keep each script to one step.
@@ -223,6 +228,12 @@ schedule "name" {
     }
   }
 
+  task "per_item" {
+    for_each     = { for x in task.step.output : x.id => x }  // one task per item: see for_each
+    max_parallel = 4                                // at most 4 items at once
+    command      = ["./handle.sh", each.key, each.value.url]
+  }
+
   agent "review" {                                  // an LLM agent task; same DAG as tasks
     depends    = ["step"]
     provider   = "anthropic"                        // default; "openai" for OpenAI models
@@ -266,6 +277,7 @@ Filled in when a task runs, in `command`, `prompt`, and `system`:
 | `${path}`           | the task's working directory                       |
 | `${scratch}`        | directory shared by all tasks in this run          |
 | `${env.NAME}`       | env var `NAME` when the config is loaded (empty if unset) |
+| `${each.key}`, `${each.value}`, `${each.value.field}` | the item, in a `for_each` task (also `$EACH_KEY` / `$EACH_VALUE` in its env) |
 
 `${...}` is reserved for these placeholders, in heredocs too: any other
 name is a config error. Write shell variables as `$NAME`, or escape the
@@ -273,6 +285,100 @@ braced form as `$${NAME}`.
 
 When a task fails (after its retries), every task that depends on it is
 skipped; tasks that don't depend on it keep running.
+
+### `for_each`: one task per item
+
+`for_each` runs a task once per item of a collection, with Terraform's
+semantics. The collection usually comes from an upstream task's stdout,
+parsed as JSON, so the work can be discovered at run time:
+
+```hcl
+schedule "prs" {
+  cron = "0 * * * *"
+
+  task "list_prs" {                     # prints [{"number": 12, "headRefOid": "a1…"}, …]
+    command = ["gh", "pr", "list", "--json", "number,headRefOid"]
+  }
+
+  task "review" {                       # review[12], review[15], …
+    for_each = { for pr in task.list_prs.output : pr.number => pr }
+    command  = ["./review.sh", each.key, each.value.headRefOid]
+  }
+
+  task "report" {                       # report[12] waits only on review[12]
+    for_each = { for pr in task.list_prs.output : pr.number => pr }
+    depends  = ["review"]
+    command  = ["./report.sh", each.key]
+  }
+
+  task "summary" {                      # waits for every report, failed or not
+    depends             = ["report"]
+    continue_on_failure = true
+    command             = ["./summary.sh"]
+  }
+
+  task "notify" {                       # a literal set: notify[email], notify[slack]
+    for_each = toset(["slack", "email"])
+    depends  = ["summary"]
+    command  = ["./notify.sh", each.key]
+  }
+}
+```
+
+**The collection.** `task.<name>.output` is that task's stdout as JSON.
+Only one task's output can feed a collection, and that task must be a
+plain task, not another `for_each`. As in Terraform, the result must be
+one of:
+- **a map or object:** one item per key.
+- **a set of strings:** one item per element, with `each.key` equal to
+  `each.value`.
+
+Both iterate in sorted order. A list is not a set, so a JSON array is
+rejected until you convert it:
+- `toset(...)` for a list of strings.
+- a for expression for a list of objects, like
+  `{ for pr in task.list_prs.output : pr.number => pr }`.
+
+**Functions.** The `for_each` expression (and only it) can call
+Terraform's pure built-in functions: `merge`, `keys`, `values`,
+`lookup`, `range`, `zipmap`, `concat`, `flatten`, `distinct`, the
+`set*` functions, `toset`/`tolist`/`tomap`/`tostring`/`tonumber`,
+`format`, `join`, `split`, `replace` (regex when wrapped in `/…/`),
+`upper`, `lower`, `jsondecode`, `try`, `can`, and the rest of the
+string and number set. For example:
+- `merge({ main = { sha = "HEAD" } }, { for pr in … : pr.number => pr })`
+- `toset([for i in range(3) : tostring(i)])`
+
+**Inside the task.**
+- `each.key` and `each.value` (with fields: `each.value.sha`) fill into
+  `command`, `env`, and an agent's `prompt` and `system`. A string fills
+  in as itself; anything else fills in as JSON. Values are inserted
+  last, as plain text, and never evaluated.
+- In `sh -c` scripts, read the item from `"$EACH_KEY"` / `"$EACH_VALUE"`
+  rather than writing `${each.key}` into the script: text spliced into a
+  script runs as shell code.
+
+**Dependencies.**
+- A `for_each` task waits on its source automatically.
+- Two `for_each` tasks over the same source that depend on each other
+  pair up by key.
+- Any other task that depends on a `for_each` task waits for all of its
+  items. Without `continue_on_failure`, it's skipped if any item failed.
+- `depends` always names whole tasks (`"review"`), never items
+  (`"review[12]"`). Task names can't contain `[` or `]`.
+
+**Limits, failures, retries.**
+- `max_parallel = N` caps how many items run at once.
+- An expansion holds at most 1,000 items.
+- An empty collection is a successful no-op.
+- Bad output (not JSON, the wrong shape) fails the `for_each` task with
+  the reason. An item missing a field the task reads fails just that
+  item.
+- The items are recorded with the run, so `POST /v1/runs/{id}/retry-failed`
+  and retrying one item (`/v1/runs/{id}/tasks/review[15]/retry`) rerun
+  the same items without asking the source again.
+- `cronicle exec --task review` can't run a collection read from another
+  task, since that task won't run. Run the whole schedule instead.
 
 ### Repos
 
@@ -335,12 +441,23 @@ script call, so the DAG still shows what runs.
 ```
 
 The DAG comes first: each task under the one it waits on, with `←`
-listing every dependency of a task that waits on more than one. Each
-task then prints as a frame: `╭─` with the command, `│` lines of output,
-and `╰─` with the exit code and duration. A failed shell task ends with
-a `↻ rerun` line holding the exact command on one line, ready to paste
-into a shell. The last line, `● name succeeded` or `● name failed`, is
-the result for the whole run.
+listing every dependency of a task that waits on more than one. A
+`for_each` task is drawn as `name[*]`. Each task then prints as a frame:
+`╭─` with the command, `│` lines of output, and `╰─` with the exit code
+and duration. A failed shell task ends with a `↻ rerun` line holding the
+exact command on one line, ready to paste into a shell. For a
+`for_each` item, the line also sets `EACH_KEY` and `EACH_VALUE`. The
+last line, `● name succeeded` or `● name failed`, is the result for the
+whole run.
+
+`for_each` adds a few lines:
+
+```
+⋔ review  3 items from list_prs: 12, 15, 20
+╰─ review[15]  failed · exit 1 · 1.0s
+⊘ report[15] skipped  upstream review[15] failed
+⋔ review  done · 3 items · 1 failed
+```
 
 Everything cronicle keeps is under `.cronicle/` (gitignored): `state.db`
 (run history and secrets), `scratch/` (per-run `${scratch}` dirs),
