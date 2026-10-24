@@ -144,6 +144,8 @@ type Task struct {
 	// into: the for_each task's name and this task's item.
 	forEachOf string
 	eachItem  *ForEachItem
+	// checkoutLines are the task's git checkout steps, for its block.
+	checkoutLines []string
 }
 
 // Agent is the configuration structure that defines an LLM agent invocation.
@@ -441,11 +443,11 @@ func (task *Task) Validate() error {
 			return ErrAgentNeedsPromptOrSkills
 		}
 		for _, name := range task.Agent.Tools {
-			if task.Agent.Provider == "openai" && (name == "web_search" || name == "web_fetch") {
+			if task.Agent.Provider == "openai" && name == "web_fetch" {
 				return fmt.Errorf("agent tool %q is only supported by the anthropic provider", name)
 			}
 			if !knownAgentTool(name) {
-				return fmt.Errorf("unknown agent tool %q (known: bash, text_editor, web_search, web_fetch)", name)
+				return fmt.Errorf("unknown agent tool %q (known: bash, text_editor, git, web_search, web_fetch)", name)
 			}
 		}
 		// Skill paths are workspace-relative; reject absolute paths and
@@ -762,14 +764,13 @@ func (task *Task) validateForEach() error {
 	if task.MaxParallel > 0 && !isForEach {
 		return fmt.Errorf("task %q: max_parallel needs for_each", task.Name)
 	}
+	if task.Repo != nil && (usesEach(task.Repo.Password) || usesEach(task.Repo.Username) || usesEach(task.Repo.DeployKey)) {
+		return fmt.Errorf("task %q: each.key / each.value can name what a repo checks out (url, branch, commit), not its credentials", task.Name)
+	}
 	if isForEach {
 		return nil
 	}
-	fields := append(append([]string(nil), task.Command...), task.Env...)
-	if task.Agent != nil {
-		fields = append(fields, task.Agent.Prompt, task.Agent.System)
-	}
-	for _, f := range fields {
+	for _, f := range task.eachFields() {
 		if usesEach(f) {
 			return fmt.Errorf("task %q uses each.key / each.value but has no for_each", task.Name)
 		}

@@ -85,6 +85,7 @@ func TestRoot_AllSubcommandsRegistered(t *testing.T) {
 		"worker":  false,
 		"secret":  false,
 		"version": false,
+		"guide":   false,
 	}
 	for _, c := range rootCmd.Commands() {
 		if _, ok := want[c.Name()]; ok {
@@ -105,7 +106,7 @@ func TestRoot_HelpListsAllSubcommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected --help error: %v", err)
 	}
-	for _, sub := range []string{"init", "run", "exec", "worker", "secret", "version"} {
+	for _, sub := range []string{"init", "run", "exec", "worker", "secret", "version", "guide"} {
 		if !strings.Contains(out, sub) {
 			t.Errorf("--help output missing %q; output:\n%s", sub, out)
 		}
@@ -365,5 +366,17 @@ func TestSecretSubcommands_ShareWorkdirFlag(t *testing.T) {
 					c.Name(), f.DefValue)
 			}
 		})
+	}
+}
+
+// TestGuideCmd_PrintsGuide: `cronicle guide` prints the same guide that
+// init writes to AGENTS.md.
+func TestGuideCmd_PrintsGuide(t *testing.T) {
+	out, err := executeCmd(t, "guide")
+	if err != nil {
+		t.Fatalf("unexpected guide error: %v", err)
+	}
+	if !strings.Contains(out, "## How to write schedules") {
+		t.Errorf("guide output missing the authoring section; got:\n%s", out)
 	}
 }

@@ -449,6 +449,24 @@ func (task Task) instance(item ForEachItem) (Task, error) {
 	inst.forEachOf = task.Name
 	inst.eachItem = &item
 
+	var firstErr error
+	for _, f := range task.eachFields() {
+		if _, err := substituteEach(f, item); err != nil {
+			firstErr = err
+			break
+		}
+	}
+	// A task with its own repo checkout gets one per item, so parallel
+	// items never share (and fight over) a working tree: <task>/<key>.
+	// (Not <task>[<key>]: brackets in a path are a shell glob.)
+	if task.Repo != nil && task.Path != "" && task.Path != task.CroniclePath {
+		inst.Path = filepath.Join(task.Path, fileSafeName(item.Key))
+	}
+	return inst, firstErr
+}
+
+// eachFields are the strings each.* fill into.
+func (task *Task) eachFields() []string {
 	fields := append(append([]string(nil), task.Command...), task.Env...)
 	if task.Agent != nil {
 		fields = append(fields, task.Agent.Prompt, task.Agent.System)
@@ -456,19 +474,10 @@ func (task Task) instance(item ForEachItem) (Task, error) {
 			fields = append(fields, m.Command...)
 		}
 	}
-	var firstErr error
-	for _, f := range fields {
-		if _, err := substituteEach(f, item); err != nil {
-			firstErr = err
-			break
-		}
+	if task.Repo != nil {
+		fields = append(fields, task.Repo.URL, task.Repo.Branch, task.Repo.Commit)
 	}
-	// A task with its own repo checkout gets one per item, so parallel
-	// items never share (and fight over) a working tree.
-	if task.Repo != nil && task.Path != "" && task.Path != task.CroniclePath {
-		inst.Path = filepath.Join(filepath.Dir(task.Path), fileSafeName(inst.Name))
-	}
-	return inst, firstErr
+	return fields
 }
 
 // fillEach fills each.* placeholders in s for an item; other tasks get s
@@ -506,6 +515,18 @@ func (task *Task) rerunLine(cmd []string) string {
 		" EACH_VALUE=" + shellQuoteArg(eachValueText(task.eachItem.Value)) + " " + line
 }
 
+// eachRepo is the repo an item checks out: its url, branch, and commit
+// can use each.* (commit = each.value.headRefOid checks out each PR).
+// Returns a copy, since items share their for_each task's *Repo.
+func (task *Task) eachRepo(repo *Repo) *Repo {
+	if task.eachItem == nil || repo == nil {
+		return repo
+	}
+	c := *repo
+	c.URL, c.Branch, c.Commit = task.fillEach(c.URL), task.fillEach(c.Branch), task.fillEach(c.Commit)
+	return &c
+}
+
 // eachValueText is EACH_VALUE: a string item as itself, anything else as
 // JSON.
 func eachValueText(raw json.RawMessage) string {
@@ -516,11 +537,15 @@ func eachValueText(raw json.RawMessage) string {
 	return string(raw)
 }
 
-var unsafeFileChars = regexp.MustCompile(`[^A-Za-z0-9._\[\]=+,@-]`)
+var unsafeFileChars = regexp.MustCompile(`[^A-Za-z0-9._=+,@-]`)
 
 // fileSafeName makes a task name usable as one path element: an item key
 // like "org/repo" or "../x" must not escape the directory it's written to.
 func fileSafeName(name string) string {
+	// An item's name[key] reads as name-key; brackets are a shell glob.
+	if base, key, ok := splitInstanceName(name); ok {
+		name = base + "-" + key
+	}
 	s := unsafeFileChars.ReplaceAllString(name, "_")
 	if s == "." || s == ".." {
 		return "_"

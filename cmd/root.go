@@ -48,30 +48,51 @@ var rootCmd = &cobra.Command{
 		cronicle.SetLiveFormat(cronicle.LiveFormat(liveFormat))
 	},
 	Use:   "cronicle",
-	Short: "Cronicle is a distributed, git integrated cron based task engine.",
-	Long: `Cronicle is a distributed, "schedule as code" cron based task engine.
-Cronicle git integration provides a pull model for CI/CD and versioning on job execution.
-Tasks in cronicle can be associated to a remote git repo, which allows tasks to execute
-against a specific version of a code base. 
+	Short: "Schedule shell commands and AI agents as code, run as a DAG on cron.",
+	Long: `Cronicle runs schedules defined in cronicle.hcl. Each schedule is a DAG of
+tasks (shell commands) and agents (LLM runs) fired on a cron trigger, with
+every command, its output, and its result shown as it runs.
 
-Executing the following example cronicle.hcl with
-"cronicle run --path ./cronicle.hcl"
-will clone the repo https://github.com/jshiv/cronicle-sample.git 
-into .repos/jshiv/cronicle-sample.git/example/hello/
-and execute the command "python run.py" from the new path every 5 seconds.
+Write each task as one small step with its command inline in cronicle.hcl,
+and build larger jobs by chaining tasks with depends:
 
-//cronicle.hcl
-schedule "example" {
-  cron = "@every 5s"
+  schedule "daily" {
+    cron = "0 6 * * *"
 
-  task "hello" {
-    command = ["python", "run.py"]
-    repo {
-      url = "https://github.com/jshiv/cronicle-sample.git"
+    task "fetch" {
+      command = ["sh", "-c", "curl -fsS https://example.com/data > ${scratch}/data.json"]
+    }
+
+    task "count" {
+      depends = ["fetch"]
+      command = ["python3", "-c", "import json; print(len(json.load(open('${scratch}/data.json'))))"]
     }
   }
-}
-`,
+
+To run the same step for every item of a list, use for_each rather than a
+loop inside one task; each item becomes its own task in the DAG. Here each
+open PR gets its own agent, in its own checkout of the PR's commit:
+
+  task "list_prs" {
+    command = ["gh", "pr", "list", "--json", "number,title,headRefOid"]
+  }
+
+  agent "review" {
+    for_each = { for pr in task.list_prs.output : pr.number => pr }
+    repo {
+      url    = "https://github.com/org/app.git"
+      commit = each.value.headRefOid
+    }
+    tools  = ["git", "text_editor"]
+    prompt = "Review PR #${each.key}, ${each.value.title}, and write it to ${scratch}/review-${each.key}.md."
+  }
+
+Run "cronicle guide" for the full guide to writing schedules.`,
+	Example: `  cronicle init                      # starter cronicle.hcl + AGENTS.md guide
+  cronicle exec                      # run every schedule once, now
+  cronicle exec --schedule daily     # run one schedule's DAG
+  cronicle run                       # start the scheduler
+  cronicle guide                     # how to write schedules`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	//	Run: func(cmd *cobra.Command, args []string) { },

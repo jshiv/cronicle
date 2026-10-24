@@ -173,7 +173,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			// parallel shell tasks still overlap their compute.
 			sw = NewStreamingWriter()
 			defer sw.Close()
-			WriteShellRunHeader(sw, task.ScheduleName, task.Name, cmd)
+			WriteShellRunHeader(sw, task.ScheduleName, task.Name, cmd, task.checkoutLines)
 			gw = newGutterWriter(sw, shellAccent)
 			stdoutInner = gw
 			stderrInner = gw
@@ -200,6 +200,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			"task", task.Name,
 			"command", shellQuote(cmd),
 			"argv", cmd,
+			"checkout", task.checkoutLines,
 		)
 
 		// Honor the per-run cancel context when one is plumbed in
@@ -330,6 +331,14 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		RunID:         runID,
 	}
 
+	// Tell the agent where it is. Its tools already run in task.Path —
+	// bash's cwd, the root for text_editor and git paths — but without
+	// this it can't know that the path is, say, its own checkout of a PR.
+	// The note goes to the model only; the header's workspace row shows
+	// the same thing to the operator, for tasks with their own checkout.
+	cfg.System = joinSections(system, task.workspaceNote())
+	workspaceRow := task.workspaceRow()
+
 	streaming := IsStreamingPretty()
 	effectiveModel := cfg.Model
 	if effectiveModel == "" {
@@ -364,7 +373,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		sw = NewStreamingWriter()
 		defer sw.Close()
 		WriteAgentRunHeader(sw, task.ScheduleName, task.Name, effectiveModel, skillsAvailable,
-			cfg.Prompt, system, resolvedTools, resolvedMCPCommands)
+			cfg.Prompt, system, workspaceRow, resolvedTools, resolvedMCPCommands, task.checkoutLines)
 		gw = newGutterWriter(sw, agentAccent)
 		downstream = NewAgentStreamRenderer(gw)
 	}
@@ -395,6 +404,8 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		// echoed as-is (no template expansion today, future-proofed).
 		"prompt", cfg.Prompt,
 		"system", system,
+		"workspace", workspaceRow,
+		"checkout", task.checkoutLines,
 		"tools", resolvedTools,
 		"mcp_commands", resolvedMCPCommands,
 	)
@@ -404,7 +415,9 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// context stays consistent (same cwd as a shell task would have).
 	var toolWriter io.Writer
 	if streaming {
-		toolWriter = sw
+		// Through the gutter, like the agent's text: written to sw
+		// directly, a bash tool's output broke out of the frame.
+		toolWriter = gw
 	}
 	// git tool reuses the task's repo auth so push works against the same
 	// remote the clone came from. Errors here are non-fatal — read-only
@@ -533,6 +546,8 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		// that keeps the run summary self-contained.
 		slog.String("prompt", cfg.Prompt),
 		slog.String("system", system),
+		slog.String("workspace", workspaceRow),
+		slog.Any("checkout", task.checkoutLines),
 		slog.Any("tools", resolvedTools),
 		slog.Any("mcp_commands", resolvedMCPCommands),
 	}
@@ -568,51 +583,21 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		return exec.Result{}, err
 	}
 
-	//Test if the given task should execute in the root croniclePath and the croncilePath is a git repo
-	taskPathIsCroniclePathWithGit := (task.Path == task.CroniclePath) && task.CronicleRepo != nil
-
-	//If a repo is given, clone the repo and task.Git.Open(task.Path)
-	if task.Repo != nil {
-		// Replace task.Repo with a clone-with-resolved-password so we don't
-		// race other tasks that share the same schedule-level *Repo pointer.
-		task.Repo = resolveRepoSecrets(task.Repo)
-		opts, err := task.Repo.Auth()
-		if err != nil {
-			return exec.Result{}, err
-		}
-		g, err := Clone(task.Path, task.Repo.URL, opts)
-		if err != nil {
-			return exec.Result{}, err
-		}
-		task.Git = g
-		err = task.Git.Checkout(task.Repo.Branch, task.Repo.Commit)
-		if err != nil {
-			return exec.Result{}, err
-		}
-	} else if taskPathIsCroniclePathWithGit {
-		opts, err := task.CronicleRepo.Auth()
-		if err != nil {
-			return exec.Result{}, err
-		}
-		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo.URL, opts)
-		if err != nil {
-			slog.Error("clone failed", "error", err.Error())
-			return exec.Result{}, err
-		}
-		// Fetch + checkout on every task exec so the worker picks up
-		// new commits on the schedule's repo. Without this, Clone()
-		// short-circuits to "git open, skip clone" on second+ runs and
-		// the worker stays on whatever the initial clone captured —
-		// indefinitely, until the pod restarts. The producer keeps its
-		// /work fresh via its own config-refresh loop; the worker has
-		// no equivalent, so we do it here per-task.
-		//
-		// Symmetric with the task.Repo branch above. Branch/commit
-		// inherit from the schedule-level (CronicleRepo) block.
-		if err := task.Git.Checkout(task.CronicleRepo.Branch, task.CronicleRepo.Commit); err != nil {
-			slog.Error("checkout failed", "error", err.Error())
-			return exec.Result{}, err
-		}
+	// The checkout's steps are logged through the task's own logger, so
+	// they're drawn inside its block (checkoutLog). A failure here ends
+	// the task before it runs: say so as a task_error, which gives it a
+	// terminal state and a line in the output.
+	if err := task.checkout(); err != nil {
+		err = fmt.Errorf("checkout: %w", err)
+		slog.Error("task failed",
+			"entry_type", "task_error",
+			"run_id", task.RunID,
+			"schedule", task.ScheduleName,
+			"task", task.Name,
+			"error", err.Error(),
+			"success", false,
+		)
+		return exec.Result{}, err
 	}
 
 	//Execute task.Command in bash at time t with retry
@@ -689,6 +674,7 @@ func (task *Task) Log(res exec.Result) {
 		"email", email,
 		"command", shellQuote(res.Command),
 		"argv", res.Command,
+		"checkout", task.checkoutLines,
 		"duration_ms", task.lastDurationMs,
 		"stdout", res.Stdout,
 		"stderr", res.Stderr,
@@ -707,4 +693,121 @@ func (task *Task) Log(res exec.Result) {
 		args = append(args, "success", true)
 		slog.Info("shell task complete", args...)
 	}
+}
+
+// workspaceNote is the system-prompt section that tells an agent where it
+// is working: the absolute path its tools run in, what's checked out
+// there, and the run's shared scratch dir.
+func (task *Task) workspaceNote() string {
+	if task.Path == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Workspace\n\nYour working directory is " + task.Path + ".")
+	if ref := task.checkoutRef(); ref != "" {
+		b.WriteString(" It is a git checkout at " + ref)
+		// A remote URL says where the code came from. A local path is
+		// left out: models open it thinking it's the workspace.
+		if u := task.Repo.URL; strings.Contains(u, "://") || strings.Contains(u, "@") {
+			b.WriteString(", cloned from " + redactGitURL(u))
+		}
+		b.WriteString(".")
+	}
+	b.WriteString(" The bash tool starts there, and text_editor and git paths are relative to it, so refer to files by relative path (`src/app.py`, not an absolute one).")
+	if task.ScratchDir != "" {
+		b.WriteString(" Files to hand to other tasks in this run go in " + task.ScratchDir + ".")
+	}
+	return b.String()
+}
+
+// workspaceRow is the header's workspace line: shown only for a task with
+// its own checkout, where the folder and commit aren't obvious.
+func (task *Task) workspaceRow() string {
+	ref := task.checkoutRef()
+	if ref == "" {
+		return ""
+	}
+	return shortPath(task.Path) + " @ " + ref
+}
+
+// checkoutRef describes what a task's own repo checkout is on: the commit
+// (short) and, when one was asked for, the branch. "" without a checkout.
+func (task *Task) checkoutRef() string {
+	if task.Repo == nil || task.Path == task.CroniclePath {
+		return ""
+	}
+	ref := ""
+	if task.Git.Commit != nil {
+		ref = "commit " + task.Git.Commit.Hash.String()[:7]
+	} else if task.Repo.Commit != "" {
+		ref = "commit " + task.Repo.Commit
+	}
+	if task.Repo.Branch != "" {
+		if ref != "" {
+			ref += " "
+		}
+		ref += "(branch " + task.Repo.Branch + ")"
+	}
+	return ref
+}
+
+func joinSections(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + "\n\n" + b
+}
+
+// checkout clones or opens the task's repo and checks out what it asks
+// for: its own repo block, or the cronicle repo when the task runs in the
+// project dir and that is a checkout. Records the steps in
+// task.checkoutLines for the block header.
+func (task *Task) checkout() error {
+	//Test if the given task should execute in the root croniclePath and the croncilePath is a git repo
+	taskPathIsCroniclePathWithGit := (task.Path == task.CroniclePath) && task.CronicleRepo != nil
+	var repo *Repo
+	var dir string
+	switch {
+	case task.Repo != nil:
+		// Replace task.Repo with a clone-with-resolved-password so we don't
+		// race other tasks that share the same schedule-level *Repo pointer.
+		// A for_each item can name what to check out (commit =
+		// each.value.headRefOid); filled after the password resolves.
+		task.Repo = task.eachRepo(resolveRepoSecrets(task.Repo))
+		repo, dir = task.Repo, task.Path
+	case taskPathIsCroniclePathWithGit:
+		// Fetch + checkout on every task exec so the worker picks up
+		// new commits on the schedule's repo. Without this, Clone()
+		// short-circuits to "git open, skip clone" on second+ runs and
+		// the worker stays on whatever the initial clone captured —
+		// indefinitely, until the pod restarts. The producer keeps its
+		// /work fresh via its own config-refresh loop; the worker has
+		// no equivalent, so we do it here per-task. Branch/commit
+		// inherit from the schedule-level (CronicleRepo) block.
+		repo, dir = task.CronicleRepo, task.CroniclePath
+	default:
+		return nil
+	}
+	opts, err := repo.Auth()
+	if err != nil {
+		return err
+	}
+	var cl checkoutLog
+	defer func() { task.checkoutLines = cl.snapshot() }()
+	g, err := cloneWith(cl.logger(task), nil, dir, repo.URL, opts)
+	if err != nil {
+		return err
+	}
+	task.Git = g
+	if err := task.Git.Checkout(repo.Branch, repo.Commit); err != nil {
+		return err
+	}
+	if c := task.Git.Commit; c != nil {
+		subject, _, _ := strings.Cut(c.Message, "\n")
+		cl.add("at " + c.Hash.String()[:7] + " " + subject)
+	}
+	return nil
 }

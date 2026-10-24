@@ -16,7 +16,7 @@ import (
 func TestWriteShellRunHeader_FullCommand(t *testing.T) {
 	argv := []string{"sh", "-c", "rm -rf /tmp/cache/2026-05-19 && touch /tmp/cleanup.done && echo done"}
 	var b bytes.Buffer
-	WriteShellRunHeader(&b, "daily", "cleanup", argv)
+	WriteShellRunHeader(&b, "daily", "cleanup", argv, nil)
 	out := b.String()
 	if !strings.Contains(out, "╭─ cleanup  shell · daily") {
 		t.Fatalf("missing header line:\n%s", out)
@@ -59,7 +59,7 @@ func TestWriteAgentRunHeader_PromptAndTools(t *testing.T) {
 	mcps := []string{"github: npx -y @modelcontextprotocol/server-github"}
 	var b bytes.Buffer
 	WriteAgentRunHeader(&b, "morning_brief", "brief", "claude-haiku-4-5", nil,
-		prompt, system, tools, mcps)
+		prompt, system, "", tools, mcps, nil)
 	out := b.String()
 	for _, want := range []string{
 		"╭─ brief  agent · morning_brief · claude-haiku-4-5",
@@ -80,7 +80,7 @@ func TestWriteAgentRunHeader_PromptAndTools(t *testing.T) {
 // "prompt:" / "system:" / "tools:" rows.
 func TestWriteAgentRunHeader_OmitsEmpty(t *testing.T) {
 	var b bytes.Buffer
-	WriteAgentRunHeader(&b, "s", "t", "claude-x", nil, "", "", nil, nil)
+	WriteAgentRunHeader(&b, "s", "t", "claude-x", nil, "", "", "", nil, nil, nil)
 	out := b.String()
 	for _, unwanted := range []string{"prompt", "system", "tools", "mcp"} {
 		if strings.Contains(out, unwanted) {
@@ -276,13 +276,13 @@ func TestWriteAgentRunHeader_MultilinePrompt(t *testing.T) {
 	defer func() { color.NoColor = prev }()
 
 	var b bytes.Buffer
-	WriteAgentRunHeader(&b, "s", "t", "m", nil, "line one\nline two", "", nil, nil)
+	WriteAgentRunHeader(&b, "s", "t", "m", nil, "line one\nline two", "", "", nil, nil, nil)
 	if !strings.Contains(b.String(), "│ prompt line one\n│        line two\n") {
 		t.Fatalf("prompt lines not aligned:\n%s", b.String())
 	}
 
 	b.Reset()
-	WriteAgentRunHeader(&b, "s", "t", "m", nil, strings.Repeat("more\n", 30), "", nil, nil)
+	WriteAgentRunHeader(&b, "s", "t", "m", nil, strings.Repeat("more\n", 30), "", "", nil, nil, nil)
 	if got := strings.Count(b.String(), "more"); got != frameRowMaxLines-1+1 { // rows + "more lines" marker
 		t.Errorf("expected %d prompt rows before the cap, got %d", frameRowMaxLines-1, got-1)
 	}

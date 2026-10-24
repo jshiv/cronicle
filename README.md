@@ -27,52 +27,169 @@ cronicle run --command "/bin/echo cronicle" --cron "@every 5s"
 
 The `cronicle.hcl` file maintains the `schedule as code` for task execution.
 
-`cronicle init --path cron` will produce a default file:
-```hcl
-//cronicle.hcl
-schedule "example" {
-  cron       = "@every 5s"
+`cronicle init --path cron` creates a project with a starter
+`cronicle.hcl`: a small DAG of inline commands you can run right away
+with `cronicle exec --path cron/cronicle.hcl`. It also writes
+`AGENTS.md`, a guide to the commands, the `cronicle.hcl` format, and how
+to structure schedules, plus a `CLAUDE.md` that imports it, so an AI
+assistant working in the project picks it up. `cronicle guide` prints
+the same guide.
 
-  task "hello" {
-    command = ["python", "run.py"]
-    repo {
-      url = "https://github.com/jshiv/cronicle-sample.git"
-    }
+Cronicle is built to make every run transparent: it draws the DAG,
+prints each task's exact command above its output, and gives a
+pasteable rerun line when a task fails. Schedules read best when each
+task is one small step with its command written inline, and larger jobs
+are built by chaining tasks with `depends`:
+
+```hcl
+schedule "example" {
+  // Cron expression, "@every 1m", "@once", or "" (only run with exec).
+  cron = "@every 1m"
+
+  // ${scratch} is a directory shared by every task in one run of this
+  // schedule: the place to hand files from one step to the next.
+  task "numbers" {
+    command = ["sh", "-c", "seq 1 10 > ${scratch}/numbers.txt && echo 'wrote 10 numbers'"]
+  }
+
+  // `numbers` must succeed first. `total` and `evens` share that one
+  // dependency, so they run in parallel.
+  task "total" {
+    depends = ["numbers"]
+    command = ["python3", "-c", <<-EOT
+      nums = [int(n) for n in open("${scratch}/numbers.txt")]
+      print("total", sum(nums))
+      open("${scratch}/total.txt", "w").write(str(sum(nums)))
+    EOT
+    ]
+  }
+
+  task "evens" {
+    depends = ["numbers"]
+    command = ["sh", "-c", "grep -cE '[02468]$' ${scratch}/numbers.txt | tee ${scratch}/evens.txt"]
+  }
+
+  // Waits on both branches. If either fails, `report` is skipped.
+  task "report" {
+    depends = ["total", "evens"]
+    command = ["sh", "-c", <<-EOT
+      echo "report for ${date}"
+      echo "  total: $(cat ${scratch}/total.txt)"
+      echo "  evens: $(cat ${scratch}/evens.txt)"
+    EOT
+    ]
   }
 }
 ```
 
-`cronicle run --path cron/cronicle.hcl`
+`cronicle exec --path cron/cronicle.hcl` runs it once, now (the
+resolved `.cronicle/scratch/…` paths are shortened to `${scratch}` here):
 ```
-21:44:16 config loaded path=./cronicle/cronicle.hcl schedules=1 tasks=1
-21:44:16 Starting Scheduler... cronicle=start
-21:44:16 Starting cron... schedule=example cron="@every 5s"
-21:44:21 Queuing... schedule=example
-──── 21:44:21 · schedule "example" ──────────────────────────────────
-DAG:
-  └─ hello
+◆ example  07:11:29 · 4 tasks · run 20261023T141129Z-2add7c27
+  numbers
+  ├─ total
+  └─ evens
+     └─ report  ← total, evens
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-shell run · schedule=example · task=hello · python run.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+╭─ numbers  shell · example
+│ $ sh -c 'seq 1 10 > ${scratch}/numbers.txt && echo '\''wrote 10 numbers'\'''
+├───────────────────────────────────────────────────────────────────────
+│ wrote 10 numbers
+╰─ numbers  exit 0 · 5ms
 
-X: 0.360346904169
+╭─ evens  shell · example
+│ $ sh -c 'grep -cE '\''[02468]$'\'' ${scratch}/numbers.txt | tee ${scratch}/evens.txt'
+├───────────────────────────────────────────────────────────────────────
+│ 5
+╰─ evens  exit 0 · 5ms
 
-[exit=0 · 12ms]
+╭─ total  shell · example
+│ $ python3 -c
+│     nums = [int(n) for n in open("${scratch}/numbers.txt")]
+│     print("total", sum(nums))
+│     open("${scratch}/total.txt", "w").write(str(sum(nums)))
+├───────────────────────────────────────────────────────────────────────
+│ total 55
+╰─ total  exit 0 · 17ms
 
-✓ schedule "example" complete · 1 task · 0.5s
+╭─ report  shell · example
+│ $ sh -c
+│     echo "report for 2026-10-23"
+│     echo "  total: $(cat ${scratch}/total.txt)"
+│     echo "  evens: $(cat ${scratch}/evens.txt)"
+├───────────────────────────────────────────────────────────────────────
+│ report for 2026-10-23
+│   total: 55
+│   evens: 5
+╰─ report  exit 0 · 6ms
+
+● example succeeded  4 tasks · 34ms
 ```
 
-Agent tasks render in the same shape, with token usage and cost in the footer:
+`cronicle run --path cron/cronicle.hcl` starts the scheduler, which logs
+one short line per routine event and fires the same run every minute:
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-agent run · schedule=example · task=summarize · model=claude-opus-4-7
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Today's deploy added agent task support, fixed a queue race, and bumped Go to 1.26.
-
-[64 in / 25 out tokens · $0.001050 · 873ms · stop=end_turn]
+21:44:16 · config loaded  cron/cronicle.hcl · 1 schedule · 4 tasks
+21:44:16 · scheduler started
+21:44:16 · scheduled example  @every 1m
+21:45:16 · queued example
+◆ example  21:45:16 · 4 tasks · run 20261023T214516Z-0b2d002b
+  …
 ```
+
+Every run opens with its DAG drawn as a tree: each task nests under its
+deepest dependency, and a task that waits on more than one names them
+all after `←`. Every task then gets its own framed block: the command
+at the top, its output in the gutter, and exit code and duration at the
+bottom. Shell tasks are framed in teal, agent tasks in coral, so the two
+are easy to tell apart in a busy run:
+```
+◆ etl  07:00:40 · 5 tasks · run 20261023T140040Z-ec124730
+  extract
+  ├─ transform
+  │  └─ load  ← transform, audit
+  └─ summary
+  audit
+
+╭─ transform  shell · etl
+│ $ sh -c
+│     # normalize and dedupe
+│     for f in raw/*.csv; do
+│       echo "cleaning $f"
+│     done
+│     echo "1,198 rows after dedupe"
+├───────────────────────────────────
+│ cleaning raw/*.csv
+│ 1,198 rows after dedupe
+╰─ transform  exit 0 · 3ms
+
+╭─ summary  agent · etl · claude-haiku-4-5
+│ prompt In one sentence, summarize tonight's ETL run.
+├────────────────────────────────────────────────────
+│ The nightly ETL extracted 1,204 rows and deduped them to 1,198.
+╰─ summary  64 in · 25 out · $0.0001 · 873ms · end_turn
+
+╭─ load  shell · etl
+│ $ python3 -c
+│     import sys
+│     print("loading 1,198 rows")
+│     sys.exit("connection refused: warehouse:5432")
+├───────────────────────────────────────────────────
+│ loading 1,198 rows
+│ connection refused: warehouse:5432
+╰─ load  failed · exit 1 · 28ms
+↻ rerun load:
+python3 -c $'import sys\nprint("loading 1,198 rows")\nsys.exit("connection refused: warehouse:5432")\n'
+
+● etl failed  exit status 1 · 5 tasks · 1.4s
+```
+
+Inline scripts (`sh -c`, `bash -c`, `python -c`, `node -e`, `ruby -e`,
+`perl -e`, including behind wrappers like `uv run … python -c`) are
+shown on their own lines with syntax highlighting. When a shell task
+fails, the block ends with a `↻ rerun` line: the exact command as a
+single line, flush left so a triple-click selects all of it, quoted so
+it pastes into bash or zsh and runs the same argv.
 
 ### Output formats
 
@@ -80,9 +197,17 @@ Today's deploy added agent task support, fixed a queue race, and bumped Go to 1.
 
 | flag | shape | best for |
 |---|---|---|
-| `--log-format=pretty` | bordered blocks, dim lifecycle | humans at a TTY |
+| `--log-format=pretty` | DAG tree, framed task blocks, one-line lifecycle | humans at a TTY |
 | `--log-format=text` | `time=... level=INFO msg=... key=val` | piping to a log consumer |
 | `--log-format=json` | one JSON object per line | strictest machine parsing |
+
+In pretty mode, routine scheduler lines (config loads, heartbeats,
+queueing, shutdown) are one short line each, marked `·` for info, `▲`
+for warnings and `■` for errors. They never cut into a task block: a
+line logged while a block is printing waits and prints after it.
+`text` and `json` are unchanged by the pretty renderer. Shell events
+carry the command both as `command` (the single pasteable line) and
+`argv` (the exact argument list).
 
 `--log-to-file` is independent of stdout: when set, structured JSON is mirrored to `.cronicle/log/cronicle.jsonl` (rotated by lumberjack: 500MB × 3 backups × 28 days, gzipped). Pretty stdout + tail-able JSON file at the same time is the intended composition.
 
@@ -281,56 +406,78 @@ fails, task B still runs if it doesn't depend on A.
 
 `for_each` runs a task once per item of a collection, Terraform style.
 The collection usually comes from an upstream task's output, so the
-work can be discovered at run time: list the open pull requests, then
-review each one as its own task, with its own logs, status, retries and
+work can be discovered at run time. For example, list the open pull
+requests, then review each one with its own agent in its own checkout
+of the PR. Each review gets its own logs, status, cost, retries and
 rerun line.
 
 ```hcl
-schedule "prs" {
+schedule "pr_review" {
   cron = "0 * * * *"
 
-  // Prints JSON: [{"number": 12, "headRefOid": "a1b2…"}, …]
+  // Prints the open PRs: [{"number": 12, "title": "…", "headRefOid": "a1b2…", "baseRefName": "main"}, …]
   task "list_prs" {
-    command = ["gh", "pr", "list", "--json", "number,headRefOid"]
+    command = ["gh", "pr", "list", "--repo", "org/app", "--json", "number,title,headRefOid,baseRefName"]
+    env     = ["GH_TOKEN=$secret.GITHUB_TOKEN"]
   }
 
-  // One task per PR: review[12], review[15], …
-  task "review" {
-    for_each = { for pr in task.list_prs.output : pr.number => pr }
-    command  = ["./review.sh", each.key, each.value.headRefOid]
+  // One agent per PR (review[12], review[15], …), each in its own
+  // checkout of that PR's head commit.
+  agent "review" {
+    for_each     = { for pr in task.list_prs.output : pr.number => pr }
+    max_parallel = 3
+
+    repo {
+      url      = "https://github.com/org/app.git"
+      password = "$secret.GITHUB_TOKEN"
+      commit   = each.value.headRefOid
+    }
+
+    model      = "claude-sonnet-4-6"
+    tools      = ["git", "text_editor"]
+    max_turns  = 20
+    budget_usd = 0.50
+    prompt     = <<-EOT
+      Review pull request #${each.key}, "${each.value.title}". The working
+      tree is the PR's head commit. Diff it against origin/${each.value.baseRefName}
+      with the git tool, read the changed files, and use git show for a
+      file's version on the base branch. Write the review to
+      ${scratch}/review-${each.key}.md: bugs first, then risks, then nits.
+    EOT
   }
 
-  // Same collection, so report[12] waits only on review[12].
-  task "report" {
+  // Same collection, so post[12] waits only on review[12].
+  task "post" {
     for_each = { for pr in task.list_prs.output : pr.number => pr }
     depends  = ["review"]
-    command  = ["./report.sh", each.key]
+    command  = ["gh", "pr", "comment", each.key, "--repo", "org/app", "--body-file", "${scratch}/review-${each.key}.md"]
+    env      = ["GH_TOKEN=$secret.GITHUB_TOKEN"]
   }
 
   // A plain task waits for every item, failed or not.
   task "summary" {
-    depends             = ["report"]
+    depends             = ["post"]
     continue_on_failure = true
-    command             = ["./summary.sh"]
+    command             = ["sh", "-c", "ls ${scratch} | grep -c '^review-' | xargs echo reviews written:"]
   }
 }
 ```
 
 ```
-◆ prs  12:00:00 · 4 tasks · run 20261024T120000Z-1a2b3c4d
+◆ pr_review  12:00:00 · 4 tasks · run 20261024T120000Z-1a2b3c4d
   list_prs
   └─ review[*]
-     └─ report[*]
+     └─ post[*]
         └─ summary
 
-╭─ list_prs  shell · prs
+╭─ list_prs  shell · pr_review
 …
 ⋔ review  3 items from list_prs: 12, 15, 20
-⋔ report  3 items from list_prs: 12, 15, 20
-╭─ review[12]  shell · prs
-│ $ ./review.sh 12 a1b2c3
+⋔ post  3 items from list_prs: 12, 15, 20
+╭─ review[12]  agent · pr_review · claude-sonnet-4-6
+│ prompt Review pull request #12, "Add retries". …
 …
-⊘ report[15] skipped  upstream review[15] failed
+⊘ post[15] skipped  upstream review[15] failed
 ⋔ review  done · 3 items · 1 failed
 ```
 
@@ -380,8 +527,11 @@ for_each = toset([for i in range(3) : tostring(i)])   # "0", "1", "2"
 
 **Inside the task.**
 - `each.key` and `each.value` (with fields: `each.value.sha`,
-  `each.value["head-sha"]`) can be used in `command`, `env`, and an
-  agent's `prompt` and `system`.
+  `each.value["head-sha"]`) can be used in `command`, `env`, an agent's
+  `prompt` and `system`, and a `repo` block's `url`, `branch` and
+  `commit`. Each item with a `repo` gets its own working tree, so items
+  running at once never share a checkout. Credentials can't use
+  `each.*`.
 - A string fills in as itself; anything else fills in as JSON. The value
   goes into the argument as plain text and is never evaluated.
 - Item text is filled in last, after `${date}`-style placeholders and
@@ -523,9 +673,9 @@ schedule "morning" {
     //   text_editor  — view/create/edit files (workspace-confined)
     //   git          — read+write git operations via embedded go-git
     //                  (no host git CLI required)
-    // Opt-in (server-side, billed per call on Anthropic):
-    //   web_search   — server-side web search
-    //   web_fetch    — server-side URL fetch
+    // Opt-in (run by the provider, billed per call):
+    //   web_search   — web search (Anthropic and OpenAI)
+    //   web_fetch    — URL fetch (Anthropic only)
     tools = ["bash", "text_editor", "git", "web_search"]
 
     // Anthropic Agent Skills (progressive disclosure). Each entry is a
@@ -587,9 +737,11 @@ Cronicle process environment. Task-level OpenAI and Anthropic keys are removed
 before environment values reach bash or MCP subprocesses.
 
 OpenAI defaults to `gpt-4.1-mini`. Local bash, text editing, git, skills, and
-MCP tools share Cronicle's existing implementations. Anthropic's hosted
-`web_search` and `web_fetch` are not supported by this provider; requesting
-them fails validation before an API call.
+MCP tools share Cronicle's existing implementations. `web_search` maps to
+OpenAI's hosted web search tool, and each search shows in the stream as
+`→ web_search: <query>`. OpenAI has no hosted URL fetch, so `web_fetch` fails
+validation before an API call; use `bash` with `curl` instead. As with
+Anthropic, `budget_usd` counts tokens only, not the per-search fee.
 
 Streaming output, tool events, JSONL transcripts, cancellation, and per-turn
 usage accounting use the existing reporting path. Requests use `store=false`
@@ -661,25 +813,23 @@ composes paths to bundled scripts correctly across multi-skill runs.
 #### Run shape
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-agent run · schedule=daily · task=morning_brief · model=claude-haiku-4-5 · skills=[morning-brief]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-I'll load the morning-brief skill and follow its instructions.
-→ skill: morning-brief
-← exit=0 0ms
-
-— turn 2 —
-→ bash: skills/morning-brief/scripts/today.sh
-2026-05-10
-← exit=0 20ms
-
-— turn 3 —
-- On 2026-05-10, ...
-- ...
-BRIEF COMPLETE
-
-[5742 in / 247 out tokens · $0.006977 · 3705ms · stop=end_turn]
+╭─ morning_brief  agent · daily · claude-haiku-4-5 · skills morning-brief
+│ prompt Write today's morning brief.
+├──────────────────────────────────────
+│ I'll load the morning-brief skill and follow its instructions.
+│ → skill: morning-brief
+│ ← exit=0 0ms
+│
+│ — turn 2 —
+│ → bash: skills/morning-brief/scripts/today.sh
+│ 2026-05-10
+│ ← exit=0 20ms
+│
+│ — turn 3 —
+│ - On 2026-05-10, ...
+│ - ...
+│ BRIEF COMPLETE
+╰─ morning_brief  5742 in · 247 out · $0.0070 · 3.7s · end_turn
 ```
 
 The `agent_run` slog event carries `skills_available` (the catalog the agent
@@ -697,6 +847,7 @@ Subcommands:
 | `status` | List tracked changes (porcelain-style summary) |
 | `log` | Recent commits in `<sha> <subject>` form (default 10, max 200) |
 | `diff` | Unified diff. `from`/`to` are refs (branch, hash, `HEAD~N`); default is HEAD vs working tree |
+| `show` | A file as it is at a ref (`ref`, `path`: e.g. the base branch's version), or a commit's author, message and changed files |
 | `branch` | Create + switch to a new branch from current HEAD |
 | `commit` | Stage all worktree changes and commit |
 | `push` | Push current branch using the same auth as the task's `repo` block |
@@ -710,15 +861,15 @@ agent {
 }
 ```
 
-In the pretty stream, git calls render as `→ git: <subcommand> <key arg>`:
+In the pretty stream, git calls render the way they'd be typed, e.g. `→ git: log -n 5` or `→ git: show origin/main:calc.py`:
 
 ```
-→ git: log
-← exit=0 4ms
-→ git: diff abc1234~1..abc1234
-← exit=0 6ms
-→ editor: create ./CHANGELOG.md
-← exit=0 0ms
+│ → git: log
+│ ← exit=0 4ms
+│ → git: diff abc1234~1..abc1234
+│ ← exit=0 6ms
+│ → editor: create ./CHANGELOG.md
+│ ← exit=0 0ms
 ```
 
 `push` reuses the auth method captured at clone time; an agent that ran on a task with no `repo` block won't have credentials for a private remote.
@@ -757,11 +908,11 @@ Lifecycle and isolation:
 In the pretty stream, MCP tool calls render with `<server>.<tool>`:
 
 ```
-→ fs.list_directory: {"path":"/data"}
-← exit=0 3ms
-
-→ github.create_issue: {"title":"...","body":"..."}
-← exit=0 412ms
+│ → fs.list_directory: {"path":"/data"}
+│ ← exit=0 3ms
+│
+│ → github.create_issue: {"title":"...","body":"..."}
+│ ← exit=0 412ms
 ```
 
 The `agent_run` slog event carries `mcp_servers=[fs,github]` so an audit
@@ -785,13 +936,21 @@ heartbeat = "@every 60s"
 
 ## Bash Commands
 
-The init command sets up a new schedule repository with a sample conicle.hcl file
+The init command sets up a new project with a starter cronicle.hcl and the guide
 ```bash
 cronicle init
-tree
+tree -a -L 1
 .
-├── cronicle.hcl
-└── .repos
+├── .cronicle
+├── .gitignore
+├── AGENTS.md
+├── CLAUDE.md
+└── cronicle.hcl
+```
+
+The `guide` command prints the guide to writing schedules (the same text as `AGENTS.md`).
+```bash
+cronicle guide
 ```
 
 The `run` command starts the scheduler.
@@ -948,10 +1107,10 @@ A typical frame:
 
 ```
 event: cronicle
-data: hello from tick
+data: │ hello from tick
 
 event: cronicle
-data: step 2
+data: │ step 2
 ```
 
 Multi-line records (a pretty-rendered shell_run header, or an agent text
@@ -1014,7 +1173,7 @@ curl -N -H "Authorization: Bearer smoke" \
      "http://localhost:7766/v1/runs/$RUN_ID/events"
 ```
 
-Frames you'll see: `shell_run_start` (header rule + command), six `stdout_chunk` lines (`[step] fetching` …), footer `[exit=0 · 6062ms · transcript=…]`, `schedule_complete` ✓.
+Frames you'll see: `schedule_start` (the DAG tree), `shell_run_start` (frame header + command), five `stdout_chunk` lines in the gutter (`│ [step] fetching` …), the footer `╰─ compile  exit 0 · 5.0s · …`, then `schedule_complete` (`● long-build succeeded`).
 
 **Per-schedule** — open SSE first, then trigger twice. Both runs flow through one connection:
 

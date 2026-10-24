@@ -27,19 +27,19 @@ import (
 )
 
 // workerCmd represents the worker command. As of v0.5 the only supported
-// transport is HTTP long-poll against a `cronicle run --queue self`
+// transport is HTTP long-poll against a `cronicle run --listen`
 // producer. The earlier vice (Redis/NSQ) modes were removed alongside
 // the broker dependencies.
 var workerCmd = &cobra.Command{
 	Use:   "worker",
 	Short: "Run a worker that long-polls a cronicle producer for jobs.",
 	Long: `Workers consume the producer-served queue over HTTP. Start cronicle on
-one host with --queue self, then point one or more workers at it:
+one host with --listen (which turns on the durable job queue), then point
+one or more workers at it:
 
 	# producer (host A)
 	cronicle run \
 	    --path cronicle.hcl \
-	    --queue self \
 	    --listen :8765 \
 	    --listen-token "$CRONICLE_LISTEN_TOKEN" \
 	    --worker=false
@@ -54,6 +54,7 @@ one host with --queue self, then point one or more workers at it:
 Multiple workers can connect to the same producer; SQLite WAL serializes
 job claims so only one worker executes any given run.
 `,
+	Example: `  cronicle worker --producer http://producer:8765 --producer-token "$CRONICLE_LISTEN_TOKEN"`,
 	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
 		path, _ := cmd.Flags().GetString("path")
@@ -99,7 +100,7 @@ job claims so only one worker executes any given run.
 func init() {
 	rootCmd.AddCommand(workerCmd)
 	workerCmd.Flags().String("path", "./", "Local schedule repo root. Used by tasks that have a repo block; same semantics as the producer's --path.")
-	workerCmd.Flags().String("producer", "", "URL of a cronicle run --queue self producer (e.g. http://producer:8765). Required.")
+	workerCmd.Flags().String("producer", "", "URL of a cronicle run --listen producer (e.g. http://producer:8765). Required.")
 	workerCmd.Flags().String("producer-token", "", "Bearer token for the producer's HTTP API. Falls back to $CRONICLE_LISTEN_TOKEN.")
 	workerCmd.Flags().String("worker-id", "", "Stable identifier for this worker in the producer's claim/ack records. Default: <hostname>-<pid>.")
 	workerCmd.Flags().Bool("log-to-file", false, "Mirror structured JSON logs to path/.cronicle/log/cronicle.jsonl (rotated by lumberjack); per-run agent transcripts go to path/.cronicle/runs/.")

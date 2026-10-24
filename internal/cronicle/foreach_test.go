@@ -2,6 +2,7 @@ package cronicle
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/go-git/go-git/v6"
 	"github.com/hashicorp/hcl/v2/hclparse"
 )
 
@@ -91,6 +93,19 @@ func TestForEach_ParseErrors(t *testing.T) {
 		  task "b" { depends = ["a[k]"]
 		  command = ["echo"] }`, `depend on the for_each task "a" instead`},
 		{`task "a[1]" { command = ["echo"] }`, `names can't contain [ or ]`},
+		{`task "a" { for_each = toset(["k"])
+		  command = ["echo"]
+		  repo {
+		    url      = "https://example.com/r.git"
+		    password = each.value
+		  }
+		  }`, `not its credentials`},
+		{`task "a" { command = ["echo"]
+		  repo {
+		    url    = "https://example.com/r.git"
+		    branch = each.key
+		  }
+		  }`, `has no for_each`},
 	} {
 		// The cases are written compactly; open each block on its own line.
 		body := strings.ReplaceAll(strings.ReplaceAll(tc.body, `" { `, "\" {\n"), "] }", "]\n}")
@@ -226,7 +241,7 @@ func TestForEach_Instance(t *testing.T) {
 	if got := inst.rerunLine([]string{"sh", "-c", "echo $EACH_KEY"}); got != `EACH_KEY=org/x EACH_VALUE='{"sha":"a1"}' sh -c 'echo $EACH_KEY'` {
 		t.Errorf("rerun line must set the item's env: %s", got)
 	}
-	if inst.Path != "/c/.cronicle/repos/r.git/s/review[org_x]" {
+	if inst.Path != "/c/.cronicle/repos/r.git/s/review/org_x" || fileSafeName(inst.Name) != "review-org_x" {
 		t.Errorf("each item needs its own checkout, named safely: %s", inst.Path)
 	}
 	if tmpl.fillEach("${each.key}") != "${each.key}" || tmpl.rerunLine([]string{"ls"}) != "ls" {
@@ -583,5 +598,212 @@ func TestRenderForEach(t *testing.T) {
 	_ = renderScheduleStart(&b, rec)
 	if !strings.Contains(b.String(), "  list\n  └─ review[*]\n") {
 		t.Errorf("DAG should draw for_each tasks as name[*]:\n%s", b.String())
+	}
+}
+
+// TestExecuteTasks_ForEachRepoCheckout: each.* in a repo block picks what
+// each item checks out — here, one commit per item — into its own
+// working tree, so items running side by side never share a checkout.
+func TestExecuteTasks_ForEachRepoCheckout(t *testing.T) {
+	buf := captureLog(t)
+	src := scratchRepo(t)
+	r, err := git.PlainOpen(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, _ := r.Head()
+	second := head.Hash().String()
+	c, _ := r.CommitObject(head.Hash())
+	first := c.ParentHashes[0].String()
+
+	conf, err := parseConfig(t, fmt.Sprintf(`
+schedule "s" {
+  task "list" {
+    command = ["echo", "{\"one\": {\"sha\": \"%s\"}, \"two\": {\"sha\": \"%s\"}}"]
+  }
+  task "show" {
+    for_each = task.list.output
+    repo {
+      url    = %q
+      commit = each.value.sha
+    }
+    command = ["cat", "hello.txt"]
+  }
+}`, first, second, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := conf.Schedules[0]
+	sched.RunID = "R1"
+	if err := sched.ExecuteTasks(); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	paths := map[string]bool{}
+	for _, e := range events(buf, "shell_run") {
+		got[e["task"].(string)] = strings.TrimSpace(e["stdout"].(string))
+		paths[e["path"].(string)] = true
+	}
+	if got["show[one]"] != "first version" || got["show[two]"] != "second version" {
+		t.Errorf("each item should check out its own commit: %v", got)
+	}
+	if len(paths) != 3 {
+		t.Errorf("want a separate working tree per item: %v", paths)
+	}
+	for _, e := range events(buf, "shell_run") {
+		if e["task"] != "show[one]" {
+			continue
+		}
+		lines := fmt.Sprint(e["checkout"])
+		for _, want := range []string{"clone " + src, "checkout commit " + first[:7], "at " + first[:7] + " Add hello.txt"} {
+			if !strings.Contains(lines, want) {
+				t.Errorf("show[one] checkout lines missing %q: %s", want, lines)
+			}
+		}
+	}
+	if steps := events(buf, "task_checkout"); len(steps) == 0 || steps[0]["task"] == nil {
+		t.Errorf("git steps should still be logged, tagged with the task: %v", steps)
+	}
+	if sched.TaskMap()["show"].Repo.Commit != "${each.value.sha}" {
+		t.Error("an item changed the for_each task's shared repo block")
+	}
+}
+
+// TestAgentWorkspaceNote: an agent is told where its tools run — for a
+// for_each item with a repo, its own checkout and the commit on it — and
+// the operator sees the same in the header.
+func TestAgentWorkspaceNote(t *testing.T) {
+	plain := Task{Path: "/c", CroniclePath: "/c", ScratchDir: "/c/.cronicle/scratch/s/R1"}
+	if got := plain.workspaceNote(); got != "## Workspace\n\nYour working directory is /c. The bash tool starts there, and text_editor "+
+		"and git paths are relative to it, so refer to files by relative path (`src/app.py`, not an absolute one). "+
+		"Files to hand to other tasks in this run go in /c/.cronicle/scratch/s/R1." {
+		t.Errorf("plain note: %q", got)
+	}
+	if plain.workspaceRow() != "" {
+		t.Error("a task in the project dir needs no workspace row")
+	}
+
+	tmpl := Task{
+		Name: "review", CroniclePath: "/c", Path: "/c/.cronicle/repos/org/app.git/prs/review",
+		Repo:    &Repo{URL: "https://x:tok@github.com/org/app.git", Commit: "${each.value.sha}"},
+		ForEach: &ForEach{Source: "list"},
+	}
+	inst, _ := tmpl.instance(ForEachItem{Key: "12", Value: json.RawMessage(`{"sha":"a1b2c3d4e5"}`)})
+	inst.Repo = inst.eachRepo(inst.Repo) // what Execute does before checking out
+	note := inst.workspaceNote()
+	for _, want := range []string{
+		"/c/.cronicle/repos/org/app.git/prs/review/12",
+		"It is a git checkout at commit a1b2c3d4e5, cloned from https://github.com/org/app.git.",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note missing %q:\n%s", want, note)
+		}
+	}
+	if strings.Contains(note, "tok") {
+		t.Error("credentials leaked into the system prompt")
+	}
+	if row := inst.workspaceRow(); !strings.HasSuffix(row, "review/12 @ commit a1b2c3d4e5") {
+		t.Errorf("workspace row: %q", row)
+	}
+}
+
+// TestAgentBashOutputInGutter: an agent's bash tool writes through the
+// frame's gutter, so its output stays inside the block.
+func TestAgentBashOutputInGutter(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = prev }()
+	var b bytes.Buffer
+	gw := newGutterWriter(&b, agentAccent)
+	for _, tool := range buildAgentTools([]string{"bash"}, t.TempDir(), nil, nil, "", gw) {
+		if tool.Name() == "bash" {
+			tool.Execute(context.Background(), json.RawMessage(`{"command":"echo one; echo two"}`))
+		}
+	}
+	gw.EndLine()
+	if !strings.Contains(b.String(), "│ one\n│ two\n") {
+		t.Errorf("bash output left the gutter:\n%q", b.String())
+	}
+}
+
+// TestCheckoutFailure_IsATaskError: a checkout that fails ends the task
+// with a task_error, so it gets a terminal state and a line in the output.
+func TestCheckoutFailure_IsATaskError(t *testing.T) {
+	buf := captureLog(t)
+	conf, err := parseConfig(t, fmt.Sprintf(`
+schedule "s" {
+  task "show" {
+    repo {
+      url    = %q
+      commit = "0000000000000000000000000000000000000001"
+    }
+    command = ["cat", "hello.txt"]
+  }
+}`, scratchRepo(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := conf.Schedules[0]
+	if err := sched.ExecuteTasks(); err == nil || !strings.Contains(err.Error(), "checkout:") {
+		t.Fatalf("want a checkout error, got %v", err)
+	}
+	if e := events(buf, "task_error"); len(e) != 1 || e[0]["task"] != "show" {
+		t.Errorf("want one task_error for show: %v", e)
+	}
+}
+
+func TestFrameHeader_GitSection(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = prev }()
+	var b bytes.Buffer
+	WriteShellRunHeader(&b, "s", "show", []string{"cat", "hello.txt"}, []string{"clone https://x/r.git", "checkout commit 1a2b3c4"})
+	want := "╭─ show  shell · s\n│ $ cat hello.txt\n├─ git ──────────────────\n│ clone https://x/r.git\n│ checkout commit 1a2b3c4\n├────────────────────────\n"
+	if b.String() != want {
+		t.Errorf("got\n%s\nwant\n%s", b.String(), want)
+	}
+}
+
+func TestAgentWorkspaceNote_LocalRepoURL(t *testing.T) {
+	task := Task{Name: "r", CroniclePath: "/c", Path: "/c/.cronicle/repos/src/app/s/r",
+		Repo: &Repo{URL: "/src/app", Commit: "abc1234"}}
+	if note := task.workspaceNote(); strings.Contains(note, "/src/app,") || strings.Contains(note, "cloned from") {
+		t.Errorf("a local repo path must not be offered as a place to look:\n%s", note)
+	}
+}
+
+func TestGitTool_Show(t *testing.T) {
+	g := &GitTool{Workspace: scratchRepo(t)}
+	run := func(input string) (string, bool) {
+		return g.Execute(context.Background(), json.RawMessage(input))
+	}
+	if out, isErr := run(`{"command":"show","args":{"ref":"HEAD~1","path":"hello.txt"}}`); isErr || out != "first version\n" {
+		t.Errorf("file at a ref: %q %v", out, isErr)
+	}
+	if out, isErr := run(`{"command":"show","args":{"path":"hello.txt"}}`); isErr || out != "second version\n" {
+		t.Errorf("file at HEAD (not the dirty worktree): %q %v", out, isErr)
+	}
+	out, isErr := run(`{"command":"show"}`)
+	if isErr || !strings.Contains(out, "Update hello.txt") || !strings.Contains(out, "hello.txt | +1 -1") {
+		t.Errorf("commit details: %q %v", out, isErr)
+	}
+	if _, isErr := run(`{"command":"show","args":{"path":"nope.txt"}}`); !isErr {
+		t.Error("a missing file should be an error")
+	}
+}
+
+func TestGitCallSummary(t *testing.T) {
+	for want, call := range map[string]map[string]any{
+		"log -n 1":                          {"command": "log", "args": map[string]any{"limit": 1.0}},
+		"log":                               {"command": "log"},
+		"diff origin/main..HEAD -- calc.py": {"command": "diff", "args": map[string]any{"from": "origin/main", "to": "HEAD", "path": "calc.py"}},
+		"show origin/main:calc.py":          {"command": "show", "args": map[string]any{"ref": "origin/main", "path": "calc.py"}},
+		"show HEAD":                         {"command": "show"},
+		`commit -m "fix it"`:                {"command": "commit", "args": map[string]any{"message": "fix it"}},
+		"push origin main":                  {"command": "push", "args": map[string]any{"remote": "origin", "branch": "main"}},
+	} {
+		if got := gitCallSummary(call["command"].(string), call["args"]); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
 	}
 }

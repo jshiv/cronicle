@@ -45,6 +45,7 @@ var skipEntryTypes = map[string]bool{
 	"turn_start":       true,
 	"agent_run_start":  true,
 	"shell_run_start":  true,
+	"task_checkout":    true, // git steps; kept in the logs, shown in the task's block
 }
 
 // Handle converts r → JSON line → Event → store.Apply. The roundtrip

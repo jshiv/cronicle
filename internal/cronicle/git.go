@@ -2,6 +2,7 @@ package cronicle
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -46,6 +47,7 @@ type Git struct {
 	Commit        *object.Commit
 	ReferenceName plumbing.ReferenceName
 	authMethod    []client.Option
+	log           *slog.Logger
 }
 
 // Auth returns the transport.AuthMethod implied by the repo block.
@@ -156,20 +158,28 @@ func (g *Git) Open(worktreePath string) error {
 // were silent and the only signal that cloning happened was the
 // directory appearing on disk.
 func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
+	// In pretty mode, route go-git's progress sideband straight to
+	// stdout so the user sees the live "Counting objects" / "Receiving
+	// objects" lines (the same UX as the host `git` CLI). In file/Loki
+	// modes we deliberately omit Progress — those sinks already get the
+	// structured "git clone" / "git clone complete" slog records, and the
+	// per-percent overwrite lines (carriage-return updates) just produce
+	// noise in line-oriented log files.
+	var progress io.Writer
+	if IsStreamingPretty() {
+		progress = os.Stdout
+	}
+	return cloneWith(slog.Default(), progress, worktreeDir, url, opts)
+}
+
+// cloneWith is Clone logging to log, with go-git's progress to progress
+// (nil for none). A task's checkout logs to its own logger so the steps
+// can be shown inside the task's block (see checkoutLog).
+func cloneWith(log *slog.Logger, progress io.Writer, worktreeDir string, url string, opts []client.Option) (Git, error) {
 
 	if !DirExists(filepath.Join(worktreeDir, ".git")) {
-		slog.Info("git clone", "url", redactGitURL(url), "path", worktreeDir)
-		cloneOptions := git.CloneOptions{URL: url, ClientOptions: opts}
-		// In pretty mode, route go-git's progress sideband straight to
-		// stdout so the user sees the live "Counting objects" / "Receiving
-		// objects" lines (the same UX as the host `git` CLI). In file/Loki
-		// modes we deliberately omit Progress — those sinks already get
-		// the structured "git clone" / "git clone complete" slog records,
-		// and the per-percent overwrite lines (carriage-return updates)
-		// just produce noise in line-oriented log files.
-		if IsStreamingPretty() {
-			cloneOptions.Progress = os.Stdout
-		}
+		log.Info("git clone", "url", redactGitURL(url), "path", worktreeDir)
+		cloneOptions := git.CloneOptions{URL: url, ClientOptions: opts, Progress: progress}
 
 		// go-git v6 rejects PlainClone into non-empty dirs. When the
 		// workdir has files (e.g. cronicled writes cronicle.hcl before
@@ -177,7 +187,7 @@ func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 		empty, _ := isDirEmpty(worktreeDir)
 		if !empty {
 			if _, err := git.PlainInit(worktreeDir, false); err != nil {
-				slog.Error("git init failed", "path", worktreeDir, "error", err.Error())
+				log.Error("git init failed", "path", worktreeDir, "error", err.Error())
 				return Git{}, err
 			}
 			r, err := git.PlainOpen(worktreeDir)
@@ -194,7 +204,7 @@ func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 				RemoteName:    "origin",
 				ClientOptions: opts,
 			}); err != nil {
-				slog.Error("git fetch failed", "url", redactGitURL(url), "path", worktreeDir, "error", err.Error())
+				log.Error("git fetch failed", "url", redactGitURL(url), "path", worktreeDir, "error", err.Error())
 				return Git{}, err
 			}
 			// After init+fetch, HEAD is unborn. Point it at the remote's
@@ -218,13 +228,13 @@ func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 		} else {
 			_, err := git.PlainClone(worktreeDir, &cloneOptions)
 			if err != nil {
-				slog.Error("git clone failed", "url", redactGitURL(url), "path", worktreeDir, "error", err.Error())
+				log.Error("git clone failed", "url", redactGitURL(url), "path", worktreeDir, "error", err.Error())
 				return Git{}, err
 			}
 		}
-		slog.Info("git clone complete", "url", redactGitURL(url), "path", worktreeDir)
+		log.Info("git clone complete", "url", redactGitURL(url), "path", worktreeDir)
 	} else {
-		slog.Info("git open", "path", worktreeDir, "note", "worktree already exists, skipping clone")
+		log.Info("git open", "path", worktreeDir, "note", "worktree already exists, skipping clone")
 	}
 
 	// Stash the client options so Checkout's fetch uses the same credentials
@@ -232,6 +242,7 @@ func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 	// and the fetch against a private repo would 401.
 	var g Git
 	g.authMethod = opts
+	g.log = log
 	if err := g.Open(worktreeDir); err != nil {
 		return g, err
 	}
@@ -244,6 +255,7 @@ func Clone(worktreeDir string, url string, opts []client.Option) (Git, error) {
 // Note: Only one can be given, branch or commit.
 // Checkout requires task.Repo to be given
 func (g *Git) Checkout(branch string, commit string) error {
+	log := g.logger()
 	if branch != "" && commit != "" {
 		return ErrBranchAndCommitGiven
 	}
@@ -265,14 +277,14 @@ func (g *Git) Checkout(branch string, commit string) error {
 		ClientOptions: g.authMethod,
 	}
 
-	slog.Info("git fetch", "refs", "+refs/heads/*:refs/remotes/origin/*")
+	log.Info("git fetch", "refs", "+refs/heads/*:refs/remotes/origin/*")
 	err := g.Repository.Fetch(&fetchOptions)
 	if err != nil {
 		switch err {
 		case git.NoErrAlreadyUpToDate:
-			slog.Info("git fetch: already up to date")
+			log.Info("git fetch: already up to date")
 		default:
-			slog.Error("git fetch failed", "error", err.Error())
+			log.Error("git fetch failed", "error", err.Error())
 			return err
 		}
 	}
@@ -293,9 +305,9 @@ func (g *Git) Checkout(branch string, commit string) error {
 		checkoutTarget = "branch=" + branch
 	}
 
-	slog.Info("git checkout", "target", checkoutTarget)
+	log.Info("git checkout", "target", checkoutTarget)
 	if err := g.Worktree.Checkout(&checkoutOptions); err != nil {
-		slog.Error("git checkout failed", "target", checkoutTarget, "error", err.Error())
+		log.Error("git checkout failed", "target", checkoutTarget, "error", err.Error())
 		return err
 	}
 
@@ -311,7 +323,7 @@ func (g *Git) Checkout(branch string, commit string) error {
 	// a sub-repo accumulate across runs and the worktree drifts from
 	// the repo state.
 	if err := g.Worktree.Clean(&git.CleanOptions{Dir: true}); err != nil {
-		slog.Warn("git clean failed", "error", err.Error())
+		log.Warn("git clean failed", "error", err.Error())
 	}
 
 	//Set head and commit state after checkout branch/commit
@@ -325,6 +337,15 @@ func (g *Git) Checkout(branch string, commit string) error {
 	}
 
 	return nil
+}
+
+// logger is where this checkout's git steps are logged: the task's own
+// logger when it has one (see cloneWith), otherwise the default.
+func (g *Git) logger() *slog.Logger {
+	if g.log != nil {
+		return g.log
+	}
+	return slog.Default()
 }
 
 // CleanGit nulls non-serlizable properties of a task
