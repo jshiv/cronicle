@@ -540,11 +540,13 @@ func defaultAgentToolNames() []string {
 
 // buildAgentTools converts the HCL `tools` field into a slice of agent.Tool
 // implementations bound to the given workspace and stream writer (when in
-// pretty streaming mode). Empty/nil names defaults to the full native
-// toolkit (defaultAgentToolNames). Unknown names are filtered out (Validate
+// pretty streaming mode). nil names (tools omitted) defaults to the native
+// toolkit (defaultAgentToolNames); an empty list gives no built-in tools. Unknown names are filtered out (Validate
 // has already rejected them at parse time, so this is defensive).
 func buildAgentTools(names []string, workspace string, env []string, gitAuth []client.Option, scratchDir string, w io.Writer) []agent.Tool {
-	if len(names) == 0 {
+	// Omitted (nil) means the defaults; an explicit `tools = []` means
+	// none, for an agent that should only use its MCP servers' tools.
+	if names == nil {
 		names = defaultAgentToolNames()
 	}
 	var editorAllowed []string

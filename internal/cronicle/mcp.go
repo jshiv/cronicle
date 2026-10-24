@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"sort"
@@ -56,6 +57,7 @@ type MCPHandle struct {
 	Name    string
 	Session *mcpsdk.ClientSession
 	Tools   []*mcpsdk.Tool
+	cancel  context.CancelFunc // ends the connection's context
 }
 
 // Close shuts down the underlying session, which closes stdin on the
@@ -64,7 +66,11 @@ func (h *MCPHandle) Close() error {
 	if h == nil || h.Session == nil {
 		return nil
 	}
-	return h.Session.Close()
+	err := h.Session.Close()
+	if h.cancel != nil {
+		h.cancel()
+	}
+	return err
 }
 
 // LaunchMCPServers spawns each configured MCP server, performs the
@@ -101,6 +107,138 @@ func LaunchMCPServers(ctx context.Context, mcps []MCP, taskEnv []string, w io.Wr
 }
 
 func launchOne(ctx context.Context, m MCP, taskEnv []string, w io.Writer) (*MCPHandle, []agent.Tool, error) {
+	var transport mcpsdk.Transport
+	if m.URL != "" {
+		transport = remoteTransport(m)
+	} else {
+		transport = commandTransport(ctx, m, taskEnv, w)
+	}
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{
+		Name:    mcpClientName,
+		Version: mcpClientVersion,
+	}, nil)
+
+	// Bound the handshake — a hung server should fail fast rather than
+	// stall the whole run. The connection's context must outlive this
+	// function: the SSE transport keeps its event stream on it, so a
+	// context canceled on return closed the stream before the first tool
+	// call. A timer cancels it only if the handshake runs long; otherwise
+	// it's canceled when the handle closes.
+	connCtx, cancel := context.WithCancel(ctx)
+	timer := time.AfterFunc(30*time.Second, cancel)
+	session, err := client.Connect(connCtx, transport, nil)
+	if !timer.Stop() && err == nil {
+		err = context.DeadlineExceeded
+	}
+	if err != nil {
+		cancel()
+		return nil, nil, fmt.Errorf("connect: %w", err)
+	}
+	listCtx, cancel2 := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel2()
+	listRes, err := session.ListTools(listCtx, nil)
+	if err != nil {
+		_ = session.Close()
+		cancel()
+		return nil, nil, fmt.Errorf("list_tools: %w", err)
+	}
+	offered, err := filterMCPTools(m, listRes.Tools, w)
+	if err != nil {
+		_ = session.Close()
+		cancel()
+		return nil, nil, err
+	}
+
+	wrappers := make([]agent.Tool, 0, len(offered))
+	for _, t := range offered {
+		wrap, err := newMCPToolWrapper(m.Name, t, session)
+		if err != nil {
+			_ = session.Close()
+			cancel()
+			return nil, nil, fmt.Errorf("tool %q: %w", t.Name, err)
+		}
+		wrappers = append(wrappers, wrap)
+	}
+
+	return &MCPHandle{
+		Name:    m.Name,
+		Session: session,
+		Tools:   offered,
+		cancel:  cancel,
+	}, wrappers, nil
+}
+
+// filterMCPTools keeps the tools an mcp block's tools list names, or all
+// of them when it names none. A listed name the server doesn't offer is
+// skipped with a warning: servers rename tools, and one rename shouldn't
+// break a schedule. The warning names what the server does offer, in the
+// log and (when given) in the agent's block via w. If none of the listed
+// names are offered, the block is clearly out of date and the agent would
+// have nothing from this server, so that fails the launch.
+func filterMCPTools(m MCP, tools []*mcpsdk.Tool, w io.Writer) ([]*mcpsdk.Tool, error) {
+	if len(m.Tools) == 0 {
+		return tools, nil
+	}
+	byName := make(map[string]*mcpsdk.Tool, len(tools))
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		byName[t.Name] = t
+		names = append(names, t.Name)
+	}
+	sort.Strings(names)
+	kept := make([]*mcpsdk.Tool, 0, len(m.Tools))
+	var missing []string
+	for _, name := range m.Tools {
+		if t, ok := byName[name]; ok {
+			kept = append(kept, t)
+		} else {
+			missing = append(missing, name)
+		}
+	}
+	if len(kept) == 0 {
+		return nil, fmt.Errorf("none of the tools listed (%s) are offered by the server (it offers: %s)",
+			strings.Join(m.Tools, ", "), strings.Join(names, ", "))
+	}
+	if len(missing) > 0 {
+		msg := fmt.Sprintf("mcp %s: skipping %s, not offered by the server (it offers: %s)",
+			m.Name, strings.Join(missing, ", "), strings.Join(names, ", "))
+		slog.Warn(msg, "mcp_server", m.Name, "missing_tools", missing)
+		if w != nil {
+			fmt.Fprintln(w, "▲ "+msg)
+		}
+	}
+	return kept, nil
+}
+
+// remoteTransport connects to a url server over Streamable HTTP, or the
+// older HTTP+SSE transport, sending the block's headers on every request.
+func remoteTransport(m MCP) mcpsdk.Transport {
+	client := &http.Client{Transport: headerTransport{headers: m.Headers, base: http.DefaultTransport}}
+	if m.Transport == "sse" {
+		return &mcpsdk.SSEClientTransport{Endpoint: m.URL, HTTPClient: client}
+	}
+	return &mcpsdk.StreamableClientTransport{Endpoint: m.URL, HTTPClient: client}
+}
+
+// headerTransport adds fixed headers (typically Authorization) to each
+// request to a remote MCP server.
+type headerTransport struct {
+	headers map[string]string
+	base    http.RoundTripper
+}
+
+func (t headerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if len(t.headers) > 0 {
+		r = r.Clone(r.Context())
+		for k, v := range t.headers {
+			r.Header.Set(k, v)
+		}
+	}
+	return t.base.RoundTrip(r)
+}
+
+// commandTransport launches a local server as a subprocess.
+func commandTransport(ctx context.Context, m MCP, taskEnv []string, w io.Writer) mcpsdk.Transport {
 	// CommandContext (vs plain Command) ensures a panic between launch
 	// and the deferred Close still tears down the subprocess when ctx
 	// cancels (wallclock, parent ctx, etc.). Under normal flow Close
@@ -126,43 +264,7 @@ func launchOne(ctx context.Context, m MCP, taskEnv []string, w io.Writer) (*MCPH
 		cmd.Stderr = newMCPStderrSlogWriter(m.Name)
 	}
 
-	transport := &mcpsdk.CommandTransport{Command: cmd}
-	client := mcpsdk.NewClient(&mcpsdk.Implementation{
-		Name:    mcpClientName,
-		Version: mcpClientVersion,
-	}, nil)
-
-	// Bound the handshake — a hung server should fail fast rather than
-	// stall the whole run.
-	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	session, err := client.Connect(connectCtx, transport, nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("connect: %w", err)
-	}
-	listCtx, cancel2 := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel2()
-	listRes, err := session.ListTools(listCtx, nil)
-	if err != nil {
-		_ = session.Close()
-		return nil, nil, fmt.Errorf("list_tools: %w", err)
-	}
-
-	wrappers := make([]agent.Tool, 0, len(listRes.Tools))
-	for _, t := range listRes.Tools {
-		wrap, err := newMCPToolWrapper(m.Name, t, session)
-		if err != nil {
-			_ = session.Close()
-			return nil, nil, fmt.Errorf("tool %q: %w", t.Name, err)
-		}
-		wrappers = append(wrappers, wrap)
-	}
-
-	return &MCPHandle{
-		Name:    m.Name,
-		Session: session,
-		Tools:   listRes.Tools,
-	}, wrappers, nil
+	return &mcpsdk.CommandTransport{Command: cmd}
 }
 
 // mcpProcessEnv builds the env slice for an MCP subprocess: PATH from the
@@ -185,12 +287,12 @@ func mcpProcessEnv(envNames, taskEnv []string) []string {
 // interface. The Anthropic-facing name is namespaced (`<server>__<tool>`);
 // Execute strips the prefix back off and dispatches to session.CallTool.
 type mcpToolWrapper struct {
-	server   string
-	mcpName  string // un-namespaced, as the server knows it
-	apiName  string // namespaced, as the model sees it
-	desc     string
-	schema   anthropic.ToolInputSchemaParam
-	session  *mcpsdk.ClientSession
+	server  string
+	mcpName string // un-namespaced, as the server knows it
+	apiName string // namespaced, as the model sees it
+	desc    string
+	schema  anthropic.ToolInputSchemaParam
+	session *mcpsdk.ClientSession
 }
 
 func newMCPToolWrapper(server string, t *mcpsdk.Tool, session *mcpsdk.ClientSession) (*mcpToolWrapper, error) {

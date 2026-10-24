@@ -188,16 +188,17 @@ func TestDefaultAgentToolNamesContents(t *testing.T) {
 	}
 }
 
-// buildAgentTools defaults to the native universe when names is empty.
-// Empty list and nil should both expand. Explicit list narrows.
+// buildAgentTools defaults to the native universe when tools is omitted
+// (nil). An explicit empty list gives none (an MCP-only agent). An
+// explicit list narrows.
 func TestBuildAgentTools(t *testing.T) {
 	tools := buildAgentTools(nil, t.TempDir(), nil, nil, "", nil)
 	if len(tools) != len(defaultAgentToolNames()) {
 		t.Fatalf("nil tools: got %d, want %d", len(tools), len(defaultAgentToolNames()))
 	}
 	tools = buildAgentTools([]string{}, t.TempDir(), nil, nil, "", nil)
-	if len(tools) != len(defaultAgentToolNames()) {
-		t.Fatalf("empty slice tools: got %d, want %d", len(tools), len(defaultAgentToolNames()))
+	if len(tools) != 0 {
+		t.Fatalf("tools = []: got %d built-in tools, want none", len(tools))
 	}
 	tools = buildAgentTools([]string{"bash"}, t.TempDir(), nil, nil, "", nil)
 	if len(tools) != 1 {

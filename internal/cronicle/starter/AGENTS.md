@@ -247,6 +247,11 @@ heartbeat      = "@every 5m"          // optional: how often to log "alive" (def
 config_refresh = "@every 1s"          // optional: how often to check the config for changes
 repos          = ["https://github.com/org/team-schedules.git"]   // optional: see Repos
 
+mcp "github" {                        // optional: an MCP server agents share by name
+  url     = "https://api.githubcopilot.com/mcp/"   // (also allowed inside a schedule)
+  headers = { Authorization = "Bearer $secret.GITHUB_TOKEN" }
+}
+
 schedule "name" {
   cron       = "0 6 * * *"       // cron, "@every 10m", "@hourly", "@once", or "" (exec/API only)
   timezone   = "UTC"             // optional
@@ -284,10 +289,16 @@ schedule "name" {
     wallclock  = "5m"                               // stop the run after this long
     env        = ["ANTHROPIC_API_KEY=$secret.ANTHROPIC_API_KEY"]
 
-    mcp "github" {                                  // MCP server, started for this run
-      command = ["npx", "-y", "@modelcontextprotocol/server-github"]
-      env     = ["GITHUB_TOKEN"]                    // env var names to pass through
+    mcp "fs" {                                      // local MCP server, started for this run
+      command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "${path}"]
+      env     = ["SOME_VAR"]                        // env var names to pass through
     }
+    mcp "linear" {                                  // remote MCP server
+      url     = "https://mcp.linear.app/mcp"        // transport = "sse" for older servers
+      headers = { Authorization = "Bearer $secret.LINEAR_TOKEN" }
+      tools   = ["list_issues", "create_comment"]   // only these of its tools (default: all)
+    }
+    mcp_servers = ["github"]                        // shared mcp blocks, by name (below)
   }
 }
 ```
@@ -301,7 +312,8 @@ the host needs no git CLI: `status`, `log`, `diff`, `show`, `branch`,
 also reach `${scratch}`), and its system prompt tells it that absolute
 path and which commit is checked out. Agent tasks need `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` with
 `provider = "openai"`) in their environment or `env`. With no `tools`,
-an agent gets `bash`, `text_editor`, and `git`; `web_search` and
+an agent gets `bash`, `text_editor`, and `git` (`tools = []` gives none,
+for an agent that only uses MCP servers); `web_search` and
 `web_fetch` are opt-in because the provider bills each call.
 
 ### Placeholders
@@ -449,6 +461,116 @@ string and number set. For example:
   the same items without asking the source again.
 - `cronicle exec --task review` can't run a collection read from another
   task, since that task won't run. Run the whole schedule instead.
+
+### MCP servers: more tools for an agent
+
+An agent's built-in tools are `bash`, `text_editor`, `git`, `web_search`,
+and `web_fetch`. An `mcp` block adds a [Model Context Protocol](https://modelcontextprotocol.io)
+server's tools: an issue tracker, a database, a vendor API. Reach for one
+when the agent needs to act on a service. For a fixed call you could
+write yourself, a plain task with `curl` or a CLI is simpler, and you can
+see exactly what it runs.
+
+```hcl
+// Defined once, used by name. Also allowed inside a schedule, where it
+// wins over a top-level block of the same name.
+mcp "github" {
+  url     = "https://api.githubcopilot.com/mcp/"       // a remote server
+  headers = { Authorization = "Bearer $secret.GITHUB_TOKEN" }
+  tools   = ["get_pull_request", "add_issue_comment"]  // only these
+}
+
+schedule "triage" {
+  cron = "0 9 * * *"
+
+  agent "label" {
+    model       = "claude-haiku-4-5"
+    prompt      = "Label today's new issues in org/app."
+    mcp_servers = ["github"]
+
+    mcp "fs" {                                         // a local server, inline
+      command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "${scratch}"]
+    }
+  }
+}
+```
+
+- **Local vs. remote.** `command` launches a local server for the run.
+  Use `env` to name the variables it may see; nothing else is passed.
+  `url` connects to a remote one over Streamable HTTP
+  (`transport = "sse"` for older servers), with `headers` for auth.
+  Header values take `$secret.NAME`, and are never logged or shown.
+- **Limit `tools`.** Without a `tools` list, the agent gets every tool
+  the server offers, including ones that write or delete. For an
+  unattended run, list just the tools the job needs.
+  - A listed name the server doesn't offer (say, after a rename) is
+    skipped with a warning, in the log and in the agent's block, that
+    lists every name it does offer.
+  - If none of the listed names are offered, the run fails, with the
+    same list.
+  - Either way, a deliberately wrong name is an easy way to look up a
+    server's tools.
+- **Tool names.** The agent sees each tool as `<server>__<tool>`
+  (`github__add_issue_comment`). The run output shows calls as
+  `→ github.add_issue_comment: {…}`, and the block header has an `mcp`
+  row per server.
+- **Lifetime.** Servers start or connect when the agent run begins and
+  stop when it ends. If one fails to start, the run fails before any
+  model call, so the agent never sees half of its tools.
+- **In `for_each`.** `each.*`, `${path}`, and `${scratch}` work in
+  `command`, `url`, and header values, so each item can point a server at
+  its own checkout.
+- **MCP tools only.** `tools = []` gives an agent no built-in tools, so it
+  can use only its MCP servers. Leaving `tools` out gives the default
+  built-ins (`bash`, `text_editor`, `git`).
+
+#### Example: review each PR through GitHub's MCP server
+
+A lighter version of the checkout-based review under `for_each`: no
+`repo` block and no separate step to post the review. The agent reads
+each PR and comments on it through GitHub's MCP server, and has no other
+tools.
+
+```hcl
+mcp "github" {
+  url     = "https://api.githubcopilot.com/mcp/"
+  headers = { Authorization = "Bearer $secret.GITHUB_TOKEN" }
+  // Read a PR (get, get_diff, get_files) and comment on it; nothing else.
+  tools   = ["pull_request_read", "add_issue_comment"]
+}
+
+schedule "pr_review" {
+  cron = "0 * * * *"
+
+  // Prints the open PRs: [{"number": 12, "title": "…"}, …]
+  task "list_prs" {
+    command = ["gh", "pr", "list", "--repo", "org/app", "--json", "number,title"]
+    env     = ["GH_TOKEN=$secret.GITHUB_TOKEN"]
+  }
+
+  // One agent per PR: review[12], review[15], …
+  agent "review" {
+    for_each     = { for pr in task.list_prs.output : pr.number => pr }
+    max_parallel = 3
+    model        = "claude-sonnet-5-5"
+    tools        = []                  // MCP tools only
+    mcp_servers  = ["github"]
+    max_turns    = 15
+    budget_usd   = 0.50
+    prompt       = <<-EOT
+      Review pull request #${each.key} in org/app, "${each.value.title}".
+      Read it with pull_request_read: the description (method get), then the
+      diff (method get_diff). Post one review comment on the PR with
+      add_issue_comment: bugs first, then risks, then nits. Say so plainly
+      if you find nothing worth changing.
+    EOT
+  }
+}
+```
+
+Use this when reviewing the diff is enough. Use the checkout version when
+the agent needs to read the surrounding code or run something, such as
+the tests.
 
 ### Repos
 

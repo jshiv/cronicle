@@ -885,9 +885,10 @@ In the pretty stream, git calls render the way they'd be typed, e.g. `→ git: l
 
 #### MCP servers
 
-[Model Context Protocol](https://modelcontextprotocol.io) servers are launched
-as subprocesses for the lifetime of an agent run. Cronicle speaks JSON-RPC
-over their stdin/stdout via the [official Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk),
+[Model Context Protocol](https://modelcontextprotocol.io) servers give an agent
+more tools. A server is either local, launched as a subprocess for the
+lifetime of an agent run (`command`), or remote, reached over HTTP (`url`).
+Cronicle talks to both through the [official Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk),
 lists the tools each server advertises, and registers them with the agent
 namespaced as `<server-name>__<tool-name>` so multiple servers compose
 without name collisions.
@@ -907,11 +908,66 @@ agent {
 }
 ```
 
+**Remote servers** take a `url`, plus `headers` for auth. Header values can use
+`$secret.NAME`, resolved when the run starts and never logged. Streamable HTTP
+is the default; set `transport = "sse"` for servers on the older HTTP+SSE
+transport.
+
+```hcl
+mcp "linear" {
+  url     = "https://mcp.linear.app/mcp"
+  headers = { Authorization = "Bearer $secret.LINEAR_TOKEN" }
+}
+```
+
+**`tools`** limits an agent to some of a server's tools: the right default for
+unattended runs against servers that can write. A listed name the server
+doesn't offer (after a rename, say) is skipped with a warning listing the
+names it does offer. If none of the listed names are offered, the run fails.
+To give an agent *only* its MCP tools, set the agent's `tools = []`; leaving
+`tools` out gives the default built-ins.
+
+```hcl
+mcp "github" {
+  url     = "https://api.githubcopilot.com/mcp/"
+  headers = { Authorization = "Bearer $secret.GITHUB_TOKEN" }
+  tools   = ["get_pull_request", "get_pull_request_diff", "add_issue_comment"]
+}
+```
+
+**Shared definitions.** An `mcp` block at the top level of `cronicle.hcl`, or
+in a schedule, defines a server once. Agents use it by name with
+`mcp_servers`, alongside any inline `mcp` blocks. A schedule's definition wins
+over a top-level one with the same name. An unknown name, or a server both
+inlined and named, fails validation.
+
+```hcl
+mcp "github" {
+  url     = "https://api.githubcopilot.com/mcp/"
+  headers = { Authorization = "Bearer $secret.GITHUB_TOKEN" }
+}
+
+schedule "triage" {
+  agent "label" {
+    prompt      = "Label new issues."
+    mcp_servers = ["github"]
+  }
+  agent "close_stale" {
+    prompt      = "Close issues stale for 90 days."
+    mcp_servers = ["github"]
+  }
+}
+```
+
+In a `for_each` agent, `each.*`, `${path}` and `${scratch}` work in `command`,
+`url` and header values.
+
 Lifecycle and isolation:
 
 - **Per-run subprocess** — each server starts when the agent run begins and shuts down when it ends. The SDK's `CommandTransport` closes stdin then SIGTERMs after a 5s grace period.
 - **Cancellation cascade** — servers run under the same context as the agent loop, so `wallclock` cancellation tears them down.
 - **Fail loudly** — if any server fails to start or fails to list its tools, already-running peers are closed and the run aborts before any API call. There is no partial-MCP state where the agent sees half a tool surface.
+- **Per-run connection** — a remote server is connected when the run begins and disconnected when it ends.
 - **Env opt-in** — only env-var names listed in `mcp.env` are forwarded from cronicle's environment, plus `PATH` so the binary resolves. The task's HCL `env` is also passed through. Wholesale env forwarding would leak secrets into untrusted server processes.
 
 In the pretty stream, MCP tool calls render with `<server>.<tool>`:
