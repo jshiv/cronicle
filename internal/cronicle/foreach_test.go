@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -674,9 +676,9 @@ schedule "s" {
 // the operator sees the same in the header.
 func TestAgentWorkspaceNote(t *testing.T) {
 	plain := Task{Path: "/c", CroniclePath: "/c", ScratchDir: "/c/.cronicle/scratch/s/R1"}
-	if got := plain.workspaceNote(); got != "## Workspace\n\nYour working directory is /c. The bash tool starts there, and text_editor "+
-		"and git paths are relative to it, so refer to files by relative path (`src/app.py`, not an absolute one). "+
-		"Files to hand to other tasks in this run go in /c/.cronicle/scratch/s/R1." {
+	if got := plain.workspaceNote(); got != "## Workspace\n\nYour working directory is /c. The bash tool starts there. text_editor "+
+		"and git take paths relative to it (`src/app.py`) or absolute paths under it (`/c/src/app.py`). "+
+		"Files to hand to other tasks in this run go in /c/.cronicle/scratch/s/R1, which already exists." {
 		t.Errorf("plain note: %q", got)
 	}
 	if plain.workspaceRow() != "" {
@@ -805,5 +807,27 @@ func TestGitCallSummary(t *testing.T) {
 		if got := gitCallSummary(call["command"].(string), call["args"]); got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
+	}
+}
+
+// TestEditorOutsideWorkspaceError: a wrong path gets an error that says
+// where the workspace is and how the path should look, so the agent can
+// fix it in one step.
+func TestEditorOutsideWorkspaceError(t *testing.T) {
+	ws, scratch := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "calc.py"), []byte("x = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ed := &TextEditorTool{Workspace: ws, AllowedRoots: []string{scratch}}
+	out, isErr := ed.Execute(context.Background(), json.RawMessage(`{"command":"view","path":"/elsewhere/app/calc.py"}`))
+	wsAbs, _ := filepath.Abs(ws)
+	for _, want := range []string{"outside the workspace", "The workspace is " + wsAbs, filepath.Join(wsAbs, "calc.py"), "(calc.py)", "Also allowed: " + scratch} {
+		if !isErr || !strings.Contains(out, want) {
+			t.Errorf("error missing %q: %s", want, out)
+		}
+	}
+	out, _ = ed.Execute(context.Background(), json.RawMessage(`{"command":"view","path":"."}`))
+	if !strings.HasPrefix(out, "Directory . ("+wsAbs+"):") {
+		t.Errorf("a listing should name the directory absolutely too: %q", out)
 	}
 }

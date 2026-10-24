@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -713,9 +714,9 @@ func (task *Task) workspaceNote() string {
 		}
 		b.WriteString(".")
 	}
-	b.WriteString(" The bash tool starts there, and text_editor and git paths are relative to it, so refer to files by relative path (`src/app.py`, not an absolute one).")
+	b.WriteString(" The bash tool starts there. text_editor and git take paths relative to it (`src/app.py`) or absolute paths under it (`" + filepath.Join(task.Path, "src", "app.py") + "`).")
 	if task.ScratchDir != "" {
-		b.WriteString(" Files to hand to other tasks in this run go in " + task.ScratchDir + ".")
+		b.WriteString(" Files to hand to other tasks in this run go in " + task.ScratchDir + ", which already exists.")
 	}
 	return b.String()
 }
