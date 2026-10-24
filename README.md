@@ -440,7 +440,8 @@ schedule "pr_review" {
     prompt     = <<-EOT
       Review pull request #${each.key}, "${each.value.title}". The working
       tree is the PR's head commit. Diff it against origin/${each.value.baseRefName}
-      with the git tool and read the changed files. Write the review to
+      with the git tool, read the changed files, and use git show for a
+      file's version on the base branch. Write the review to
       ${scratch}/review-${each.key}.md: bugs first, then risks, then nits.
     EOT
   }

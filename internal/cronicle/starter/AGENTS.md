@@ -259,7 +259,9 @@ schedule "name" {
 Every task, shell or agent, runs in the task's path: the directory
 holding `cronicle.hcl`, or the task's own repo checkout (see Repos). A
 shell command runs with that as its working directory. An agent's
-`bash`, `text_editor`, and `git` tools work there (`text_editor` can
+`bash`, `text_editor`, and `git` tools work there (`git` is built in, so
+the host needs no git CLI: `status`, `log`, `diff`, `show`, `branch`,
+`commit`, `push`) (`text_editor` can
 also reach `${scratch}`), and its system prompt tells it that absolute
 path and which commit is checked out. Agent tasks need `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` with
 `provider = "openai"`) in their environment or `env`. With no `tools`,
@@ -326,7 +328,8 @@ schedule "pr_review" {
     prompt     = <<-EOT
       Review pull request #${each.key}, "${each.value.title}". The working
       tree is the PR's head commit. Diff it against origin/${each.value.baseRefName}
-      with the git tool and read the changed files. Write the review to
+      with the git tool, read the changed files, and use git show for a
+      file's version on the base branch. Write the review to
       ${scratch}/review-${each.key}.md: bugs first, then risks, then nits.
     EOT
   }
