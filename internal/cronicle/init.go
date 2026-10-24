@@ -181,7 +181,11 @@ func (conf *Config) Init(croniclePath string) error {
 
 	//If conf.Repo is a given repo, clone and fetch
 	if conf.Repo != nil {
-		opts, err := conf.Repo.Auth()
+		repo, err := resolveConfigRepoSecrets(conf.Repo)
+		if err != nil {
+			return err
+		}
+		opts, err := repo.Auth()
 		if err != nil {
 			return fmt.Errorf("config repo auth: %w", err)
 		}

@@ -114,6 +114,27 @@ func resolveRepoSecrets(repo *Repo) (*Repo, error) {
 	return &clone, nil
 }
 
+// resolveConfigRepoSecrets resolves the top-level repo block's password
+// (the repo holding cronicle.hcl). Unlike a task repo, it's needed while
+// the config loads, so it's strict about the store: a $secret.NAME with
+// no secret store set up is an error, not a literal password sent to the
+// git host. The returned *Repo is a copy; the config keeps its
+// "$secret.NAME" text.
+func resolveConfigRepoSecrets(repo *Repo) (*Repo, error) {
+	if repo == nil || !strings.Contains(repo.Password, "$secret.") {
+		return repo, nil
+	}
+	if !secretstore.Default().Configured() {
+		return nil, fmt.Errorf("config repo password uses a $secret reference, but no secret store is set up here " +
+			"(run cronicle from the project directory, or pass --secret-source)")
+	}
+	resolved, err := resolveRepoSecrets(repo)
+	if err != nil {
+		return nil, fmt.Errorf("config %w", err)
+	}
+	return resolved, nil
+}
+
 func resolveEnv(env []string) ([]string, error) {
 	if len(env) == 0 {
 		return env, nil
@@ -812,7 +833,11 @@ func (task *Task) checkout() error {
 		// /work fresh via its own config-refresh loop; the worker has
 		// no equivalent, so we do it here per-task. Branch/commit
 		// inherit from the schedule-level (CronicleRepo) block.
-		repo, dir = task.CronicleRepo, task.CroniclePath
+		resolved, err := resolveConfigRepoSecrets(task.CronicleRepo)
+		if err != nil {
+			return err
+		}
+		repo, dir = resolved, task.CroniclePath
 	default:
 		return nil
 	}

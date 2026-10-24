@@ -49,22 +49,6 @@ func Run(ctx context.Context, cronicleFile string, runOptions RunOptions) {
 	}
 	croniclePath := filepath.Dir(cronicleFileAbs)
 
-	conf, err := GetConfig(cronicleFileAbs)
-	if err != nil {
-		Fatal(err)
-	}
-	globalRuntime.storeConf(conf)
-
-	taskCount := 0
-	for _, s := range conf.Schedules {
-		taskCount += len(s.Tasks)
-	}
-	slog.Info("config loaded",
-		"path", cronicleFileAbs,
-		"schedules", len(conf.Schedules),
-		"tasks", taskCount,
-	)
-
 	if runOptions.LogToFile {
 		if err := EnableFileLog(croniclePath); err != nil {
 			Fatal(err)
@@ -99,6 +83,27 @@ func Run(ctx context.Context, cronicleFile string, runOptions RunOptions) {
 			Fatal(err)
 		}
 	}
+
+	// Load the config only now, after the state store and secret source
+	// are up: a top-level repo block's password = "$secret.NAME" is
+	// resolved while loading (Config.Init clones and fetches the config
+	// repo), so loading first sent the literal "$secret.NAME" to the git
+	// host (issue #177).
+	conf, err := GetConfig(cronicleFileAbs)
+	if err != nil {
+		Fatal(err)
+	}
+	globalRuntime.storeConf(conf)
+
+	taskCount := 0
+	for _, s := range conf.Schedules {
+		taskCount += len(s.Tasks)
+	}
+	slog.Info("config loaded",
+		"path", cronicleFileAbs,
+		"schedules", len(conf.Schedules),
+		"tasks", taskCount,
+	)
 
 	var wg sync.WaitGroup
 	// triggerQueue is the same send-side queue StartCron pushes to on each
