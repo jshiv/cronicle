@@ -172,6 +172,7 @@ func TestOpenAIHTTPError(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", res, err)
 	}
 }
+
 // TestOpenAIUnknownPricingRunsWithEstimate: a model missing from the
 // pricing table still runs, budget or not, with its cost estimated so the
 // budget still applies.
