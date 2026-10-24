@@ -717,6 +717,9 @@ func (p *stdoutPrettyHandler) Handle(_ context.Context, r slog.Record) error {
 		return betweenBlocks(p.out, r, renderTaskNotice)
 	case "task_expanded", "for_each_complete", "task_error":
 		return betweenBlocks(p.out, r, renderForEach)
+	case "task_checkout":
+		// Drawn inside the task's block (see checkoutLog).
+		return nil
 	case "agent_run_start", "shell_run_start",
 		"agent_run_streamed", "shell_run_streamed",
 		"stdout_chunk", "stderr_chunk",
@@ -800,6 +803,9 @@ func (p *liveSinkPrettyHandler) handle(r slog.Record) error {
 		return renderTaskNotice(p.out, r)
 	case "task_expanded", "for_each_complete", "task_error":
 		return renderForEach(p.out, r)
+	case "task_checkout":
+		// Drawn inside the task's block from the start event's checkout.
+		return nil
 	case "stdout_chunk":
 		return renderStdoutChunk(p.out, r, false)
 	case "stderr_chunk":
@@ -968,7 +974,7 @@ func renderAgentRunStart(out io.Writer, r slog.Record) error {
 		return true
 	})
 	var b bytes.Buffer
-	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, attrString(r, "workspace"), tools, mcpCommands)
+	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, attrString(r, "workspace"), tools, mcpCommands, attrStrings(r, "checkout"))
 	_, err := out.Write(b.Bytes())
 	return err
 }
@@ -1030,7 +1036,7 @@ func renderShellRunStart(out io.Writer, r slog.Record) error {
 	schedule := attrString(r, "schedule")
 	task := attrString(r, "task")
 	var b bytes.Buffer
-	writeShellRunHeader(&b, schedule, task, recordCommand(r))
+	writeShellRunHeader(&b, schedule, task, recordCommand(r), attrStrings(r, "checkout"))
 	_, err := out.Write(b.Bytes())
 	return err
 }
@@ -1121,7 +1127,7 @@ func renderAgentRun(out io.Writer, r slog.Record) error {
 	})
 
 	var b bytes.Buffer
-	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, attrString(r, "workspace"), tools, mcpCommands)
+	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, attrString(r, "workspace"), tools, mcpCommands, attrStrings(r, "checkout"))
 
 	footerColor := color.New(color.Faint).SprintFunc()
 	errc := color.New(color.FgRed, color.Bold).SprintFunc()
@@ -1149,7 +1155,7 @@ func renderAgentRun(out io.Writer, r slog.Record) error {
 // debug `${date}`/`${path}` expansion at a glance. `tools` and `mcpCommands`
 // list the tool surface available for the run.
 func WriteAgentRunHeader(w io.Writer, schedule, task, model string, skills []string,
-	prompt, system, workspace string, tools, mcpCommands []string) {
+	prompt, system, workspace string, tools, mcpCommands, checkout []string) {
 	meta := []string{"agent", schedule, model}
 	if len(skills) > 0 {
 		meta = append(meta, "skills "+strings.Join(skills, ", "))
@@ -1171,7 +1177,7 @@ func WriteAgentRunHeader(w io.Writer, schedule, task, model string, skills []str
 	for _, mc := range mcpCommands {
 		rows = append(rows, frameRow{key: "mcp", val: mc})
 	}
-	writeFrameHeader(w, agentAccent, task, strings.Join(meta, " · "), rows, nil)
+	writeFrameHeader(w, agentAccent, task, strings.Join(meta, " · "), rows, nil, checkout)
 }
 
 // WriteAgentRunFooter closes an agent run block's frame.
@@ -1212,12 +1218,12 @@ func formatCost(costStr string) string {
 // substitution) for reading — an inline script on its own highlighted
 // lines (see commandLines). The pasteable form is the rerun line a failed
 // block ends with.
-func WriteShellRunHeader(w io.Writer, schedule, task string, argv []string) {
-	writeShellRunHeader(w, schedule, task, commandLines(argv))
+func WriteShellRunHeader(w io.Writer, schedule, task string, argv, checkout []string) {
+	writeShellRunHeader(w, schedule, task, commandLines(argv), checkout)
 }
 
-func writeShellRunHeader(w io.Writer, schedule, task string, command []string) {
-	writeFrameHeader(w, shellAccent, task, "shell · "+schedule, nil, command)
+func writeShellRunHeader(w io.Writer, schedule, task string, command, checkout []string) {
+	writeFrameHeader(w, shellAccent, task, "shell · "+schedule, nil, command, checkout)
 }
 
 // WriteShellRunFooter closes a shell run block's frame. On failure it adds
@@ -1279,7 +1285,7 @@ const (
 
 // writeFrameHeader writes "╭─ task  meta", the labeled rows and the
 // command lines (if any) inside the gutter, then the divider.
-func writeFrameHeader(w io.Writer, accent accent, task, meta string, rows []frameRow, command []string) {
+func writeFrameHeader(w io.Writer, accent accent, task, meta string, rows []frameRow, command, checkout []string) {
 	frame, name, dim := frameColors(accent)
 
 	width := utf8.RuneCountInString(task) + utf8.RuneCountInString(meta) + 5
@@ -1324,7 +1330,18 @@ func writeFrameHeader(w io.Writer, accent accent, task, meta string, rows []fram
 		fmt.Fprintf(w, "%s %s%s\n", frame("│"), prompt, line)
 		width = max(width, utf8.RuneCountInString(stripANSI(line))+4)
 	}
+	for _, line := range checkout {
+		width = max(width, utf8.RuneCountInString(line)+2)
+	}
 	width = min(max(width, frameDividerMin), frameDividerMax)
+	// The repo checkout the task runs in: its own section, ahead of the
+	// task's output.
+	if len(checkout) > 0 {
+		fmt.Fprintln(w, frame("├─ git "+strings.Repeat("─", max(width-7, 1))))
+		for _, line := range checkout {
+			fmt.Fprintf(w, "%s %s\n", frame("│"), dim(truncate(line, 200)))
+		}
+	}
 	fmt.Fprintln(w, frame("├"+strings.Repeat("─", width-1)))
 }
 
@@ -1603,7 +1620,7 @@ func renderShellRun(out io.Writer, r slog.Record) error {
 	success := attrBool(r, "success")
 
 	var b bytes.Buffer
-	writeShellRunHeader(&b, schedule, task, recordCommand(r))
+	writeShellRunHeader(&b, schedule, task, recordCommand(r), attrStrings(r, "checkout"))
 
 	if success {
 		body := strings.TrimRight(stdout, "\n")

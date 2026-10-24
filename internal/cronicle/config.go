@@ -144,6 +144,8 @@ type Task struct {
 	// into: the for_each task's name and this task's item.
 	forEachOf string
 	eachItem  *ForEachItem
+	// checkoutLines are the task's git checkout steps, for its block.
+	checkoutLines []string
 }
 
 // Agent is the configuration structure that defines an LLM agent invocation.

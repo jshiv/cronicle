@@ -478,7 +478,9 @@ The DAG comes first: each task under the one it waits on, with `←`
 listing every dependency of a task that waits on more than one. A
 `for_each` task is drawn as `name[*]`. Each task then prints as a frame:
 `╭─` with the command, `│` lines of output, and `╰─` with the exit code
-and duration. A failed shell task ends with a `↻ rerun` line holding the
+and duration. A task with a `repo` shows its checkout under a `├─ git ─`
+divider before its output: clone or existing checkout, fetch, and the
+commit it ended up on. A failed shell task ends with a `↻ rerun` line holding the
 exact command on one line, ready to paste into a shell. For a
 `for_each` item, the line also sets `EACH_KEY` and `EACH_VALUE`. The
 last line, `● name succeeded` or `● name failed`, is the result for the

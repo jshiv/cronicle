@@ -173,7 +173,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			// parallel shell tasks still overlap their compute.
 			sw = NewStreamingWriter()
 			defer sw.Close()
-			WriteShellRunHeader(sw, task.ScheduleName, task.Name, cmd)
+			WriteShellRunHeader(sw, task.ScheduleName, task.Name, cmd, task.checkoutLines)
 			gw = newGutterWriter(sw, shellAccent)
 			stdoutInner = gw
 			stderrInner = gw
@@ -200,6 +200,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 			"task", task.Name,
 			"command", shellQuote(cmd),
 			"argv", cmd,
+			"checkout", task.checkoutLines,
 		)
 
 		// Honor the per-run cancel context when one is plumbed in
@@ -372,7 +373,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		sw = NewStreamingWriter()
 		defer sw.Close()
 		WriteAgentRunHeader(sw, task.ScheduleName, task.Name, effectiveModel, skillsAvailable,
-			cfg.Prompt, system, workspaceRow, resolvedTools, resolvedMCPCommands)
+			cfg.Prompt, system, workspaceRow, resolvedTools, resolvedMCPCommands, task.checkoutLines)
 		gw = newGutterWriter(sw, agentAccent)
 		downstream = NewAgentStreamRenderer(gw)
 	}
@@ -404,6 +405,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		"prompt", cfg.Prompt,
 		"system", system,
 		"workspace", workspaceRow,
+		"checkout", task.checkoutLines,
 		"tools", resolvedTools,
 		"mcp_commands", resolvedMCPCommands,
 	)
@@ -545,6 +547,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		slog.String("prompt", cfg.Prompt),
 		slog.String("system", system),
 		slog.String("workspace", workspaceRow),
+		slog.Any("checkout", task.checkoutLines),
 		slog.Any("tools", resolvedTools),
 		slog.Any("mcp_commands", resolvedMCPCommands),
 	}
@@ -580,53 +583,21 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 		return exec.Result{}, err
 	}
 
-	//Test if the given task should execute in the root croniclePath and the croncilePath is a git repo
-	taskPathIsCroniclePathWithGit := (task.Path == task.CroniclePath) && task.CronicleRepo != nil
-
-	//If a repo is given, clone the repo and task.Git.Open(task.Path)
-	if task.Repo != nil {
-		// Replace task.Repo with a clone-with-resolved-password so we don't
-		// race other tasks that share the same schedule-level *Repo pointer.
-		// A for_each item can name what to check out (commit =
-		// each.value.headRefOid); filled after the password resolves.
-		task.Repo = task.eachRepo(resolveRepoSecrets(task.Repo))
-		opts, err := task.Repo.Auth()
-		if err != nil {
-			return exec.Result{}, err
-		}
-		g, err := Clone(task.Path, task.Repo.URL, opts)
-		if err != nil {
-			return exec.Result{}, err
-		}
-		task.Git = g
-		err = task.Git.Checkout(task.Repo.Branch, task.Repo.Commit)
-		if err != nil {
-			return exec.Result{}, err
-		}
-	} else if taskPathIsCroniclePathWithGit {
-		opts, err := task.CronicleRepo.Auth()
-		if err != nil {
-			return exec.Result{}, err
-		}
-		task.Git, err = Clone(task.CroniclePath, task.CronicleRepo.URL, opts)
-		if err != nil {
-			slog.Error("clone failed", "error", err.Error())
-			return exec.Result{}, err
-		}
-		// Fetch + checkout on every task exec so the worker picks up
-		// new commits on the schedule's repo. Without this, Clone()
-		// short-circuits to "git open, skip clone" on second+ runs and
-		// the worker stays on whatever the initial clone captured —
-		// indefinitely, until the pod restarts. The producer keeps its
-		// /work fresh via its own config-refresh loop; the worker has
-		// no equivalent, so we do it here per-task.
-		//
-		// Symmetric with the task.Repo branch above. Branch/commit
-		// inherit from the schedule-level (CronicleRepo) block.
-		if err := task.Git.Checkout(task.CronicleRepo.Branch, task.CronicleRepo.Commit); err != nil {
-			slog.Error("checkout failed", "error", err.Error())
-			return exec.Result{}, err
-		}
+	// The checkout's steps are logged through the task's own logger, so
+	// they're drawn inside its block (checkoutLog). A failure here ends
+	// the task before it runs: say so as a task_error, which gives it a
+	// terminal state and a line in the output.
+	if err := task.checkout(); err != nil {
+		err = fmt.Errorf("checkout: %w", err)
+		slog.Error("task failed",
+			"entry_type", "task_error",
+			"run_id", task.RunID,
+			"schedule", task.ScheduleName,
+			"task", task.Name,
+			"error", err.Error(),
+			"success", false,
+		)
+		return exec.Result{}, err
 	}
 
 	//Execute task.Command in bash at time t with retry
@@ -703,6 +674,7 @@ func (task *Task) Log(res exec.Result) {
 		"email", email,
 		"command", shellQuote(res.Command),
 		"argv", res.Command,
+		"checkout", task.checkoutLines,
 		"duration_ms", task.lastDurationMs,
 		"stdout", res.Stdout,
 		"stderr", res.Stderr,
@@ -781,4 +753,55 @@ func joinSections(a, b string) string {
 		return a
 	}
 	return a + "\n\n" + b
+}
+
+// checkout clones or opens the task's repo and checks out what it asks
+// for: its own repo block, or the cronicle repo when the task runs in the
+// project dir and that is a checkout. Records the steps in
+// task.checkoutLines for the block header.
+func (task *Task) checkout() error {
+	//Test if the given task should execute in the root croniclePath and the croncilePath is a git repo
+	taskPathIsCroniclePathWithGit := (task.Path == task.CroniclePath) && task.CronicleRepo != nil
+	var repo *Repo
+	var dir string
+	switch {
+	case task.Repo != nil:
+		// Replace task.Repo with a clone-with-resolved-password so we don't
+		// race other tasks that share the same schedule-level *Repo pointer.
+		// A for_each item can name what to check out (commit =
+		// each.value.headRefOid); filled after the password resolves.
+		task.Repo = task.eachRepo(resolveRepoSecrets(task.Repo))
+		repo, dir = task.Repo, task.Path
+	case taskPathIsCroniclePathWithGit:
+		// Fetch + checkout on every task exec so the worker picks up
+		// new commits on the schedule's repo. Without this, Clone()
+		// short-circuits to "git open, skip clone" on second+ runs and
+		// the worker stays on whatever the initial clone captured —
+		// indefinitely, until the pod restarts. The producer keeps its
+		// /work fresh via its own config-refresh loop; the worker has
+		// no equivalent, so we do it here per-task. Branch/commit
+		// inherit from the schedule-level (CronicleRepo) block.
+		repo, dir = task.CronicleRepo, task.CroniclePath
+	default:
+		return nil
+	}
+	opts, err := repo.Auth()
+	if err != nil {
+		return err
+	}
+	var cl checkoutLog
+	defer func() { task.checkoutLines = cl.snapshot() }()
+	g, err := cloneWith(cl.logger(task), nil, dir, repo.URL, opts)
+	if err != nil {
+		return err
+	}
+	task.Git = g
+	if err := task.Git.Checkout(repo.Branch, repo.Commit); err != nil {
+		return err
+	}
+	if c := task.Git.Commit; c != nil {
+		subject, _, _ := strings.Cut(c.Message, "\n")
+		cl.add("at " + c.Hash.String()[:7] + " " + subject)
+	}
+	return nil
 }

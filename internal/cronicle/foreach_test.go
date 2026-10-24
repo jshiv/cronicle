@@ -650,6 +650,20 @@ schedule "s" {
 	if len(paths) != 3 {
 		t.Errorf("want a separate working tree per item: %v", paths)
 	}
+	for _, e := range events(buf, "shell_run") {
+		if e["task"] != "show[one]" {
+			continue
+		}
+		lines := fmt.Sprint(e["checkout"])
+		for _, want := range []string{"clone " + src, "checkout commit " + first[:7], "at " + first[:7] + " Add hello.txt"} {
+			if !strings.Contains(lines, want) {
+				t.Errorf("show[one] checkout lines missing %q: %s", want, lines)
+			}
+		}
+	}
+	if steps := events(buf, "task_checkout"); len(steps) == 0 || steps[0]["task"] == nil {
+		t.Errorf("git steps should still be logged, tagged with the task: %v", steps)
+	}
 	if sched.TaskMap()["show"].Repo.Commit != "${each.value.sha}" {
 		t.Error("an item changed the for_each task's shared repo block")
 	}
@@ -709,5 +723,43 @@ func TestAgentBashOutputInGutter(t *testing.T) {
 	gw.EndLine()
 	if !strings.Contains(b.String(), "│ one\n│ two\n") {
 		t.Errorf("bash output left the gutter:\n%q", b.String())
+	}
+}
+
+// TestCheckoutFailure_IsATaskError: a checkout that fails ends the task
+// with a task_error, so it gets a terminal state and a line in the output.
+func TestCheckoutFailure_IsATaskError(t *testing.T) {
+	buf := captureLog(t)
+	conf, err := parseConfig(t, fmt.Sprintf(`
+schedule "s" {
+  task "show" {
+    repo {
+      url    = %q
+      commit = "0000000000000000000000000000000000000001"
+    }
+    command = ["cat", "hello.txt"]
+  }
+}`, scratchRepo(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := conf.Schedules[0]
+	if err := sched.ExecuteTasks(); err == nil || !strings.Contains(err.Error(), "checkout:") {
+		t.Fatalf("want a checkout error, got %v", err)
+	}
+	if e := events(buf, "task_error"); len(e) != 1 || e[0]["task"] != "show" {
+		t.Errorf("want one task_error for show: %v", e)
+	}
+}
+
+func TestFrameHeader_GitSection(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = prev }()
+	var b bytes.Buffer
+	WriteShellRunHeader(&b, "s", "show", []string{"cat", "hello.txt"}, []string{"clone https://x/r.git", "checkout commit 1a2b3c4"})
+	want := "╭─ show  shell · s\n│ $ cat hello.txt\n├─ git ──────────────────\n│ clone https://x/r.git\n│ checkout commit 1a2b3c4\n├────────────────────────\n"
+	if b.String() != want {
+		t.Errorf("got\n%s\nwant\n%s", b.String(), want)
 	}
 }
