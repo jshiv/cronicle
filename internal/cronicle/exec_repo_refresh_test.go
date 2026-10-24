@@ -159,3 +159,32 @@ func TestWorkerExec_ScheduleRepoFetchesOnEveryRun(t *testing.T) {
 
 	_ = fmt.Sprintf // silence import on potential future use
 }
+
+// Parallel DAG tasks share the root checkout. Their clone/fetch/reset operations
+// must not race while writing the index and worktree.
+func TestWorkerExec_ConcurrentRootCheckouts(t *testing.T) {
+	src := initSourceRepo(t, "version.txt", "v1\n")
+	dir := t.TempDir()
+	repo := &cronicle.Repo{URL: src, Branch: "main"}
+	// Warm the checkout, matching the config initializer before DAG dispatch.
+	warm := cronicle.Task{Name: "warm", Command: []string{"true"}, Path: dir, CroniclePath: dir, CronicleRepo: repo, ScheduleName: "test"}
+	if _, err := warm.Execute(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	errors := make(chan error, 12)
+	for i := 0; i < 12; i++ {
+		go func(i int) {
+			<-start
+			task := cronicle.Task{Name: fmt.Sprintf("parallel-%d", i), Command: []string{"true"}, Path: dir, CroniclePath: dir, CronicleRepo: repo, ScheduleName: "test"}
+			_, err := task.Execute(time.Now())
+			errors <- err
+		}(i)
+	}
+	close(start)
+	for i := 0; i < 12; i++ {
+		if err := <-errors; err != nil {
+			t.Errorf("parallel checkout: %v", err)
+		}
+	}
+}
