@@ -19,8 +19,8 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-//Init initializes a default croniclePath with a .git repository,
-//Basic schedule as code in a cronicle.hcl file and a repos folder.
+// Init initializes a default croniclePath with a .git repository,
+// Basic schedule as code in a cronicle.hcl file and a repos folder.
 func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf Config) {
 	initProject(croniclePath, cloneRepo, deployKey, func(cronicleFile string) {
 		MarshallHcl(defaultConf, cronicleFile)
@@ -148,8 +148,8 @@ func GetRepos(conf *Config) map[string]bool {
 	return repos
 }
 
-//LocalRepoDir takes a cronicle.hcl path and a github repo URL and converts
-//it to the local clone of that repo
+// LocalRepoDir takes a cronicle.hcl path and a github repo URL and converts
+// it to the local clone of that repo
 func LocalRepoDir(croniclePath string, repoURL string) (string, error) {
 	dotCronicleRepos := path.Join(".cronicle", "repos")
 	reposDir := path.Join(croniclePath, dotCronicleRepos)
@@ -162,16 +162,16 @@ func LocalRepoDir(croniclePath string, repoURL string) (string, error) {
 	return localRepoDir, nil
 }
 
-//CleanGit nulls non-serlizable properties of a schedule
-//task.Git = Git{}
+// CleanGit nulls non-serlizable properties of a schedule
+// task.Git = Git{}
 func (schedule *Schedule) CleanGit() {
 	for i := range schedule.Tasks {
 		schedule.Tasks[i].CleanGit()
 	}
 }
 
-//Init populates task repo path, runs git clone for any sub repos,
-//and assigns Git meta data to the task
+// Init populates task repo path, runs git clone for any sub repos,
+// and assigns Git meta data to the task
 func (conf *Config) Init(croniclePath string) error {
 	// Assign the path for each task or schedule repo
 	conf.PropigateTaskProperties(croniclePath)
@@ -189,6 +189,11 @@ func (conf *Config) Init(croniclePath string) error {
 		if err != nil {
 			return fmt.Errorf("config repo auth: %w", err)
 		}
+		unlock, err := lockCheckout(croniclePath)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		g, err := Clone(croniclePath, conf.Repo.URL, opts)
 		if err != nil {
 			return fmt.Errorf("clone config repo %s: %w", conf.Repo.URL, err)

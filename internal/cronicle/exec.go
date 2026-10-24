@@ -845,6 +845,11 @@ func (task *Task) checkout() error {
 	if err != nil {
 		return err
 	}
+	unlock, err := lockCheckout(dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	var cl checkoutLog
 	defer func() { task.checkoutLines = cl.snapshot() }()
 	g, err := cloneWith(cl.logger(task), nil, dir, repo.URL, opts)
