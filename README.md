@@ -334,16 +334,49 @@ schedule "prs" {
 ⋔ review  done · 3 items · 1 failed
 ```
 
-**The collection.** `task.<name>.output` is that task's stdout, parsed as
-JSON. The `for_each` expression is HCL, so it can reach into the output
-(`task.list.output.items`) or reshape it with a for-expression. The
-result must be either:
-- a map or object: one item per key, or
-- a list of strings: one item per string, which is both key and value.
+**The collection** follows Terraform's `for_each` rules exactly.
+`task.<name>.output` is that task's stdout, parsed as JSON. The
+`for_each` expression is HCL, so it can reach into the output
+(`task.list.output.items`) or reshape it. The result must be one of:
+- **a map or object:** one item per key, in sorted key order.
+  `each.value` is the key's value.
+- **a set of strings:** one item per element, in sorted order, with
+  `each.key` and `each.value` both the string.
 
-A list of objects has no key to name its items by, so key it with a
-for-expression, as above. `for_each` can also be a literal, such as
-`["us", "eu"]` or `{ us = "us-east-1", eu = "eu-west-1" }`.
+A list is not a set: it has an order and can repeat values. So, as in
+Terraform, a list is rejected until you convert it. Use
+`toset(task.list.output)` for a list of strings, which drops duplicates
+and sorts. For a list of objects, build a map with a for expression:
+`{ for pr in task.list.output : pr.number => pr }`. Literals work the
+same way: `toset(["us", "eu"])`, or
+`{ us = "us-east-1", eu = "eu-west-1" }`.
+
+The expression can call Terraform's pure built-in functions, with the
+same names and behavior:
+- **collections:** `merge`, `keys`, `values`, `lookup`, `concat`,
+  `flatten`, `distinct`, `range`, `zipmap`, `setunion`, `setsubtract`,
+  `setintersection`, `setproduct`, `slice`, `sort`, `reverse`, `length`,
+  `contains`, `element`, `compact`, `coalesce`, `chunklist`
+- **conversion:** `toset`, `tolist`, `tomap`, `tostring`, `tonumber`,
+  `tobool`
+- **strings:** `format`, `formatlist`, `join`, `split`, `replace`,
+  `regex`, `regexall`, `lower`, `upper`, `title`, `trim*`, `substr`,
+  `chomp`, `indent`, `strrev`
+- **numbers:** `abs`, `ceil`, `floor`, `max`, `min`, `pow`, `log`,
+  `parseint`, `signum`
+- **encoding and errors:** `jsondecode`, `jsonencode`, `csvdecode`,
+  `try`, `can`
+
+Functions that read files, call the network, or hash aren't included.
+For example:
+
+```hcl
+for_each = merge(
+  { main = { sha = "HEAD" } },
+  { for pr in task.list_prs.output : pr.number => pr },
+)
+for_each = toset([for i in range(3) : tostring(i)])   # "0", "1", "2"
+```
 
 **Inside the task.**
 - `each.key` and `each.value` (with fields: `each.value.sha`,
@@ -357,7 +390,7 @@ for-expression, as above. `for_each` can also be a literal, such as
 - Each item also gets `EACH_KEY` and `EACH_VALUE` environment variables.
   Inside `sh -c` scripts, use `"$EACH_KEY"` rather than `${each.key}`:
   values put into a script's text are run as shell code.
-- Items are named `review[12]` in the DAG, logs and run state. A failed
+- Items are named by key, like `review[12]`, in the DAG, logs and run state. A failed
   item's `↻ rerun` line sets `EACH_KEY` and `EACH_VALUE` before the
   command, so it reruns the same way. Because of this naming, task names
   can't contain `[` or `]`.

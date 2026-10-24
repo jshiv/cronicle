@@ -34,7 +34,7 @@ schedule "s" {
     command      = ["review", each.key, each.value.sha, "${each.value.meta["x"]}"]
   }
   task "static" {
-    for_each = ["a", "b"]
+    for_each = toset(["a", "b"])
     command  = ["echo", each.key]
   }
 }`)
@@ -71,20 +71,22 @@ func TestForEach_ParseErrors(t *testing.T) {
 		  command = ["echo"] }`, `has no task "missing"`},
 		{`task "a" { for_each = task.a.output
 		  command = ["echo"] }`, `can't read its own output`},
-		{`task "x" { for_each = ["k"]
+		{`task "x" { for_each = toset(["k"])
 		  command = ["echo"] }
 		  task "a" { for_each = task.x.output
 		  command = ["echo"] }`, `is itself a for_each task`},
 		{`task "a" { max_parallel = 2
 		  command = ["echo"] }`, `max_parallel needs for_each`},
 		{`task "a" { command = ["echo", each.key] }`, `has no for_each`},
-		{`task "a" { for_each = ["k"]
+		{`task "a" { for_each = toset(["k"])
 		  command = ["echo", each.value, each.value.x] }`, `used both whole and by field`},
-		{`task "a" { for_each = ["k"]
+		{`task "a" { for_each = toset(["k"])
 		  command = ["echo", each.item] }`, `only each.key and each.value`},
 		{`task "a" { for_each = 3
-		  command = ["echo"] }`, `needs a map, object, or list of strings`},
-		{`task "a" { for_each = ["k"]
+		  command = ["echo"] }`, `must be a map, or set of strings, and you have provided a value of type number`},
+		{`task "a" { for_each = ["us", "eu"]
+		  command = ["echo"] }`, `convert a list of strings with toset(...)`},
+		{`task "a" { for_each = toset(["k"])
 		  command = ["echo"] }
 		  task "b" { depends = ["a[k]"]
 		  command = ["echo"] }`, `depend on the for_each task "a" instead`},
@@ -99,34 +101,64 @@ func TestForEach_ParseErrors(t *testing.T) {
 	}
 }
 
+// TestForEach_CollectionRules: Terraform's for_each rules, exactly.
 func TestForEach_CollectionRules(t *testing.T) {
 	eval := func(expr, output string) ([]ForEachItem, error) {
 		return (&ForEach{Expr: expr, Source: "list"}).evaluate(map[string]string{"list": output})
 	}
-	items, err := eval("task.list.output", `{"b": {"n": 2}, "a": {"n": 1}}`)
-	if err != nil || strings.Join(forEachKeys(items), ",") != "a,b" || string(items[0].Value) != `{"n":1}` {
-		t.Errorf("object: %v %v", items, err)
+	keys := func(expr, output string) string {
+		t.Helper()
+		items, err := eval(expr, output)
+		if err != nil {
+			t.Errorf("%s over %s: %v", expr, output, err)
+		}
+		return strings.Join(forEachKeys(items), ",")
 	}
-	items, err = eval("task.list.output", `["us", "eu"]`)
-	if err != nil || strings.Join(forEachKeys(items), ",") != "us,eu" || string(items[1].Value) != `"eu"` {
-		t.Errorf("list of strings: %v %v", items, err)
+	// Maps and objects: one item per key, in sorted order.
+	if got := keys("task.list.output", `{"b": {"n": 2}, "a": {"n": 1}}`); got != "a,b" {
+		t.Errorf("object keys: %s", got)
 	}
-	items, err = eval("{ for pr in task.list.output : pr.number => pr }", `[{"number": 7}, {"number": 9}]`)
-	if err != nil || strings.Join(forEachKeys(items), ",") != "7,9" {
-		t.Errorf("keyed list of objects: %v %v", items, err)
+	// Sets of strings: sorted, duplicates collapsed, each.value == each.key.
+	if got := keys("toset(task.list.output)", `["us", "eu", "us"]`); got != "eu,us" {
+		t.Errorf("toset: %s", got)
 	}
-	items, err = eval("task.list.output.prs", `{"prs": {}}`)
-	if err != nil || len(items) != 0 {
-		t.Errorf("empty collection should expand to nothing: %v %v", items, err)
+	items, _ := eval("toset(task.list.output)", `["us"]`)
+	if string(items[0].Value) != `"us"` {
+		t.Errorf("set item value: %s", items[0].Value)
 	}
+	// A for expression keys a list of objects.
+	if got := keys("{ for pr in task.list.output : pr.number => pr }", `[{"number": 7}, {"number": 9}]`); got != "7,9" {
+		t.Errorf("keyed list: %s", got)
+	}
+	if got := keys("task.list.output.prs", `{"prs": {}}`); got != "" {
+		t.Errorf("empty collection should expand to nothing: %s", got)
+	}
+
+	// Terraform's functions.
+	for expr, want := range map[string]string{
+		`toset([for i in range(3) : tostring(i)])`:                                       "0,1,2",
+		`merge({ main = "HEAD" }, { for pr in task.list.output : pr.number => pr.sha })`: "12,main",
+		`toset([for s in task.list.output : upper(replace(s.sha, "/[0-9]/", ""))])`:      "ABC",
+		`{ for k, v in zipmap(["x", "y"], [1, 2]) : k => v if v > 1 }`:                   "y",
+		`toset(try(task.list.output.missing, ["fallback"]))`:                             "fallback",
+		`setsubtract(toset(["a", "b", "c"]), toset(["b"]))`:                              "a,c",
+	} {
+		if got := keys(expr, `[{"number": 12, "sha": "abc123"}]`); got != want {
+			t.Errorf("%s = %s, want %s", expr, got, want)
+		}
+	}
+
 	for _, tc := range []struct{ expr, out, want string }{
-		{"task.list.output", `[{"number": 7}]`, "key it with a for-expression"},
-		{"task.list.output", `["a", "a"]`, `has "a" twice`},
+		// A list is not a set.
+		{"task.list.output", `["a", "b"]`, "provided a value of type tuple; convert a list of strings with toset(...)"},
+		{"tolist(task.list.output)", `["a"]`, "provided a value of type list of string"},
+		{"toset(task.list.output)", `[1, 2]`, "set containing type number"},
+		{"task.list.output", `[{"number": 7}]`, "build a map with a for expression"},
 		{"task.list.output", `not json`, "not JSON"},
 		{"task.list.output", ``, "printed nothing"},
 		{"task.list.output", `null`, "null"},
-		{"task.list.output", `["a[1]"]`, "brackets"},
-		{"task.list.output", `[` + strings.Repeat(`"x",`, 0) + manyKeys(maxForEachItems+1) + `]`, "over the limit"},
+		{"toset(task.list.output)", `["a[1]"]`, "brackets"},
+		{"toset(task.list.output)", `[` + manyKeys(maxForEachItems+1) + `]`, "over the limit"},
 	} {
 		if _, err := eval(tc.expr, tc.out); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s over %.30q: want %q, got %v", tc.expr, tc.out, tc.want, err)

@@ -181,7 +181,7 @@ func (fe *ForEach) evaluate(outputs map[string]string) ([]ForEachItem, error) {
 			fe.Source: cty.ObjectVal(map[string]cty.Value{"output": out}),
 		})
 	}
-	v, diags := expr.Value(&hcl.EvalContext{Variables: vars})
+	v, diags := expr.Value(&hcl.EvalContext{Variables: vars, Functions: forEachFunctions})
 	if diags.HasErrors() {
 		return nil, fmt.Errorf("for_each: %s", diags.Error())
 	}
@@ -200,21 +200,23 @@ func jsonToCty(raw string) (cty.Value, error) {
 	return ctyjson.Unmarshal(b, ty)
 }
 
-// collectionItems applies Terraform's for_each rules: a map or object
-// gives one item per key; a set or list of strings gives one item per
-// string, which is both key and value. A list of objects has no natural
-// key, so it's rejected with a pointer to the for-expression that adds one.
+// collectionItems applies Terraform's for_each rules exactly: the value
+// must be a map (or object), one item per key, or a set of strings, one
+// item per element with each.key == each.value. Both iterate in sorted
+// order. A list is not a set — it has positions and allows duplicates —
+// so, as in Terraform, it must be converted explicitly with toset(), or
+// turned into a map with a for expression.
 func collectionItems(v cty.Value) ([]ForEachItem, error) {
 	if v.IsNull() {
-		return nil, fmt.Errorf("for_each collection is null")
+		return nil, fmt.Errorf("for_each value is null; it must be a map, or set of strings")
 	}
 	if !v.IsWhollyKnown() {
-		return nil, fmt.Errorf("for_each collection is not known")
+		return nil, fmt.Errorf("for_each value is not known")
 	}
 	ty := v.Type()
 	var items []ForEachItem
 	switch {
-	case ty.IsObjectType() || ty.IsMapType():
+	case ty.IsMapType() || ty.IsObjectType():
 		for it := v.ElementIterator(); it.Next(); {
 			k, val := it.Element()
 			raw, err := ctyjson.Marshal(val, val.Type())
@@ -223,25 +225,24 @@ func collectionItems(v cty.Value) ([]ForEachItem, error) {
 			}
 			items = append(items, ForEachItem{Key: k.AsString(), Value: raw})
 		}
-	case ty.IsListType() || ty.IsSetType() || ty.IsTupleType():
-		seen := map[string]bool{}
+	case ty.IsSetType():
+		if et := ty.ElementType(); et != cty.String && et != cty.DynamicPseudoType {
+			return nil, fmt.Errorf("for_each supports maps and sets of strings, but you have provided a set containing type %s", et.FriendlyName())
+		}
 		for it := v.ElementIterator(); it.Next(); {
 			_, val := it.Element()
-			s, err := convert.Convert(val, cty.String)
-			if err != nil || s.IsNull() {
-				return nil, fmt.Errorf("for_each over a list needs strings (each is both key and value); "+
-					"for a list of objects, key it with a for-expression: { for x in <list> : x.id => x } (%s)", val.Type().FriendlyName())
+			if val.IsNull() {
+				return nil, fmt.Errorf("for_each set includes a null value")
 			}
-			key := s.AsString()
-			if seen[key] {
-				return nil, fmt.Errorf("for_each list has %q twice; keys must be unique", key)
-			}
-			seen[key] = true
-			raw, _ := json.Marshal(key)
-			items = append(items, ForEachItem{Key: key, Value: raw})
+			raw, _ := json.Marshal(val.AsString())
+			items = append(items, ForEachItem{Key: val.AsString(), Value: raw})
 		}
 	default:
-		return nil, fmt.Errorf("for_each needs a map, object, or list of strings, not %s", ty.FriendlyName())
+		hint := ""
+		if ty.IsListType() || ty.IsTupleType() {
+			hint = "; convert a list of strings with toset(...), or build a map with a for expression, e.g. { for x in <list> : x.id => x }"
+		}
+		return nil, fmt.Errorf("for_each must be a map, or set of strings, and you have provided a value of type %s%s", ty.FriendlyName(), hint)
 	}
 	if len(items) > maxForEachItems {
 		return nil, fmt.Errorf("for_each produced %d items, over the limit of %d", len(items), maxForEachItems)
