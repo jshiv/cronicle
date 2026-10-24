@@ -5,6 +5,11 @@ This directory is a [cronicle](https://github.com/jshiv/cronicle) project.
 runs on a cron trigger. This file is for anyone, human or AI, adding or
 changing those schedules. `cronicle guide` prints it again.
 
+This guide covers the common paths. For anything more advanced, run
+`cronicle <command> --help` (for example `cronicle run --help` or
+`cronicle secret set --help`): each command lists every flag with its
+default, plus examples.
+
 ## How to write schedules
 
 Cronicle's output is built to make a run transparent: it draws the DAG,
@@ -77,7 +82,10 @@ schedule "daily_sales" {
 
 ## Commands
 
-Every command prints its flags with `--help`.
+This section shows the common flags. `cronicle --help` lists the
+commands, and `cronicle <command> --help` (also for subcommands such as
+`cronicle secret set --help`) shows every flag, its default, and
+examples. Check it before guessing at a flag.
 
 ### Set up
 
