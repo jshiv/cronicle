@@ -606,10 +606,21 @@ What it does depends on where it goes:
   checkout of the repo. `run` keeps it in sync with the remote, so
   schedule changes are deployed by pushing to the repo, and tasks without
   their own `repo` run there at the latest commit. Local edits there are
-  overwritten too: change the schedules through the repo. For a private
-  repo, `password = "$secret.GITHUB_TOKEN"` works here as well: cronicle
-  opens its secret store before the first fetch, and uses it on every
-  sync after that.
+  overwritten too: change the schedules through the repo.
+
+  For a private repo, use `password = "$secret.GITHUB_TOKEN"` here too,
+  and store the token once in that directory before the first run:
+
+  ```sh
+  gh auth token --hostname github.com | cronicle secret set GITHUB_TOKEN --workdir .
+  ```
+
+  You don't need `cronicle init` first: `secret set` creates `.cronicle/`
+  and its secret store in any directory with a `cronicle.hcl`, such as a
+  fresh clone. `cronicle run` then opens that store before its first
+  fetch and uses it on every sync. See
+  [Example: a token for private repos](#example-a-token-for-private-repos)
+  for the other ways to supply it.
 
 Tasks with no `repo` anywhere run in the directory holding
 `cronicle.hcl`.
