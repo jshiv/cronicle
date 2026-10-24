@@ -194,6 +194,42 @@ cronicle secret set API_KEY --remote http://producer:8765 --token "$TOKEN"
 `--secret-source` (`env://`, `file:///abs/path.json`, `http(s)://…`, or
 `state://`).
 
+A missing secret fails the task with its name and the `secret set`
+command to fix it. It is never passed on as the literal text.
+
+#### Example: a token for private repos
+
+A `repo` block for a private HTTPS repo reads its token from a secret:
+
+```hcl
+repo {
+  url      = "https://github.com/org/app.git"
+  password = "$secret.GITHUB_TOKEN"
+}
+```
+
+Set it once per project. On your own machine, the GitHub CLI's token is
+the quickest:
+
+```sh
+gh auth token --hostname github.com | cronicle secret set GITHUB_TOKEN --workdir .
+```
+
+That works in a fresh clone too: `secret set` creates `.cronicle/` when
+the directory has a `cronicle.hcl`. Or skip storing it, and hand the
+token over for a single run:
+
+```sh
+GITHUB_TOKEN=$(gh auth token) cronicle exec --secret-source env://
+```
+
+`gh auth token` is your personal token, with every scope you granted
+`gh`. On a server or a shared producer, store a
+[fine-grained token](https://github.com/settings/personal-access-tokens)
+instead, limited to the repos the schedule clones (read access to
+Contents; add Pull requests to comment on PRs). Remote workers get
+secrets from their producer, so set it there, not on each worker.
+
 ### Output
 
 All commands take `--log-format`: `auto` (the default: `pretty` in a
@@ -456,6 +492,7 @@ Tasks with no `repo` anywhere run in the directory holding
 Credentials: `key` for SSH, or `password` for HTTPS, usually a token.
 Use `$secret.NAME` (resolved when the task runs) or `${env.NAME}`
 (resolved when the config loads). Don't write a token into the file.
+See [Example: a token for private repos](#example-a-token-for-private-repos).
 
 `repos = [...]` at the top level is different: it lists repos that keep
 their own `cronicle.hcl`. Cronicle clones each one and adds its

@@ -2,6 +2,7 @@ package cronicle
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/jshiv/cronicle/internal/cronicle/secretstore"
@@ -38,7 +39,7 @@ func TestResolveRepoSecrets_ExpandsSecretRef(t *testing.T) {
 	defer cleanup()
 
 	repo := &Repo{Password: "$secret.GITHUB_TOKEN"}
-	out := resolveRepoSecrets(repo)
+	out, _ := resolveRepoSecrets(repo)
 
 	if out.Password != "ghp_test123" {
 		t.Errorf("expected resolved password %q, got %q", "ghp_test123", out.Password)
@@ -59,7 +60,7 @@ func TestResolveRepoSecrets_LeavesEnvSyntaxAlone(t *testing.T) {
 	defer cleanup()
 
 	repo := &Repo{Password: "${env.CRONICLE_TOKEN}"}
-	out := resolveRepoSecrets(repo)
+	out, _ := resolveRepoSecrets(repo)
 
 	if out.Password != "${env.CRONICLE_TOKEN}" {
 		t.Errorf("should not modify env syntax, got %q", out.Password)
@@ -71,14 +72,14 @@ func TestResolveRepoSecrets_LeavesEnvSyntaxAlone(t *testing.T) {
 }
 
 func TestResolveRepoSecrets_NoopWhenNil(t *testing.T) {
-	if out := resolveRepoSecrets(nil); out != nil {
+	if out, _ := resolveRepoSecrets(nil); out != nil {
 		t.Errorf("expected nil for nil input, got %v", out)
 	}
 }
 
 func TestResolveRepoSecrets_NoopWhenEmpty(t *testing.T) {
 	repo := &Repo{Password: ""}
-	out := resolveRepoSecrets(repo)
+	out, _ := resolveRepoSecrets(repo)
 	if out.Password != "" {
 		t.Errorf("expected empty, got %q", out.Password)
 	}
@@ -89,7 +90,7 @@ func TestResolveRepoSecrets_NoopWhenEmpty(t *testing.T) {
 
 func TestResolveRepoSecrets_NoopWhenStoreUnconfigured(t *testing.T) {
 	repo := &Repo{Password: "$secret.GITHUB_TOKEN"}
-	out := resolveRepoSecrets(repo)
+	out, _ := resolveRepoSecrets(repo)
 	if out.Password != "$secret.GITHUB_TOKEN" {
 		t.Errorf("should leave unresolved when store not configured, got %q", out.Password)
 	}
@@ -103,7 +104,7 @@ func TestResolveRepoSecrets_PlainPasswordUnchanged(t *testing.T) {
 	defer cleanup()
 
 	repo := &Repo{Password: "my-plain-token"}
-	out := resolveRepoSecrets(repo)
+	out, _ := resolveRepoSecrets(repo)
 
 	if out.Password != "my-plain-token" {
 		t.Errorf("plain password should be unchanged, got %q", out.Password)
@@ -128,7 +129,8 @@ func TestResolveRepoSecrets_ConcurrentSharedRepo(t *testing.T) {
 	done := make(chan *Repo, goroutines)
 	for i := 0; i < goroutines; i++ {
 		go func() {
-			done <- resolveRepoSecrets(shared)
+			r, _ := resolveRepoSecrets(shared)
+			done <- r
 		}()
 	}
 	for i := 0; i < goroutines; i++ {
@@ -140,5 +142,18 @@ func TestResolveRepoSecrets_ConcurrentSharedRepo(t *testing.T) {
 	// Original must still be untouched.
 	if shared.Password != "$secret.GITHUB_TOKEN" {
 		t.Errorf("shared repo mutated under concurrency; got %q", shared.Password)
+	}
+}
+
+// TestResolveRepoSecrets_MissingSecretIsAnError: with a store configured,
+// a password naming a secret that isn't set fails with the secret's name,
+// instead of sending the literal "$secret.NAME" to the git host.
+func TestResolveRepoSecrets_MissingSecretIsAnError(t *testing.T) {
+	cleanup := setupSecretStore(t, map[string]string{})
+	defer cleanup()
+
+	_, err := resolveRepoSecrets(&Repo{Password: "$secret.GITHUB_TOKEN"})
+	if err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN") || !strings.Contains(err.Error(), "cronicle secret set GITHUB_TOKEN") {
+		t.Errorf("want an error naming the secret and how to set it, got %v", err)
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -67,6 +68,10 @@ ${timestamp}. Add --end to backfill: one run per day from --time to --end.`,
 		// Falls back to CRONICLE_SECRET_SOURCE=env:// if no state.db.
 		absPath, _ := filepath.Abs(path)
 		stateDir := filepath.Dir(absPath)
+		// .cronicle/ is gitignored, so a fresh clone doesn't have it yet.
+		// Without it state.db couldn't open and $secret.NAME references
+		// passed through unresolved — create it, as run and init do.
+		_ = os.MkdirAll(filepath.Join(stateDir, ".cronicle"), 0o755)
 		if err := cronicle.EnableStateStore(filepath.Join(stateDir, ".cronicle", "state.db")); err != nil {
 			slog.Debug("state.db not available, secrets resolve from env only", "err", err.Error())
 		} else {

@@ -86,24 +86,32 @@ func splitAPIKey(env []string, provider string) (apiKey string, rest []string) {
 // doesn't have its own repo block, so concurrent tasks in the DAG would
 // race on the Password field. Returning a per-task clone keeps each
 // goroutine's view of the secret independent.
-func resolveRepoSecrets(repo *Repo) *Repo {
+//
+// A reference to a secret that isn't set is an error, as it is for task
+// env: passing the literal "$secret.NAME" on as the password only got a
+// confusing "authentication required" back from the git host.
+func resolveRepoSecrets(repo *Repo) (*Repo, error) {
 	if repo == nil || repo.Password == "" {
-		return repo
+		return repo, nil
 	}
 	if !strings.Contains(repo.Password, "$secret.") {
-		return repo
+		return repo, nil
 	}
 	store := secretstore.Default()
 	if !store.Configured() {
-		return repo
+		return repo, nil
 	}
 	v, err := store.ExpandValue(repo.Password)
 	if err != nil {
-		return repo
+		name := "NAME"
+		if m := secretstore.SECRET_REF_RE.FindString(repo.Password); m != "" {
+			name = strings.TrimPrefix(m, "$secret.")
+		}
+		return nil, fmt.Errorf("repo password: %w (set it with: cronicle secret set %s)", err, name)
 	}
 	clone := *repo
 	clone.Password = v
-	return &clone
+	return &clone, nil
 }
 
 func resolveEnv(env []string) ([]string, error) {
@@ -777,7 +785,11 @@ func (task *Task) checkout() error {
 		// race other tasks that share the same schedule-level *Repo pointer.
 		// A for_each item can name what to check out (commit =
 		// each.value.headRefOid); filled after the password resolves.
-		task.Repo = task.eachRepo(resolveRepoSecrets(task.Repo))
+		resolved, err := resolveRepoSecrets(task.Repo)
+		if err != nil {
+			return err
+		}
+		task.Repo = task.eachRepo(resolved)
 		repo, dir = task.Repo, task.Path
 	case taskPathIsCroniclePathWithGit:
 		// Fetch + checkout on every task exec so the worker picks up
