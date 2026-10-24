@@ -2,6 +2,7 @@ package cronicle
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -240,7 +241,7 @@ func TestForEach_Instance(t *testing.T) {
 	if got := inst.rerunLine([]string{"sh", "-c", "echo $EACH_KEY"}); got != `EACH_KEY=org/x EACH_VALUE='{"sha":"a1"}' sh -c 'echo $EACH_KEY'` {
 		t.Errorf("rerun line must set the item's env: %s", got)
 	}
-	if inst.Path != "/c/.cronicle/repos/r.git/s/review[org_x]" {
+	if inst.Path != "/c/.cronicle/repos/r.git/s/review/org_x" || fileSafeName(inst.Name) != "review-org_x" {
 		t.Errorf("each item needs its own checkout, named safely: %s", inst.Path)
 	}
 	if tmpl.fillEach("${each.key}") != "${each.key}" || tmpl.rerunLine([]string{"ls"}) != "ls" {
@@ -659,8 +660,9 @@ schedule "s" {
 // the operator sees the same in the header.
 func TestAgentWorkspaceNote(t *testing.T) {
 	plain := Task{Path: "/c", CroniclePath: "/c", ScratchDir: "/c/.cronicle/scratch/s/R1"}
-	if got := plain.workspaceNote(); got != "## Workspace\n\nYour working directory is /c. The bash tool runs there, "+
-		"and relative paths for text_editor and git resolve there. Files to hand to other tasks in this run go in /c/.cronicle/scratch/s/R1." {
+	if got := plain.workspaceNote(); got != "## Workspace\n\nYour working directory is /c. The bash tool starts there, and text_editor "+
+		"and git paths are relative to it, so refer to files by relative path (`src/app.py`, not an absolute one). "+
+		"Files to hand to other tasks in this run go in /c/.cronicle/scratch/s/R1." {
 		t.Errorf("plain note: %q", got)
 	}
 	if plain.workspaceRow() != "" {
@@ -676,7 +678,7 @@ func TestAgentWorkspaceNote(t *testing.T) {
 	inst.Repo = inst.eachRepo(inst.Repo) // what Execute does before checking out
 	note := inst.workspaceNote()
 	for _, want := range []string{
-		"/c/.cronicle/repos/org/app.git/prs/review[12]",
+		"/c/.cronicle/repos/org/app.git/prs/review/12",
 		"a git checkout of https://github.com/org/app.git at commit a1b2c3d4e5",
 	} {
 		if !strings.Contains(note, want) {
@@ -686,7 +688,26 @@ func TestAgentWorkspaceNote(t *testing.T) {
 	if strings.Contains(note, "tok") {
 		t.Error("credentials leaked into the system prompt")
 	}
-	if row := inst.workspaceRow(); !strings.HasSuffix(row, "review[12] @ commit a1b2c3d4e5") {
+	if row := inst.workspaceRow(); !strings.HasSuffix(row, "review/12 @ commit a1b2c3d4e5") {
 		t.Errorf("workspace row: %q", row)
+	}
+}
+
+// TestAgentBashOutputInGutter: an agent's bash tool writes through the
+// frame's gutter, so its output stays inside the block.
+func TestAgentBashOutputInGutter(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = prev }()
+	var b bytes.Buffer
+	gw := newGutterWriter(&b, agentAccent)
+	for _, tool := range buildAgentTools([]string{"bash"}, t.TempDir(), nil, nil, "", gw) {
+		if tool.Name() == "bash" {
+			tool.Execute(context.Background(), json.RawMessage(`{"command":"echo one; echo two"}`))
+		}
+	}
+	gw.EndLine()
+	if !strings.Contains(b.String(), "│ one\n│ two\n") {
+		t.Errorf("bash output left the gutter:\n%q", b.String())
 	}
 }

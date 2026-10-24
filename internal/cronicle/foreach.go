@@ -457,9 +457,10 @@ func (task Task) instance(item ForEachItem) (Task, error) {
 		}
 	}
 	// A task with its own repo checkout gets one per item, so parallel
-	// items never share (and fight over) a working tree.
+	// items never share (and fight over) a working tree: <task>/<key>.
+	// (Not <task>[<key>]: brackets in a path are a shell glob.)
 	if task.Repo != nil && task.Path != "" && task.Path != task.CroniclePath {
-		inst.Path = filepath.Join(filepath.Dir(task.Path), fileSafeName(inst.Name))
+		inst.Path = filepath.Join(task.Path, fileSafeName(item.Key))
 	}
 	return inst, firstErr
 }
@@ -536,11 +537,15 @@ func eachValueText(raw json.RawMessage) string {
 	return string(raw)
 }
 
-var unsafeFileChars = regexp.MustCompile(`[^A-Za-z0-9._\[\]=+,@-]`)
+var unsafeFileChars = regexp.MustCompile(`[^A-Za-z0-9._=+,@-]`)
 
 // fileSafeName makes a task name usable as one path element: an item key
 // like "org/repo" or "../x" must not escape the directory it's written to.
 func fileSafeName(name string) string {
+	// An item's name[key] reads as name-key; brackets are a shell glob.
+	if base, key, ok := splitInstanceName(name); ok {
+		name = base + "-" + key
+	}
 	s := unsafeFileChars.ReplaceAllString(name, "_")
 	if s == "." || s == ".." {
 		return "_"

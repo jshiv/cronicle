@@ -378,10 +378,13 @@ string and number set. For example:
 **Inside the task.**
 - `each.key` and `each.value` (with fields: `each.value.sha`) fill into
   `command`, `env`, an agent's `prompt` and `system`, and a `repo`
-  block's `url`, `branch`, and `commit`. Each item with a `repo` gets its
-  own working tree, so items running at once never share a checkout. A string fills
-  in as itself; anything else fills in as JSON. Values are inserted
-  last, as plain text, and never evaluated.
+  block's `url`, `branch`, and `commit`. A string fills in as itself;
+  anything else fills in as JSON. Values are inserted last, as plain
+  text, and never evaluated.
+- Each item with a `repo` gets its own working tree,
+  `.cronicle/repos/<repo>/<schedule>/<task>/<key>/`, so items running at
+  once never share a checkout. An agent's system prompt names that
+  folder and the commit on it.
 - In `sh -c` scripts, read the item from `"$EACH_KEY"` / `"$EACH_VALUE"`
   rather than writing `${each.key}` into the script: text spliced into a
   script runs as shell code.
@@ -432,7 +435,7 @@ What it does depends on where it goes:
   remote's default branch when neither is set), so each run uses the
   latest code and **local edits in that checkout are discarded**. A
   `for_each` item gets its own checkout,
-  `.cronicle/repos/<repo>/<schedule>/<task>[<key>]/`, and its `branch`
+  `.cronicle/repos/<repo>/<schedule>/<task>/<key>/`, and its `branch`
   or `commit` can name the item (`commit = each.value.headRefOid`).
 - **In a `schedule`:** the default for every task in it. Each task still
   gets its own checkout. A task's own `repo` block overrides it, and

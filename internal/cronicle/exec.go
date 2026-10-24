@@ -413,7 +413,9 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// context stays consistent (same cwd as a shell task would have).
 	var toolWriter io.Writer
 	if streaming {
-		toolWriter = sw
+		// Through the gutter, like the agent's text: written to sw
+		// directly, a bash tool's output broke out of the frame.
+		toolWriter = gw
 	}
 	// git tool reuses the task's repo auth so push works against the same
 	// remote the clone came from. Errors here are non-fatal — read-only
@@ -733,7 +735,7 @@ func (task *Task) workspaceNote() string {
 	if ref := task.checkoutRef(); ref != "" {
 		b.WriteString(", a git checkout of " + redactGitURL(task.Repo.URL) + " at " + ref)
 	}
-	b.WriteString(". The bash tool runs there, and relative paths for text_editor and git resolve there.")
+	b.WriteString(". The bash tool starts there, and text_editor and git paths are relative to it, so refer to files by relative path (`src/app.py`, not an absolute one).")
 	if task.ScratchDir != "" {
 		b.WriteString(" Files to hand to other tasks in this run go in " + task.ScratchDir + ".")
 	}
