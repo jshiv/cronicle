@@ -109,28 +109,59 @@ type StreamHandler func(StreamEvent)
 // (tokens, cost, transcript path) are additive.
 type Result struct {
 	exec.Result
-	Model          string
-	InputTokens    int
-	OutputTokens   int
-	CacheReadIn    int
-	CacheWriteIn   int
-	CostUSD        float64
+	Model        string
+	InputTokens  int
+	OutputTokens int
+	CacheReadIn  int
+	CacheWriteIn int
+	CostUSD      float64
+	// CostEstimated is set when the model had no pricing data and CostUSD
+	// was estimated from a similar model (see computeCost).
+	CostEstimated  bool
 	StopReason     string
 	TranscriptPath string
 }
 
 // modelPrice is per-1M-token USD pricing. Centralized so a model swap doesn't
-// silently mis-cost. Update when Anthropic publishes new pricing.
+// silently mis-cost. Update when a provider publishes new pricing; a model
+// missing here still runs, with an estimated cost (see computeCost).
 type modelPrice struct {
 	in, out, cacheWrite, cacheRead float64
+	// legacy models (retired, or superseded at a different price) are
+	// priced exactly but never used to estimate an unknown model's cost.
+	legacy bool
+	// long, when set, is the price of a request whose prompt (input plus
+	// cache reads and writes) is over longAbove tokens.
+	long      *modelPrice
+	longAbove int
 }
 
+// pricing is Anthropic's list price per 1M tokens: base input, output,
+// 5-minute cache write, cache read. From
+// https://platform.claude.com/docs/en/about-claude/pricing (2026-10-23).
+// Dated ids (claude-opus-4-5-20251101) resolve through priceKey.
 var pricing = map[string]modelPrice{
-	"claude-opus-4-7":           {15.00, 75.00, 18.75, 1.50},
-	"claude-opus-4-6":           {15.00, 75.00, 18.75, 1.50},
-	"claude-sonnet-4-6":         {3.00, 15.00, 3.75, 0.30},
-	"claude-haiku-4-5-20251001": {1.00, 5.00, 1.25, 0.10},
-	"claude-haiku-4-5":          {1.00, 5.00, 1.25, 0.10},
+	"claude-fable-5-1":  {in: 10, out: 50, cacheWrite: 12.50, cacheRead: 0.25},
+	"claude-fable-5":    {in: 10, out: 50, cacheWrite: 12.50, cacheRead: 1.00, legacy: true},
+	"claude-opus-5-5":   {in: 4, out: 20, cacheWrite: 5.00, cacheRead: 0.20},
+	"claude-opus-5":     {in: 5, out: 25, cacheWrite: 6.25, cacheRead: 0.50},
+	"claude-opus-4-8":   {in: 5, out: 25, cacheWrite: 6.25, cacheRead: 0.50},
+	"claude-opus-4-7":   {in: 5, out: 25, cacheWrite: 6.25, cacheRead: 0.50},
+	"claude-opus-4-6":   {in: 5, out: 25, cacheWrite: 6.25, cacheRead: 0.50},
+	"claude-opus-4-5":   {in: 5, out: 25, cacheWrite: 6.25, cacheRead: 0.50},
+	"claude-opus-4-1":   {in: 15, out: 75, cacheWrite: 18.75, cacheRead: 1.50, legacy: true},
+	"claude-opus-4-0":   {in: 15, out: 75, cacheWrite: 18.75, cacheRead: 1.50, legacy: true},
+	"claude-opus-4":     {in: 15, out: 75, cacheWrite: 18.75, cacheRead: 1.50, legacy: true},
+	"claude-sonnet-5-5": {in: 2, out: 10, cacheWrite: 2.50, cacheRead: 0.10},
+	"claude-sonnet-5":   {in: 2, out: 10, cacheWrite: 2.50, cacheRead: 0.20},
+	"claude-sonnet-4-6": {in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.30},
+	"claude-sonnet-4-5": {in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.30},
+	"claude-sonnet-4-0": {in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.30, legacy: true},
+	"claude-sonnet-4":   {in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.30, legacy: true},
+	"claude-haiku-5-5": {in: 0.10, out: 0.50, cacheWrite: 0.125, cacheRead: 0.01,
+		long: &modelPrice{in: 0.50, out: 2.50, cacheWrite: 0.625, cacheRead: 0.05}, longAbove: 100_000},
+	"claude-haiku-4-5": {in: 1, out: 5, cacheWrite: 1.25, cacheRead: 0.10},
+	"claude-3-5-haiku": {in: 0.80, out: 4, cacheWrite: 1.00, cacheRead: 0.08, legacy: true},
 }
 
 // ErrBudgetExceeded is returned when the run's actual cost crosses cfg.BudgetUSD.
@@ -225,6 +256,7 @@ func runAnthropic(ctx context.Context, cfg Config) (Result, error) {
 	var (
 		accText   strings.Builder
 		cumUsage  anthropic.Usage
+		runCost   float64 // summed per request; see computeCost
 		finalStop anthropic.StopReason
 		turnsRun  int
 		runErr    error
@@ -344,10 +376,12 @@ func runAnthropic(ctx context.Context, cfg Config) (Result, error) {
 			tw.writeResponse(turn, &msg, time.Now().UTC())
 		}
 
-		// Mid-run budget abort
-		currentCost := computeCost(model,
-			int(cumUsage.InputTokens), int(cumUsage.OutputTokens),
-			int(cumUsage.CacheCreationInputTokens), int(cumUsage.CacheReadInputTokens))
+		// Price each request on its own (a long-prompt tier applies per
+		// request), then check the running total against the budget.
+		turnCost, estimated := computeCost(model, int(turnIn), int(turnOut), int(turnCacheW), int(turnCacheR))
+		runCost += turnCost
+		res.CostEstimated = res.CostEstimated || estimated
+		currentCost := runCost
 		if cfg.BudgetUSD > 0 && currentCost > cfg.BudgetUSD {
 			runErr = fmt.Errorf("%w: $%.4f > $%.2f after turn %d",
 				ErrBudgetExceeded, currentCost, cfg.BudgetUSD, turn+1)
@@ -432,7 +466,7 @@ func runAnthropic(ctx context.Context, cfg Config) (Result, error) {
 	res.CacheReadIn = int(cumUsage.CacheReadInputTokens)
 	res.CacheWriteIn = int(cumUsage.CacheCreationInputTokens)
 	res.StopReason = string(finalStop)
-	res.CostUSD = computeCost(model, res.InputTokens, res.OutputTokens, res.CacheWriteIn, res.CacheReadIn)
+	res.CostUSD = runCost
 
 	if tw != nil {
 		tw.writeAccounting(turnsRun, res, finishedAt)
@@ -471,27 +505,80 @@ func applyCacheBreakpoint(params *anthropic.MessageNewParams) {
 // path; the rare first-encounter write happens at most once per id.
 var warnedUnknownModels sync.Map
 
-func computeCost(model string, in, out, cacheWrite, cacheRead int) float64 {
+// computeCost prices one request's tokens. A model missing from the
+// pricing table doesn't stop the run — new models ship faster than this
+// table can track — but its cost is estimated (see estimatePrice), not
+// taken as $0: budget_usd then still stops a runaway run, if a little
+// early, where a $0 cost never would. estimated reports which case
+// applied. Price per request, not per run: a long-prompt tier (Haiku 5.5
+// over 100K tokens) applies request by request.
+func computeCost(model string, in, out, cacheWrite, cacheRead int) (cost float64, estimated bool) {
 	p, ok := pricing[priceKey(model)]
 	if !ok {
-		// L4: previously this just returned 0 silently. Result: an
-		// unattended cron with budget_usd = 5.00 configured against
-		// a model the pricing table didn't know about would NEVER
-		// trip the budget gate — the cost would stay zero regardless
-		// of token usage. Warn loudly the first time we see an
-		// unknown id so operators can either add the entry or set an
-		// alias-resolving priceKey rule. Repeat warnings would just
-		// be noise; sync.Map gates on first-sight per id.
-		if _, alreadyWarned := warnedUnknownModels.LoadOrStore(model, struct{}{}); !alreadyWarned {
-			slog.Warn("agent: model not in pricing table; cost reported as $0 (budget_usd will not trip)",
-				"model", model)
-		}
-		return 0
+		var basis string
+		p, basis = estimatePrice(pricing, model, []string{"fable", "mythos", "opus", "sonnet", "haiku"}, nil)
+		warnEstimated("anthropic", model, basis)
+		estimated = true
+	}
+	return p.cost(in, out, cacheWrite, cacheRead), estimated
+}
+
+// cost is the price of one request, with the long-prompt tier applied
+// when the prompt is over its threshold.
+func (p modelPrice) cost(in, out, cacheWrite, cacheRead int) float64 {
+	if p.long != nil && in+cacheWrite+cacheRead > p.longAbove {
+		p = *p.long
 	}
 	return (float64(in)*p.in +
 		float64(out)*p.out +
 		float64(cacheWrite)*p.cacheWrite +
 		float64(cacheRead)*p.cacheRead) / 1_000_000
+}
+
+// estimatePrice prices a model that isn't in table: as the most expensive
+// current model of its family (a family name appearing in its id), or else
+// as the most expensive current model of all, skipping names containing
+// any of notDefault (OpenAI's pro models, priced far above the rest).
+// Legacy entries are never used. Erring high keeps budget_usd protective.
+// basis names the model whose price was used.
+func estimatePrice(table map[string]modelPrice, model string, families, notDefault []string) (modelPrice, string) {
+	pick := func(match func(string) bool) (modelPrice, string, bool) {
+		var best modelPrice
+		var name string
+		for k, p := range table {
+			if p.legacy || !match(k) {
+				continue
+			}
+			if name == "" || p.out > best.out || (p.out == best.out && k < name) {
+				best, name = p, k
+			}
+		}
+		return best, name, name != ""
+	}
+	for _, fam := range families {
+		if strings.Contains(model, fam) {
+			if p, name, ok := pick(func(k string) bool { return strings.Contains(k, fam) }); ok {
+				return p, name
+			}
+		}
+	}
+	p, name, _ := pick(func(k string) bool {
+		for _, x := range notDefault {
+			if strings.Contains(k, x) {
+				return false
+			}
+		}
+		return true
+	})
+	return p, name
+}
+
+// warnEstimated says once per model that its cost is an estimate.
+func warnEstimated(provider, model, basis string) {
+	if _, alreadyWarned := warnedUnknownModels.LoadOrStore(provider+":"+model, struct{}{}); !alreadyWarned {
+		slog.Warn("agent: model not in pricing table; estimating its cost from a known model (add it to the table for exact costs)",
+			"provider", provider, "model", model, "priced_as", basis)
+	}
 }
 
 // priceKey resolves an Anthropic model id to its alias entry in the pricing
@@ -600,14 +687,15 @@ func (tw *transcriptWriter) writeToolResult(turn int, toolUseID, name, output st
 
 func (tw *transcriptWriter) writeAccounting(turns int, res Result, finished time.Time) {
 	_ = tw.enc.Encode(map[string]any{
-		"type":          "accounting",
-		"turns":         turns,
-		"finished_at":   finished,
-		"input_tokens":  res.InputTokens,
-		"output_tokens": res.OutputTokens,
-		"cache_read":    res.CacheReadIn,
-		"cache_write":   res.CacheWriteIn,
-		"cost_usd":      res.CostUSD,
+		"type":           "accounting",
+		"turns":          turns,
+		"finished_at":    finished,
+		"input_tokens":   res.InputTokens,
+		"output_tokens":  res.OutputTokens,
+		"cache_read":     res.CacheReadIn,
+		"cache_write":    res.CacheWriteIn,
+		"cost_usd":       res.CostUSD,
+		"cost_estimated": res.CostEstimated,
 	})
 }
 

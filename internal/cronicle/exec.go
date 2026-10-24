@@ -522,9 +522,13 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 			// repeats its first line.
 			fmt.Fprintln(gw, color.New(color.FgRed).Sprint(err.Error()))
 		}
+		costStr := fmt.Sprintf("%.6f", res.CostUSD)
+		if res.CostEstimated {
+			costStr = "~" + costStr
+		}
 		WriteAgentRunFooter(sw, task.Name, err == nil,
 			int64(res.InputTokens), int64(res.OutputTokens), int64(res.CacheReadIn),
-			fmt.Sprintf("%.6f", res.CostUSD), durationMs,
+			costStr, durationMs,
 			res.StopReason, res.TranscriptPath)
 	}
 
@@ -544,6 +548,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		slog.Int("cache_read", res.CacheReadIn),
 		slog.Int("cache_write", res.CacheWriteIn),
 		slog.Float64("cost_usd", res.CostUSD),
+		slog.Bool("cost_estimated", res.CostEstimated),
 		slog.Int64("duration_ms", durationMs),
 		slog.String("stop_reason", res.StopReason),
 		slog.String("response", res.Stdout),

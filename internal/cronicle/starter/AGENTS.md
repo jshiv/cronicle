@@ -280,7 +280,7 @@ schedule "name" {
     skills     = ["skills/triage/SKILL.md"]         // Agent Skills, loaded on demand
     max_turns  = 10
     max_tokens = 4000
-    budget_usd = 0.50                               // stop the run past this cost
+    budget_usd = 0.50                               // stop the run past this cost (estimated for unpriced models)
     wallclock  = "5m"                               // stop the run after this long
     env        = ["ANTHROPIC_API_KEY=$secret.ANTHROPIC_API_KEY"]
 
