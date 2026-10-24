@@ -449,15 +449,8 @@ func (task Task) instance(item ForEachItem) (Task, error) {
 	inst.forEachOf = task.Name
 	inst.eachItem = &item
 
-	fields := append(append([]string(nil), task.Command...), task.Env...)
-	if task.Agent != nil {
-		fields = append(fields, task.Agent.Prompt, task.Agent.System)
-		for _, m := range task.Agent.MCPs {
-			fields = append(fields, m.Command...)
-		}
-	}
 	var firstErr error
-	for _, f := range fields {
+	for _, f := range task.eachFields() {
 		if _, err := substituteEach(f, item); err != nil {
 			firstErr = err
 			break
@@ -469,6 +462,21 @@ func (task Task) instance(item ForEachItem) (Task, error) {
 		inst.Path = filepath.Join(filepath.Dir(task.Path), fileSafeName(inst.Name))
 	}
 	return inst, firstErr
+}
+
+// eachFields are the strings each.* fill into.
+func (task *Task) eachFields() []string {
+	fields := append(append([]string(nil), task.Command...), task.Env...)
+	if task.Agent != nil {
+		fields = append(fields, task.Agent.Prompt, task.Agent.System)
+		for _, m := range task.Agent.MCPs {
+			fields = append(fields, m.Command...)
+		}
+	}
+	if task.Repo != nil {
+		fields = append(fields, task.Repo.URL, task.Repo.Branch, task.Repo.Commit)
+	}
+	return fields
 }
 
 // fillEach fills each.* placeholders in s for an item; other tasks get s
@@ -504,6 +512,18 @@ func (task *Task) rerunLine(cmd []string) string {
 	}
 	return "EACH_KEY=" + shellQuoteArg(task.eachItem.Key) +
 		" EACH_VALUE=" + shellQuoteArg(eachValueText(task.eachItem.Value)) + " " + line
+}
+
+// eachRepo is the repo an item checks out: its url, branch, and commit
+// can use each.* (commit = each.value.headRefOid checks out each PR).
+// Returns a copy, since items share their for_each task's *Repo.
+func (task *Task) eachRepo(repo *Repo) *Repo {
+	if task.eachItem == nil || repo == nil {
+		return repo
+	}
+	c := *repo
+	c.URL, c.Branch, c.Commit = task.fillEach(c.URL), task.fillEach(c.Branch), task.fillEach(c.Commit)
+	return &c
 }
 
 // eachValueText is EACH_VALUE: a string item as itself, anything else as

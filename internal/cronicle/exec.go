@@ -330,6 +330,14 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		RunID:         runID,
 	}
 
+	// Tell the agent where it is. Its tools already run in task.Path —
+	// bash's cwd, the root for text_editor and git paths — but without
+	// this it can't know that the path is, say, its own checkout of a PR.
+	// The note goes to the model only; the header's workspace row shows
+	// the same thing to the operator, for tasks with their own checkout.
+	cfg.System = joinSections(system, task.workspaceNote())
+	workspaceRow := task.workspaceRow()
+
 	streaming := IsStreamingPretty()
 	effectiveModel := cfg.Model
 	if effectiveModel == "" {
@@ -364,7 +372,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		sw = NewStreamingWriter()
 		defer sw.Close()
 		WriteAgentRunHeader(sw, task.ScheduleName, task.Name, effectiveModel, skillsAvailable,
-			cfg.Prompt, system, resolvedTools, resolvedMCPCommands)
+			cfg.Prompt, system, workspaceRow, resolvedTools, resolvedMCPCommands)
 		gw = newGutterWriter(sw, agentAccent)
 		downstream = NewAgentStreamRenderer(gw)
 	}
@@ -395,6 +403,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		// echoed as-is (no template expansion today, future-proofed).
 		"prompt", cfg.Prompt,
 		"system", system,
+		"workspace", workspaceRow,
 		"tools", resolvedTools,
 		"mcp_commands", resolvedMCPCommands,
 	)
@@ -533,6 +542,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		// that keeps the run summary self-contained.
 		slog.String("prompt", cfg.Prompt),
 		slog.String("system", system),
+		slog.String("workspace", workspaceRow),
 		slog.Any("tools", resolvedTools),
 		slog.Any("mcp_commands", resolvedMCPCommands),
 	}
@@ -575,7 +585,9 @@ func (task *Task) Execute(t time.Time) (exec.Result, error) {
 	if task.Repo != nil {
 		// Replace task.Repo with a clone-with-resolved-password so we don't
 		// race other tasks that share the same schedule-level *Repo pointer.
-		task.Repo = resolveRepoSecrets(task.Repo)
+		// A for_each item can name what to check out (commit =
+		// each.value.headRefOid); filled after the password resolves.
+		task.Repo = task.eachRepo(resolveRepoSecrets(task.Repo))
 		opts, err := task.Repo.Auth()
 		if err != nil {
 			return exec.Result{}, err
@@ -707,4 +719,64 @@ func (task *Task) Log(res exec.Result) {
 		args = append(args, "success", true)
 		slog.Info("shell task complete", args...)
 	}
+}
+
+// workspaceNote is the system-prompt section that tells an agent where it
+// is working: the absolute path its tools run in, what's checked out
+// there, and the run's shared scratch dir.
+func (task *Task) workspaceNote() string {
+	if task.Path == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Workspace\n\nYour working directory is " + task.Path)
+	if ref := task.checkoutRef(); ref != "" {
+		b.WriteString(", a git checkout of " + redactGitURL(task.Repo.URL) + " at " + ref)
+	}
+	b.WriteString(". The bash tool runs there, and relative paths for text_editor and git resolve there.")
+	if task.ScratchDir != "" {
+		b.WriteString(" Files to hand to other tasks in this run go in " + task.ScratchDir + ".")
+	}
+	return b.String()
+}
+
+// workspaceRow is the header's workspace line: shown only for a task with
+// its own checkout, where the folder and commit aren't obvious.
+func (task *Task) workspaceRow() string {
+	ref := task.checkoutRef()
+	if ref == "" {
+		return ""
+	}
+	return shortPath(task.Path) + " @ " + ref
+}
+
+// checkoutRef describes what a task's own repo checkout is on: the commit
+// (short) and, when one was asked for, the branch. "" without a checkout.
+func (task *Task) checkoutRef() string {
+	if task.Repo == nil || task.Path == task.CroniclePath {
+		return ""
+	}
+	ref := ""
+	if task.Git.Commit != nil {
+		ref = "commit " + task.Git.Commit.Hash.String()[:7]
+	} else if task.Repo.Commit != "" {
+		ref = "commit " + task.Repo.Commit
+	}
+	if task.Repo.Branch != "" {
+		if ref != "" {
+			ref += " "
+		}
+		ref += "(branch " + task.Repo.Branch + ")"
+	}
+	return ref
+}
+
+func joinSections(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + "\n\n" + b
 }

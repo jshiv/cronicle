@@ -968,7 +968,7 @@ func renderAgentRunStart(out io.Writer, r slog.Record) error {
 		return true
 	})
 	var b bytes.Buffer
-	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, tools, mcpCommands)
+	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, attrString(r, "workspace"), tools, mcpCommands)
 	_, err := out.Write(b.Bytes())
 	return err
 }
@@ -1121,7 +1121,7 @@ func renderAgentRun(out io.Writer, r slog.Record) error {
 	})
 
 	var b bytes.Buffer
-	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, tools, mcpCommands)
+	WriteAgentRunHeader(&b, schedule, task, model, skills, prompt, system, attrString(r, "workspace"), tools, mcpCommands)
 
 	footerColor := color.New(color.Faint).SprintFunc()
 	errc := color.New(color.FgRed, color.Bold).SprintFunc()
@@ -1149,7 +1149,7 @@ func renderAgentRun(out io.Writer, r slog.Record) error {
 // debug `${date}`/`${path}` expansion at a glance. `tools` and `mcpCommands`
 // list the tool surface available for the run.
 func WriteAgentRunHeader(w io.Writer, schedule, task, model string, skills []string,
-	prompt, system string, tools, mcpCommands []string) {
+	prompt, system, workspace string, tools, mcpCommands []string) {
 	meta := []string{"agent", schedule, model}
 	if len(skills) > 0 {
 		meta = append(meta, "skills "+strings.Join(skills, ", "))
@@ -1161,6 +1161,9 @@ func WriteAgentRunHeader(w io.Writer, schedule, task, model string, skills []str
 	}
 	if s := strings.TrimSpace(system); s != "" {
 		rows = append(rows, frameRow{key: "system", val: s})
+	}
+	if workspace != "" {
+		rows = append(rows, frameRow{key: "workspace", val: workspace})
 	}
 	if len(tools) > 0 {
 		rows = append(rows, frameRow{key: "tools", val: strings.Join(tools, ", ")})

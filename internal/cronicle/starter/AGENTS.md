@@ -256,9 +256,12 @@ schedule "name" {
 }
 ```
 
-Every shell task runs with its working directory set to the task's path:
-the directory holding `cronicle.hcl`, or the task's repo checkout (see
-below). Agent tasks need `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` with
+Every task, shell or agent, runs in the task's path: the directory
+holding `cronicle.hcl`, or the task's own repo checkout (see Repos). A
+shell command runs with that as its working directory. An agent's
+`bash`, `text_editor`, and `git` tools work there (`text_editor` can
+also reach `${scratch}`), and its system prompt tells it that absolute
+path and which commit is checked out. Agent tasks need `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` with
 `provider = "openai"`) in their environment or `env`. With no `tools`,
 an agent gets `bash`, `text_editor`, and `git`; `web_search` and
 `web_fetch` are opt-in because the provider bills each call.
@@ -288,42 +291,65 @@ skipped; tasks that don't depend on it keep running.
 
 ### `for_each`: one task per item
 
-`for_each` runs a task once per item of a collection, with Terraform's
-semantics. The collection usually comes from an upstream task's stdout,
-parsed as JSON, so the work can be discovered at run time:
+`for_each` runs a task or agent once per item of a collection, with
+Terraform's semantics. The collection usually comes from an upstream
+task's stdout, parsed as JSON, so the work can be discovered at run
+time. A common shape: list the open PRs, then review each one with its
+own agent in its own checkout of the PR:
 
 ```hcl
-schedule "prs" {
+schedule "pr_review" {
   cron = "0 * * * *"
 
-  task "list_prs" {                     # prints [{"number": 12, "headRefOid": "a1…"}, …]
-    command = ["gh", "pr", "list", "--json", "number,headRefOid"]
+  // Prints the open PRs: [{"number": 12, "title": "…", "headRefOid": "a1b2…", "baseRefName": "main"}, …]
+  task "list_prs" {
+    command = ["gh", "pr", "list", "--repo", "org/app", "--json", "number,title,headRefOid,baseRefName"]
+    env     = ["GH_TOKEN=$secret.GITHUB_TOKEN"]
   }
 
-  task "review" {                       # review[12], review[15], …
-    for_each = { for pr in task.list_prs.output : pr.number => pr }
-    command  = ["./review.sh", each.key, each.value.headRefOid]
+  // One agent per PR (review[12], review[15], …), each in its own
+  // checkout of that PR's head commit.
+  agent "review" {
+    for_each     = { for pr in task.list_prs.output : pr.number => pr }
+    max_parallel = 3
+
+    repo {
+      url      = "https://github.com/org/app.git"
+      password = "$secret.GITHUB_TOKEN"
+      commit   = each.value.headRefOid
+    }
+
+    model      = "claude-sonnet-4-6"
+    tools      = ["git", "text_editor"]
+    max_turns  = 20
+    budget_usd = 0.50
+    prompt     = <<-EOT
+      Review pull request #${each.key}, "${each.value.title}". The working
+      tree is the PR's head commit. Diff it against origin/${each.value.baseRefName}
+      with the git tool and read the changed files. Write the review to
+      ${scratch}/review-${each.key}.md: bugs first, then risks, then nits.
+    EOT
   }
 
-  task "report" {                       # report[12] waits only on review[12]
+  // Same collection, so post[12] waits only on review[12].
+  task "post" {
     for_each = { for pr in task.list_prs.output : pr.number => pr }
     depends  = ["review"]
-    command  = ["./report.sh", each.key]
+    command  = ["gh", "pr", "comment", each.key, "--repo", "org/app", "--body-file", "${scratch}/review-${each.key}.md"]
+    env      = ["GH_TOKEN=$secret.GITHUB_TOKEN"]
   }
 
-  task "summary" {                      # waits for every report, failed or not
-    depends             = ["report"]
+  // A plain task waits for every item, failed or not.
+  task "summary" {
+    depends             = ["post"]
     continue_on_failure = true
-    command             = ["./summary.sh"]
-  }
-
-  task "notify" {                       # a literal set: notify[email], notify[slack]
-    for_each = toset(["slack", "email"])
-    depends  = ["summary"]
-    command  = ["./notify.sh", each.key]
+    command             = ["sh", "-c", "ls ${scratch} | grep -c '^review-' | xargs echo reviews written:"]
   }
 }
 ```
+
+A literal works too: `for_each = toset(["us", "eu"])` gives `task[eu]` and
+`task[us]`.
 
 **The collection.** `task.<name>.output` is that task's stdout as JSON.
 Only one task's output can feed a collection, and that task must be a
@@ -351,7 +377,9 @@ string and number set. For example:
 
 **Inside the task.**
 - `each.key` and `each.value` (with fields: `each.value.sha`) fill into
-  `command`, `env`, and an agent's `prompt` and `system`. A string fills
+  `command`, `env`, an agent's `prompt` and `system`, and a `repo`
+  block's `url`, `branch`, and `commit`. Each item with a `repo` gets its
+  own working tree, so items running at once never share a checkout. A string fills
   in as itself; anything else fills in as JSON. Values are inserted
   last, as plain text, and never evaluated.
 - In `sh -c` scripts, read the item from `"$EACH_KEY"` / `"$EACH_VALUE"`
@@ -402,7 +430,10 @@ What it does depends on where it goes:
   relative path. The repo is cloned on the first run. On every run after
   that, cronicle fetches and force-checks-out `branch` or `commit` (the
   remote's default branch when neither is set), so each run uses the
-  latest code and **local edits in that checkout are discarded**.
+  latest code and **local edits in that checkout are discarded**. A
+  `for_each` item gets its own checkout,
+  `.cronicle/repos/<repo>/<schedule>/<task>[<key>]/`, and its `branch`
+  or `commit` can name the item (`commit = each.value.headRefOid`).
 - **In a `schedule`:** the default for every task in it. Each task still
   gets its own checkout. A task's own `repo` block overrides it, and
   fields the task leaves empty (`url`, `key`, `branch`, `commit`) are
@@ -454,8 +485,8 @@ whole run.
 
 ```
 ⋔ review  3 items from list_prs: 12, 15, 20
-╰─ review[15]  failed · exit 1 · 1.0s
-⊘ report[15] skipped  upstream review[15] failed
+╰─ review[15]  failed · 8120 in · 940 out · $0.0385 · 41.2s · max_turns
+⊘ post[15] skipped  upstream review[15] failed
 ⋔ review  done · 3 items · 1 failed
 ```
 

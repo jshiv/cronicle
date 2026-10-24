@@ -406,56 +406,77 @@ fails, task B still runs if it doesn't depend on A.
 
 `for_each` runs a task once per item of a collection, Terraform style.
 The collection usually comes from an upstream task's output, so the
-work can be discovered at run time: list the open pull requests, then
-review each one as its own task, with its own logs, status, retries and
+work can be discovered at run time. For example, list the open pull
+requests, then review each one with its own agent in its own checkout
+of the PR. Each review gets its own logs, status, cost, retries and
 rerun line.
 
 ```hcl
-schedule "prs" {
+schedule "pr_review" {
   cron = "0 * * * *"
 
-  // Prints JSON: [{"number": 12, "headRefOid": "a1b2…"}, …]
+  // Prints the open PRs: [{"number": 12, "title": "…", "headRefOid": "a1b2…", "baseRefName": "main"}, …]
   task "list_prs" {
-    command = ["gh", "pr", "list", "--json", "number,headRefOid"]
+    command = ["gh", "pr", "list", "--repo", "org/app", "--json", "number,title,headRefOid,baseRefName"]
+    env     = ["GH_TOKEN=$secret.GITHUB_TOKEN"]
   }
 
-  // One task per PR: review[12], review[15], …
-  task "review" {
-    for_each = { for pr in task.list_prs.output : pr.number => pr }
-    command  = ["./review.sh", each.key, each.value.headRefOid]
+  // One agent per PR (review[12], review[15], …), each in its own
+  // checkout of that PR's head commit.
+  agent "review" {
+    for_each     = { for pr in task.list_prs.output : pr.number => pr }
+    max_parallel = 3
+
+    repo {
+      url      = "https://github.com/org/app.git"
+      password = "$secret.GITHUB_TOKEN"
+      commit   = each.value.headRefOid
+    }
+
+    model      = "claude-sonnet-4-6"
+    tools      = ["git", "text_editor"]
+    max_turns  = 20
+    budget_usd = 0.50
+    prompt     = <<-EOT
+      Review pull request #${each.key}, "${each.value.title}". The working
+      tree is the PR's head commit. Diff it against origin/${each.value.baseRefName}
+      with the git tool and read the changed files. Write the review to
+      ${scratch}/review-${each.key}.md: bugs first, then risks, then nits.
+    EOT
   }
 
-  // Same collection, so report[12] waits only on review[12].
-  task "report" {
+  // Same collection, so post[12] waits only on review[12].
+  task "post" {
     for_each = { for pr in task.list_prs.output : pr.number => pr }
     depends  = ["review"]
-    command  = ["./report.sh", each.key]
+    command  = ["gh", "pr", "comment", each.key, "--repo", "org/app", "--body-file", "${scratch}/review-${each.key}.md"]
+    env      = ["GH_TOKEN=$secret.GITHUB_TOKEN"]
   }
 
   // A plain task waits for every item, failed or not.
   task "summary" {
-    depends             = ["report"]
+    depends             = ["post"]
     continue_on_failure = true
-    command             = ["./summary.sh"]
+    command             = ["sh", "-c", "ls ${scratch} | grep -c '^review-' | xargs echo reviews written:"]
   }
 }
 ```
 
 ```
-◆ prs  12:00:00 · 4 tasks · run 20261024T120000Z-1a2b3c4d
+◆ pr_review  12:00:00 · 4 tasks · run 20261024T120000Z-1a2b3c4d
   list_prs
   └─ review[*]
-     └─ report[*]
+     └─ post[*]
         └─ summary
 
-╭─ list_prs  shell · prs
+╭─ list_prs  shell · pr_review
 …
 ⋔ review  3 items from list_prs: 12, 15, 20
-⋔ report  3 items from list_prs: 12, 15, 20
-╭─ review[12]  shell · prs
-│ $ ./review.sh 12 a1b2c3
+⋔ post  3 items from list_prs: 12, 15, 20
+╭─ review[12]  agent · pr_review · claude-sonnet-4-6
+│ prompt Review pull request #12, "Add retries". …
 …
-⊘ report[15] skipped  upstream review[15] failed
+⊘ post[15] skipped  upstream review[15] failed
 ⋔ review  done · 3 items · 1 failed
 ```
 
@@ -505,8 +526,11 @@ for_each = toset([for i in range(3) : tostring(i)])   # "0", "1", "2"
 
 **Inside the task.**
 - `each.key` and `each.value` (with fields: `each.value.sha`,
-  `each.value["head-sha"]`) can be used in `command`, `env`, and an
-  agent's `prompt` and `system`.
+  `each.value["head-sha"]`) can be used in `command`, `env`, an agent's
+  `prompt` and `system`, and a `repo` block's `url`, `branch` and
+  `commit`. Each item with a `repo` gets its own working tree, so items
+  running at once never share a checkout. Credentials can't use
+  `each.*`.
 - A string fills in as itself; anything else fills in as JSON. The value
   goes into the argument as plain text and is never evaluated.
 - Item text is filled in last, after `${date}`-style placeholders and

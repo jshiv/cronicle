@@ -70,15 +70,21 @@ and build larger jobs by chaining tasks with depends:
   }
 
 To run the same step for every item of a list, use for_each rather than a
-loop inside one task; each item becomes its own task in the DAG:
+loop inside one task; each item becomes its own task in the DAG. Here each
+open PR gets its own agent, in its own checkout of the PR's commit:
 
   task "list_prs" {
-    command = ["gh", "pr", "list", "--json", "number,headRefOid"]
+    command = ["gh", "pr", "list", "--json", "number,title,headRefOid"]
   }
 
-  task "review" {
+  agent "review" {
     for_each = { for pr in task.list_prs.output : pr.number => pr }
-    command  = ["./review.sh", each.key, each.value.headRefOid]
+    repo {
+      url    = "https://github.com/org/app.git"
+      commit = each.value.headRefOid
+    }
+    tools  = ["git", "text_editor"]
+    prompt = "Review PR #${each.key}, ${each.value.title}, and write it to ${scratch}/review-${each.key}.md."
   }
 
 Run "cronicle guide" for the full guide to writing schedules.`,

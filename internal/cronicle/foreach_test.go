@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/go-git/go-git/v6"
 	"github.com/hashicorp/hcl/v2/hclparse"
 )
 
@@ -91,6 +92,19 @@ func TestForEach_ParseErrors(t *testing.T) {
 		  task "b" { depends = ["a[k]"]
 		  command = ["echo"] }`, `depend on the for_each task "a" instead`},
 		{`task "a[1]" { command = ["echo"] }`, `names can't contain [ or ]`},
+		{`task "a" { for_each = toset(["k"])
+		  command = ["echo"]
+		  repo {
+		    url      = "https://example.com/r.git"
+		    password = each.value
+		  }
+		  }`, `not its credentials`},
+		{`task "a" { command = ["echo"]
+		  repo {
+		    url    = "https://example.com/r.git"
+		    branch = each.key
+		  }
+		  }`, `has no for_each`},
 	} {
 		// The cases are written compactly; open each block on its own line.
 		body := strings.ReplaceAll(strings.ReplaceAll(tc.body, `" { `, "\" {\n"), "] }", "]\n}")
@@ -583,5 +597,96 @@ func TestRenderForEach(t *testing.T) {
 	_ = renderScheduleStart(&b, rec)
 	if !strings.Contains(b.String(), "  list\n  └─ review[*]\n") {
 		t.Errorf("DAG should draw for_each tasks as name[*]:\n%s", b.String())
+	}
+}
+
+// TestExecuteTasks_ForEachRepoCheckout: each.* in a repo block picks what
+// each item checks out — here, one commit per item — into its own
+// working tree, so items running side by side never share a checkout.
+func TestExecuteTasks_ForEachRepoCheckout(t *testing.T) {
+	buf := captureLog(t)
+	src := scratchRepo(t)
+	r, err := git.PlainOpen(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, _ := r.Head()
+	second := head.Hash().String()
+	c, _ := r.CommitObject(head.Hash())
+	first := c.ParentHashes[0].String()
+
+	conf, err := parseConfig(t, fmt.Sprintf(`
+schedule "s" {
+  task "list" {
+    command = ["echo", "{\"one\": {\"sha\": \"%s\"}, \"two\": {\"sha\": \"%s\"}}"]
+  }
+  task "show" {
+    for_each = task.list.output
+    repo {
+      url    = %q
+      commit = each.value.sha
+    }
+    command = ["cat", "hello.txt"]
+  }
+}`, first, second, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := conf.Schedules[0]
+	sched.RunID = "R1"
+	if err := sched.ExecuteTasks(); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	paths := map[string]bool{}
+	for _, e := range events(buf, "shell_run") {
+		got[e["task"].(string)] = strings.TrimSpace(e["stdout"].(string))
+		paths[e["path"].(string)] = true
+	}
+	if got["show[one]"] != "first version" || got["show[two]"] != "second version" {
+		t.Errorf("each item should check out its own commit: %v", got)
+	}
+	if len(paths) != 3 {
+		t.Errorf("want a separate working tree per item: %v", paths)
+	}
+	if sched.TaskMap()["show"].Repo.Commit != "${each.value.sha}" {
+		t.Error("an item changed the for_each task's shared repo block")
+	}
+}
+
+// TestAgentWorkspaceNote: an agent is told where its tools run — for a
+// for_each item with a repo, its own checkout and the commit on it — and
+// the operator sees the same in the header.
+func TestAgentWorkspaceNote(t *testing.T) {
+	plain := Task{Path: "/c", CroniclePath: "/c", ScratchDir: "/c/.cronicle/scratch/s/R1"}
+	if got := plain.workspaceNote(); got != "## Workspace\n\nYour working directory is /c. The bash tool runs there, "+
+		"and relative paths for text_editor and git resolve there. Files to hand to other tasks in this run go in /c/.cronicle/scratch/s/R1." {
+		t.Errorf("plain note: %q", got)
+	}
+	if plain.workspaceRow() != "" {
+		t.Error("a task in the project dir needs no workspace row")
+	}
+
+	tmpl := Task{
+		Name: "review", CroniclePath: "/c", Path: "/c/.cronicle/repos/org/app.git/prs/review",
+		Repo:    &Repo{URL: "https://x:tok@github.com/org/app.git", Commit: "${each.value.sha}"},
+		ForEach: &ForEach{Source: "list"},
+	}
+	inst, _ := tmpl.instance(ForEachItem{Key: "12", Value: json.RawMessage(`{"sha":"a1b2c3d4e5"}`)})
+	inst.Repo = inst.eachRepo(inst.Repo) // what Execute does before checking out
+	note := inst.workspaceNote()
+	for _, want := range []string{
+		"/c/.cronicle/repos/org/app.git/prs/review[12]",
+		"a git checkout of https://github.com/org/app.git at commit a1b2c3d4e5",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note missing %q:\n%s", want, note)
+		}
+	}
+	if strings.Contains(note, "tok") {
+		t.Error("credentials leaked into the system prompt")
+	}
+	if row := inst.workspaceRow(); !strings.HasSuffix(row, "review[12] @ commit a1b2c3d4e5") {
+		t.Errorf("workspace row: %q", row)
 	}
 }

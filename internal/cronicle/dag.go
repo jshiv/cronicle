@@ -421,13 +421,24 @@ func runDAG(spec dagSpec, hooks dagHooks) error {
 	for i, name := range spec.order {
 		rank[name] = i + 1
 	}
+	// Order by depth in the DAG, then declaration: upstream work first, so
+	// a for_each that another pairs with expands (and says so) before it.
+	// Declaration alone can't do this — agent blocks are folded in after
+	// task blocks.
+	depth := dagDepths(spec.deps)
 	sort.Slice(names, func(i, j int) bool {
+		if di, dj := depth[names[i]], depth[names[j]]; di != dj {
+			return di < dj
+		}
 		ri, rj := rank[names[i]], rank[names[j]]
 		if ri != rj && ri > 0 && rj > 0 {
 			return ri < rj
 		}
 		return names[i] < names[j]
 	})
+	for i, name := range names {
+		rank[name] = i + 1
+	}
 
 	for _, name := range names {
 		n := &dagNode{name: name, rank: rank[name], continueOnFailure: spec.continueOnFailure[name]}
@@ -669,6 +680,35 @@ func (w *dagWalk) finishForEach(n *dagNode) {
 		w.hooks.onForEachDone(n.name, len(n.items), failed)
 	}
 	w.finish(n, failed > 0)
+}
+
+// dagDepths is each node's longest path from a root (cycles count as 0).
+func dagDepths(deps map[string][]string) map[string]int {
+	depth := make(map[string]int, len(deps))
+	visiting := map[string]bool{}
+	var of func(string) int
+	of = func(n string) int {
+		if d, ok := depth[n]; ok {
+			return d
+		}
+		if visiting[n] {
+			return 0
+		}
+		visiting[n] = true
+		d := 0
+		for _, p := range deps[n] {
+			if _, known := deps[p]; known {
+				d = max(d, of(p)+1)
+			}
+		}
+		visiting[n] = false
+		depth[n] = d
+		return d
+	}
+	for n := range deps {
+		of(n)
+	}
+	return depth
 }
 
 func contains(list []string, s string) bool {
