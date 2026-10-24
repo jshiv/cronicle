@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -223,7 +224,7 @@ func runOpenAI(ctx context.Context, cfg Config) (res Result, runErr error) {
 		streamErr := stream.Err()
 		_ = stream.Close()
 		if streamErr != nil {
-			return res, streamErr
+			return res, withOpenAIMessage(streamErr)
 		}
 		if eventErr != nil {
 			return res, eventErr
@@ -316,4 +317,17 @@ func emitWebSearch(emit func(StreamEvent), ws responses.ResponseFunctionWebSearc
 	emit(StreamEvent{Type: StreamEventToolUseStart, ToolID: ws.ID, ToolName: "web_search", ToolInput: string(raw)})
 	failed := ws.Status == "failed" || ws.Status == "incomplete"
 	emit(StreamEvent{Type: StreamEventToolResult, ToolID: ws.ID, ToolName: "web_search", ToolOutput: string(ws.Status), IsError: failed})
+}
+
+// withOpenAIMessage adds the API's own error message ("Incorrect API key
+// provided", "model not found") to an API error. Since openai-go v3.71
+// the error's text is just the status ("OpenAI API error: 401
+// Unauthorized"), which leaves an operator guessing; the message is
+// still on the error, and OpenAI masks any key it echoes.
+func withOpenAIMessage(err error) error {
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) && apiErr.Message != "" {
+		return fmt.Errorf("%w: %s", err, apiErr.Message)
+	}
+	return err
 }
