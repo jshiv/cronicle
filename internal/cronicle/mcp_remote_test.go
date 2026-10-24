@@ -85,10 +85,30 @@ func TestRemoteMCP_Failures(t *testing.T) {
 		Headers: map[string]string{"Authorization": "Bearer wrong"}}}, nil, nil); err == nil {
 		t.Error("a rejected token must fail the launch")
 	}
-	_, _, err := LaunchMCPServers(ctx, []MCP{{Name: "svc", URL: streamable,
-		Headers: map[string]string{"Authorization": "Bearer t0k"}, Tools: []string{"echoo"}}}, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), `"echoo", which the server doesn't offer (it offers: echo, wipe)`) {
-		t.Errorf("a misspelled tool should fail, naming what's offered: %v", err)
+	// A listed tool the server doesn't offer (renamed, misspelled) is
+	// skipped with a warning naming what it does offer; the run goes on.
+	var block strings.Builder
+	handles, tools, err := LaunchMCPServers(ctx, []MCP{{Name: "svc", URL: streamable,
+		Headers: map[string]string{"Authorization": "Bearer t0k"}, Tools: []string{"echoo", "echo"}}}, nil, &block)
+	if err != nil {
+		t.Fatalf("a missing tool must not fail the launch: %v", err)
+	}
+	for _, h := range handles {
+		_ = h.Close()
+	}
+	if len(tools) != 1 || tools[0].Name() != "svc__echo" {
+		t.Errorf("the tools that do exist should still be kept, got %d", len(tools))
+	}
+	if !strings.Contains(block.String(), "skipping echoo, not offered by the server (it offers: echo, wipe)") {
+		t.Errorf("the block should say which tool was skipped and what's offered: %q", block.String())
+	}
+
+	// None of the listed tools exist: the block is out of date, and the
+	// agent would get nothing from this server. That fails.
+	_, _, err = LaunchMCPServers(ctx, []MCP{{Name: "svc", URL: streamable,
+		Headers: map[string]string{"Authorization": "Bearer t0k"}, Tools: []string{"echoo", "wiipe"}}}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "none of the tools listed (echoo, wiipe) are offered by the server (it offers: echo, wipe)") {
+		t.Errorf("no matching tools should fail, naming what's offered: %v", err)
 	}
 }
 

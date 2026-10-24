@@ -142,7 +142,7 @@ func launchOne(ctx context.Context, m MCP, taskEnv []string, w io.Writer) (*MCPH
 		cancel()
 		return nil, nil, fmt.Errorf("list_tools: %w", err)
 	}
-	offered, err := filterMCPTools(m, listRes.Tools)
+	offered, err := filterMCPTools(m, listRes.Tools, w)
 	if err != nil {
 		_ = session.Close()
 		cancel()
@@ -169,28 +169,43 @@ func launchOne(ctx context.Context, m MCP, taskEnv []string, w io.Writer) (*MCPH
 }
 
 // filterMCPTools keeps the tools an mcp block's tools list names, or all
-// of them when it names none. A name the server doesn't offer fails the
-// launch: a typo would otherwise quietly leave the agent without a tool.
-func filterMCPTools(m MCP, tools []*mcpsdk.Tool) ([]*mcpsdk.Tool, error) {
+// of them when it names none. A listed name the server doesn't offer is
+// skipped with a warning: servers rename tools, and one rename shouldn't
+// break a schedule. The warning names what the server does offer, in the
+// log and (when given) in the agent's block via w. If none of the listed
+// names are offered, the block is clearly out of date and the agent would
+// have nothing from this server, so that fails the launch.
+func filterMCPTools(m MCP, tools []*mcpsdk.Tool, w io.Writer) ([]*mcpsdk.Tool, error) {
 	if len(m.Tools) == 0 {
 		return tools, nil
 	}
 	byName := make(map[string]*mcpsdk.Tool, len(tools))
+	names := make([]string, 0, len(tools))
 	for _, t := range tools {
 		byName[t.Name] = t
+		names = append(names, t.Name)
 	}
+	sort.Strings(names)
 	kept := make([]*mcpsdk.Tool, 0, len(m.Tools))
+	var missing []string
 	for _, name := range m.Tools {
-		t, ok := byName[name]
-		if !ok {
-			names := make([]string, 0, len(tools))
-			for _, t := range tools {
-				names = append(names, t.Name)
-			}
-			sort.Strings(names)
-			return nil, fmt.Errorf("tools lists %q, which the server doesn't offer (it offers: %s)", name, strings.Join(names, ", "))
+		if t, ok := byName[name]; ok {
+			kept = append(kept, t)
+		} else {
+			missing = append(missing, name)
 		}
-		kept = append(kept, t)
+	}
+	if len(kept) == 0 {
+		return nil, fmt.Errorf("none of the tools listed (%s) are offered by the server (it offers: %s)",
+			strings.Join(m.Tools, ", "), strings.Join(names, ", "))
+	}
+	if len(missing) > 0 {
+		msg := fmt.Sprintf("mcp %s: skipping %s, not offered by the server (it offers: %s)",
+			m.Name, strings.Join(missing, ", "), strings.Join(names, ", "))
+		slog.Warn(msg, "mcp_server", m.Name, "missing_tools", missing)
+		if w != nil {
+			fmt.Fprintln(w, "▲ "+msg)
+		}
 	}
 	return kept, nil
 }

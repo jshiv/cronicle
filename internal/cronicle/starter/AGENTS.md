@@ -312,7 +312,8 @@ the host needs no git CLI: `status`, `log`, `diff`, `show`, `branch`,
 also reach `${scratch}`), and its system prompt tells it that absolute
 path and which commit is checked out. Agent tasks need `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` with
 `provider = "openai"`) in their environment or `env`. With no `tools`,
-an agent gets `bash`, `text_editor`, and `git`; `web_search` and
+an agent gets `bash`, `text_editor`, and `git` (`tools = []` gives none,
+for an agent that only uses MCP servers); `web_search` and
 `web_fetch` are opt-in because the provider bills each call.
 
 ### Placeholders
@@ -501,9 +502,14 @@ schedule "triage" {
   Header values take `$secret.NAME`, and are never logged or shown.
 - **Limit `tools`.** Without a `tools` list, the agent gets every tool
   the server offers, including ones that write or delete. For an
-  unattended run, list just the tools the job needs. A name the server
-  doesn't offer fails the run, and the error lists every name it does
-  offer: an easy way to look them up.
+  unattended run, list just the tools the job needs.
+  - A listed name the server doesn't offer (say, after a rename) is
+    skipped with a warning, in the log and in the agent's block, that
+    lists every name it does offer.
+  - If none of the listed names are offered, the run fails, with the
+    same list.
+  - Either way, a deliberately wrong name is an easy way to look up a
+    server's tools.
 - **Tool names.** The agent sees each tool as `<server>__<tool>`
   (`github__add_issue_comment`). The run output shows calls as
   `→ github.add_issue_comment: {…}`, and the block header has an `mcp`
@@ -514,6 +520,57 @@ schedule "triage" {
 - **In `for_each`.** `each.*`, `${path}`, and `${scratch}` work in
   `command`, `url`, and header values, so each item can point a server at
   its own checkout.
+- **MCP tools only.** `tools = []` gives an agent no built-in tools, so it
+  can use only its MCP servers. Leaving `tools` out gives the default
+  built-ins (`bash`, `text_editor`, `git`).
+
+#### Example: review each PR through GitHub's MCP server
+
+A lighter version of the checkout-based review under `for_each`: no
+`repo` block and no separate step to post the review. The agent reads
+each PR and comments on it through GitHub's MCP server, and has no other
+tools.
+
+```hcl
+mcp "github" {
+  url     = "https://api.githubcopilot.com/mcp/"
+  headers = { Authorization = "Bearer $secret.GITHUB_TOKEN" }
+  // Read a PR (get, get_diff, get_files) and comment on it; nothing else.
+  tools   = ["pull_request_read", "add_issue_comment"]
+}
+
+schedule "pr_review" {
+  cron = "0 * * * *"
+
+  // Prints the open PRs: [{"number": 12, "title": "…"}, …]
+  task "list_prs" {
+    command = ["gh", "pr", "list", "--repo", "org/app", "--json", "number,title"]
+    env     = ["GH_TOKEN=$secret.GITHUB_TOKEN"]
+  }
+
+  // One agent per PR: review[12], review[15], …
+  agent "review" {
+    for_each     = { for pr in task.list_prs.output : pr.number => pr }
+    max_parallel = 3
+    model        = "claude-sonnet-5-5"
+    tools        = []                  // MCP tools only
+    mcp_servers  = ["github"]
+    max_turns    = 15
+    budget_usd   = 0.50
+    prompt       = <<-EOT
+      Review pull request #${each.key} in org/app, "${each.value.title}".
+      Read it with pull_request_read: the description (method get), then the
+      diff (method get_diff). Post one review comment on the PR with
+      add_issue_comment: bugs first, then risks, then nits. Say so plainly
+      if you find nothing worth changing.
+    EOT
+  }
+}
+```
+
+Use this when reviewing the diff is enough. Use the checkout version when
+the agent needs to read the surrounding code or run something, such as
+the tests.
 
 ### Repos
 

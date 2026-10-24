@@ -921,8 +921,11 @@ mcp "linear" {
 ```
 
 **`tools`** limits an agent to some of a server's tools: the right default for
-unattended runs against servers that can write. A name the server doesn't
-offer fails the run, listing the names it does offer.
+unattended runs against servers that can write. A listed name the server
+doesn't offer (after a rename, say) is skipped with a warning listing the
+names it does offer. If none of the listed names are offered, the run fails.
+To give an agent *only* its MCP tools, set the agent's `tools = []`; leaving
+`tools` out gives the default built-ins.
 
 ```hcl
 mcp "github" {
