@@ -2,9 +2,9 @@ package cronicle
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
