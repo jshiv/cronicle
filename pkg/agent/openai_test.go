@@ -172,11 +172,22 @@ func TestOpenAIHTTPError(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", res, err)
 	}
 }
-func TestOpenAIUnknownPricingBudgetRejected(t *testing.T) {
-	openAIServer(t, func(w http.ResponseWriter, r *http.Request) { t.Error("must not call an unpriced model with a budget") })
-	_, err := Run(context.Background(), Config{Provider: "openai", Model: "unpriced-model", Prompt: "hi", BudgetUSD: 1})
-	if err == nil || !strings.Contains(err.Error(), "pricing") {
-		t.Fatalf("got %v", err)
+
+// TestOpenAIUnknownPricingRunsWithEstimate: a model missing from the
+// pricing table still runs, budget or not, with its cost estimated so the
+// budget still applies.
+func TestOpenAIUnknownPricingRunsWithEstimate(t *testing.T) {
+	openAIServer(t, func(w http.ResponseWriter, r *http.Request) { emitResponse(w, "completed", textOutput()) })
+	res, err := Run(context.Background(), Config{Provider: "openai", Model: "gpt-9-preview", Prompt: "hi", BudgetUSD: 1})
+	if err != nil {
+		t.Fatalf("an unpriced model must run: %v", err)
+	}
+	if !res.CostEstimated || res.CostUSD <= 0 {
+		t.Errorf("cost should be a positive estimate: %+v", res)
+	}
+	_, err = Run(context.Background(), Config{Provider: "openai", Model: "gpt-9-preview", Prompt: "hi", BudgetUSD: 0.00001})
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Errorf("the estimate should still enforce budget_usd: %v", err)
 	}
 	for _, model := range []string{"gpt-4.1-mini", "gpt-4.1-mini-2025-04-14", "gpt-4o-mini-2024-07-18"} {
 		if p, ok := openAIPrice(model); !ok || p.in <= 0 {

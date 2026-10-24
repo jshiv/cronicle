@@ -3,6 +3,7 @@ package cronicle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -200,11 +201,25 @@ func (t *TextEditorTool) view(absPath string, viewRange []int) (string, bool) {
 			return fmt.Sprintf("Error: %v", err), true
 		}
 		var sb strings.Builder
-		rel, _ := filepath.Rel(t.Workspace, absPath)
-		if rel == "" {
+		// Name the directory both ways: relative, as the model should
+		// refer to it, and absolute, so it's unambiguous where it is.
+		// absPath has symlinks resolved (resolveInWorkspace), so compare
+		// it with the resolved workspace: on macOS /var is /private/var.
+		ws := t.Workspace
+		if r, err := filepath.EvalSymlinks(ws); err == nil {
+			ws = r
+		}
+		rel, err := filepath.Rel(ws, absPath)
+		if err != nil || rel == "" {
 			rel = "."
 		}
-		fmt.Fprintf(&sb, "Directory %s:\n", rel)
+		// Show the absolute form under the workspace as the agent was told
+		// it (the workspace note), not its symlink-resolved twin.
+		shown := absPath
+		if wsAbs, err := filepath.Abs(t.Workspace); err == nil {
+			shown = filepath.Join(wsAbs, rel)
+		}
+		fmt.Fprintf(&sb, "Directory %s (%s):\n", rel, shown)
 		for _, e := range entries {
 			marker := ""
 			if e.IsDir() {
@@ -324,7 +339,34 @@ func (t *TextEditorTool) resolvePath(p string) (string, error) {
 			return abs, nil
 		}
 	}
-	return "", fmt.Errorf("path %s outside workspace and allowed roots", p)
+	return "", t.outsideError(p)
+}
+
+// outsideError explains a rejected path in terms the model can act on in
+// one step: where the workspace is, what the path would look like under
+// it, and the other roots it may use. Without this, agents that guessed a
+// wrong absolute path spent a turn running pwd to find out.
+func (t *TextEditorTool) outsideError(p string) error {
+	ws := t.Workspace
+	if abs, err := filepath.Abs(ws); err == nil {
+		ws = abs
+	}
+	name := filepath.Base(p)
+	if name == "." || name == string(filepath.Separator) {
+		name = "file.txt"
+	}
+	msg := fmt.Sprintf("path %s is outside the workspace. The workspace is %s: use a path under it (%s) or relative to it (%s)",
+		p, ws, filepath.Join(ws, name), name)
+	var others []string
+	for _, root := range t.AllowedRoots {
+		if root != "" {
+			others = append(others, root)
+		}
+	}
+	if len(others) > 0 {
+		msg += ". Also allowed: " + strings.Join(others, ", ")
+	}
+	return errors.New(msg)
 }
 
 // resolveInWorkspace turns a model-supplied path (relative or absolute) into

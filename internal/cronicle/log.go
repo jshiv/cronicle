@@ -1025,6 +1025,9 @@ func renderAgentRunFooter(out io.Writer, r slog.Record) error {
 	if errMsg != "" {
 		b.WriteString(guttered(color.New(color.FgRed).Sprint(errMsg), agentAccent))
 	}
+	if attrBool(r, "cost_estimated") {
+		costStr = "~" + costStr
+	}
 	WriteAgentRunFooter(&b, task, success, in, outTokens, cacheRead, costStr, durationMs, stop, transcript)
 	_, err := out.Write(b.Bytes())
 	return err
@@ -1140,6 +1143,9 @@ func renderAgentRun(out io.Writer, r slog.Record) error {
 	} else {
 		b.WriteString(guttered(errc("ERROR: ")+errMsg, agentAccent))
 	}
+	if attrBool(r, "cost_estimated") {
+		costStr = "~" + costStr
+	}
 	WriteAgentRunFooter(&b, task, success, in, outTokens, cacheRead, costStr, durationMs, stop, transcript)
 
 	_, err := out.Write(b.Bytes())
@@ -1200,7 +1206,13 @@ func WriteAgentRunFooter(w io.Writer, task string, success bool, in, out, cacheR
 
 // formatCost trims the fixed 6-decimal cost string to what's worth reading:
 // "$0" for a free or failed run, four decimals under a cent, two above.
+//
+// A leading "~" marks an estimate (a model without pricing data, see
+// agent.Result.CostEstimated) and is kept: "~$0.04".
 func formatCost(costStr string) string {
+	if rest, ok := strings.CutPrefix(costStr, "~"); ok {
+		return "~" + formatCost(rest)
+	}
 	v, err := strconv.ParseFloat(costStr, 64)
 	switch {
 	case err != nil:

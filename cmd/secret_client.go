@@ -99,11 +99,19 @@ func openLocalClient(cmd *cobra.Command) (secretClient, error) {
 	}
 	dbPath := filepath.Join(abs, ".cronicle", "state.db")
 	if _, err := os.Stat(dbPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no state.db at %s — run `cronicle run` once in this workdir, "+
-				"or pass --remote http://… --token … to manage a remote cronicle", dbPath)
+		if !os.IsNotExist(err) {
+			return nil, err
 		}
-		return nil, err
+		// A fresh clone of a project has cronicle.hcl but no .cronicle/
+		// (it's gitignored): create the store there. Anywhere else, keep
+		// refusing, so a secret never lands in a directory by mistake.
+		if _, err := os.Stat(filepath.Join(abs, "cronicle.hcl")); err != nil {
+			return nil, fmt.Errorf("no state.db at %s and no cronicle.hcl in %s — run this in a cronicle project "+
+				"(or pass --workdir), or pass --remote http://… --token … to manage a remote cronicle", dbPath, abs)
+		}
+		if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+			return nil, err
+		}
 	}
 	s, err := state.Open(dbPath)
 	if err != nil {

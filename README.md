@@ -750,10 +750,19 @@ An incomplete response or exhausted turn limit fails the task rather than
 reporting unfinished work as successful. Automatic SDK retries are disabled;
 the task's configured retry policy controls retries.
 
-Costs currently cover `gpt-4.1-mini`, `gpt-4.1`, and `gpt-4o-mini`, including dated
-snapshots, at standard text-token rates. Cached input is charged separately.
-Other models can run with `budget_usd = 0`; their reported cost is unavailable
-and shown as zero with a warning. A positive budget rejects an unpriced model.
+Costs use each provider's published list prices: every current OpenAI text
+model (GPT-6, GPT-5.x, the `o` series and GPT-4.1/4o, including dated snapshots,
+standard tier) and every Claude model. Cached input is charged separately.
+
+**A model missing from the price table still runs.** New models ship faster than
+any table can track, so rather than failing, cronicle estimates the cost from the
+priciest current model of the same family: a new `claude-sonnet-*` is priced like
+Sonnet, and `gpt-7-mini` like the newest mini. With no family match, it uses the
+priciest current model of all, leaving out OpenAI's `pro` models. The estimate errs
+high, so `budget_usd` still stops a runaway run, a little early rather than never.
+The footer shows an estimate as `~$0.04`, and the event has `cost_estimated=true`.
+A warning names the model it was priced as.
+
 Budgets are checked **after each completed response**, before tool execution;
 one response can overshoot the limit. `max_tokens`, `max_turns`, and `wallclock`
 provide the other bounds.

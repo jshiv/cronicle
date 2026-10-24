@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -17,14 +16,47 @@ import (
 
 const DefaultOpenAIModel = "gpt-4.1-mini"
 
-// Prices per million text tokens; cached input is counted separately from input.
-// https://developers.openai.com/api/docs/models/gpt-4.1-mini
-// https://developers.openai.com/api/docs/models/gpt-4.1
-// https://developers.openai.com/api/docs/models/gpt-4o-mini
+// openAIPricing is OpenAI's standard-tier price per 1M text tokens: input,
+// output, and cached input (counted separately from input). A model with
+// no cached-input price is charged full input for cached tokens. From
+// https://developers.openai.com/api/docs/pricing (2026-10-23), for
+// prompts within the short-context limit; longer prompts on some models
+// cost more and aren't modeled. Snapshots (-YYYY-MM-DD) resolve to their
+// base model unless listed.
 var openAIPricing = map[string]modelPrice{
-	"gpt-4.1-mini": {in: 0.40, out: 1.60, cacheRead: 0.10},
-	"gpt-4.1":      {in: 2.00, out: 8.00, cacheRead: 0.50},
-	"gpt-4o-mini":  {in: 0.15, out: 0.60, cacheRead: 0.075},
+	"gpt-6-astra":       {in: 10.00, out: 50.00, cacheRead: 1.00},
+	"gpt-6.1-sol":       {in: 2.00, out: 10.00, cacheRead: 0.10},
+	"gpt-6-sol":         {in: 2.00, out: 10.00, cacheRead: 0.20},
+	"gpt-6-luna":        {in: 0.10, out: 0.50, cacheRead: 0.01},
+	"gpt-5.6-sol":       {in: 4.00, out: 20.00, cacheRead: 0.40},
+	"gpt-5.6-terra":     {in: 2.00, out: 12.00, cacheRead: 0.20},
+	"gpt-5.6-luna":      {in: 0.20, out: 1.20, cacheRead: 0.02},
+	"gpt-5.5":           {in: 5.00, out: 30.00, cacheRead: 0.50},
+	"gpt-5.5-pro":       {in: 30.00, out: 180.00, cacheRead: 30.00},
+	"gpt-5.4":           {in: 2.50, out: 15.00, cacheRead: 0.25},
+	"gpt-5.4-pro":       {in: 30.00, out: 180.00, cacheRead: 30.00},
+	"gpt-5.4-mini":      {in: 0.75, out: 4.50, cacheRead: 0.075},
+	"gpt-5.4-nano":      {in: 0.20, out: 1.25, cacheRead: 0.02},
+	"gpt-5.3-codex":     {in: 1.75, out: 14.00, cacheRead: 0.175},
+	"gpt-5.2":           {in: 1.75, out: 14.00, cacheRead: 0.175},
+	"gpt-5.2-pro":       {in: 21.00, out: 168.00, cacheRead: 21.00},
+	"gpt-5.1":           {in: 1.25, out: 10.00, cacheRead: 0.125},
+	"gpt-5":             {in: 1.25, out: 10.00, cacheRead: 0.125},
+	"gpt-5-mini":        {in: 0.25, out: 2.00, cacheRead: 0.025},
+	"gpt-5-nano":        {in: 0.05, out: 0.40, cacheRead: 0.005},
+	"gpt-5-pro":         {in: 15.00, out: 120.00, cacheRead: 15.00},
+	"gpt-4.1":           {in: 2.00, out: 8.00, cacheRead: 0.50, legacy: true},
+	"gpt-4.1-mini":      {in: 0.40, out: 1.60, cacheRead: 0.10, legacy: true},
+	"gpt-4.1-nano":      {in: 0.10, out: 0.40, cacheRead: 0.025, legacy: true},
+	"gpt-4o":            {in: 2.50, out: 10.00, cacheRead: 1.25, legacy: true},
+	"gpt-4o-2024-05-13": {in: 5.00, out: 15.00, cacheRead: 5.00, legacy: true},
+	"gpt-4o-mini":       {in: 0.15, out: 0.60, cacheRead: 0.075, legacy: true},
+	"o1":                {in: 15.00, out: 60.00, cacheRead: 7.50, legacy: true},
+	"o1-pro":            {in: 150.00, out: 600.00, cacheRead: 150.00, legacy: true},
+	"o3":                {in: 2.00, out: 8.00, cacheRead: 0.50, legacy: true},
+	"o3-pro":            {in: 20.00, out: 80.00, cacheRead: 20.00, legacy: true},
+	"o3-mini":           {in: 1.10, out: 4.40, cacheRead: 0.55, legacy: true},
+	"o4-mini":           {in: 1.10, out: 4.40, cacheRead: 0.275, legacy: true},
 }
 
 func openAIPrice(model string) (modelPrice, bool) {
@@ -102,14 +134,16 @@ func runOpenAI(ctx context.Context, cfg Config) (res Result, runErr error) {
 			tw.close()
 		}
 	}()
+	// A model missing from the pricing table still runs, with its cost
+	// estimated from a similar one so budget_usd keeps working (see
+	// computeCost). Failing here made every new model a config error.
 	price, known := openAIPrice(model)
-	if cfg.BudgetUSD > 0 && !known {
-		return res, fmt.Errorf("OpenAI model %q has no configured pricing; cannot enforce budget_usd", model)
-	}
 	if !known {
-		if _, warned := warnedUnknownModels.LoadOrStore("openai:"+model, struct{}{}); !warned {
-			slog.Warn("agent: OpenAI model not in pricing table; cost unavailable (reported as $0)", "model", model)
-		}
+		var basis string
+		price, basis = estimatePrice(openAIPricing, model,
+			[]string{"pro", "nano", "mini", "luna", "terra", "sol", "astra", "codex"}, []string{"pro"})
+		warnEstimated("openai", model, basis)
+		res.CostEstimated = true
 	}
 	if err := ctx.Err(); err != nil {
 		return res, err

@@ -17,6 +17,8 @@ package cmd
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -378,5 +380,36 @@ func TestGuideCmd_PrintsGuide(t *testing.T) {
 	}
 	if !strings.Contains(out, "## How to write schedules") {
 		t.Errorf("guide output missing the authoring section; got:\n%s", out)
+	}
+}
+
+// TestSecretLocalClient_FreshProject: .cronicle/ is gitignored, so a fresh
+// clone has cronicle.hcl but no state.db; secret set creates it there, and
+// still refuses in a directory that isn't a cronicle project.
+func TestSecretLocalClient_FreshProject(t *testing.T) {
+	open := func(dir string) (secretClient, error) {
+		c := &cobra.Command{}
+		c.Flags().String("workdir", dir, "")
+		return openLocalClient(c)
+	}
+	empty := t.TempDir()
+	if _, err := open(empty); err == nil || !strings.Contains(err.Error(), "no cronicle.hcl") {
+		t.Errorf("a non-project dir must be refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(empty, ".cronicle")); err == nil {
+		t.Error("refusing must not create .cronicle/")
+	}
+
+	proj := t.TempDir()
+	if err := os.WriteFile(filepath.Join(proj, "cronicle.hcl"), []byte(`schedule "s" {}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := open(proj)
+	if err != nil {
+		t.Fatalf("a fresh project should get a store: %v", err)
+	}
+	c.Close()
+	if _, err := os.Stat(filepath.Join(proj, ".cronicle", "state.db")); err != nil {
+		t.Errorf("state.db not created: %v", err)
 	}
 }
