@@ -362,14 +362,24 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// Mcp command expansion is repeated below for the LaunchMCPServers call;
 	// we compute it once for the header and reuse the resolved values.
 	resolvedTools := append([]string(nil), task.Agent.Tools...)
+	// One header row per server: its command or url, and the tools it's
+	// limited to. Header values (credentials) are never shown.
 	resolvedMCPCommands := make([]string, 0, len(task.Agent.MCPs))
 	for _, m := range task.Agent.MCPs {
-		expanded := make([]string, len(m.Command))
-		for j, c := range m.Command {
-			expanded[j] = r.Replace(c)
+		target := task.fillEach(r.Replace(m.URL))
+		if target == "" {
+			expanded := make([]string, len(m.Command))
+			for j, c := range m.Command {
+				expanded[j] = task.fillEach(r.Replace(c))
+			}
+			target = strings.Join(expanded, " ")
+		} else if m.Transport == "sse" {
+			target += " (sse)"
 		}
-		resolvedMCPCommands = append(resolvedMCPCommands,
-			fmt.Sprintf("%s: %s", m.Name, strings.Join(expanded, " ")))
+		if len(m.Tools) > 0 {
+			target += "  tools: " + strings.Join(m.Tools, ", ")
+		}
+		resolvedMCPCommands = append(resolvedMCPCommands, m.Name+": "+target)
 	}
 	var sw *StreamingWriter
 	var gw *gutterWriter
@@ -487,15 +497,12 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// MCP server's command args. Lets HCL like
 	//   mcp "fs" { command = ["npx", "...", "${path}/data"] }
 	// resolve to the task's working directory at launch time.
-	mcps := make([]MCP, len(task.Agent.MCPs))
-	for i, m := range task.Agent.MCPs {
-		mcps[i] = m
-		mcps[i].Command = make([]string, len(m.Command))
-		for j, c := range m.Command {
-			mcps[i].Command[j] = task.fillEach(r.Replace(c))
-		}
+	mcps, mcpErr := task.resolveMCPs(r)
+	var mcpHandles []*MCPHandle
+	var mcpTools []agent.Tool
+	if mcpErr == nil {
+		mcpHandles, mcpTools, mcpErr = LaunchMCPServers(runCtx, mcps, resolvedEnv, toolWriter)
 	}
-	mcpHandles, mcpTools, mcpErr := LaunchMCPServers(runCtx, mcps, resolvedEnv, toolWriter)
 	if mcpErr != nil {
 		return exec.Result{
 			Command:    []string{"agent", task.Agent.Model},
@@ -828,4 +835,37 @@ func (task *Task) checkout() error {
 		cl.add("at " + c.Hash.String()[:7] + " " + subject)
 	}
 	return nil
+}
+
+// resolveMCPs fills placeholders (${path}, each.*, …) into each server's
+// command, url, and header values, and resolves $secret.NAME in headers.
+// A header naming an unset secret fails the run before any server starts.
+func (task *Task) resolveMCPs(r *strings.Replacer) ([]MCP, error) {
+	mcps := make([]MCP, len(task.Agent.MCPs))
+	for i, m := range task.Agent.MCPs {
+		mcps[i] = m
+		mcps[i].Command = make([]string, len(m.Command))
+		for j, c := range m.Command {
+			mcps[i].Command[j] = task.fillEach(r.Replace(c))
+		}
+		mcps[i].URL = task.fillEach(r.Replace(m.URL))
+		if len(m.Headers) == 0 {
+			continue
+		}
+		mcps[i].Headers = make(map[string]string, len(m.Headers))
+		for k, v := range m.Headers {
+			v = task.fillEach(r.Replace(v))
+			if strings.Contains(v, "$secret.") {
+				if store := secretstore.Default(); store.Configured() {
+					expanded, err := store.ExpandValue(v)
+					if err != nil {
+						return nil, fmt.Errorf("mcp %q header %s: %w", m.Name, k, err)
+					}
+					v = expanded
+				}
+			}
+			mcps[i].Headers[k] = v
+		}
+	}
+	return mcps, nil
 }

@@ -36,6 +36,10 @@ type Config struct {
 	// Timezone Location to run cron in. i.e. "America/New_York" [IANA Time Zone database]
 	// https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 	Timezone string `hcl:"timezone,optional"`
+	// MCPs are MCP servers defined once for agents in any schedule to
+	// use by name (mcp_servers). A schedule's own definition of the same
+	// name wins.
+	MCPs []MCP `hcl:"mcp,block"`
 	// GitRemote *GitRemote `hcl:"git,block"`
 	Queue     *Queue     `hcl:"queue,block"`
 	Schedules []Schedule `hcl:"schedule,block"`
@@ -55,6 +59,9 @@ type Schedule struct {
 	EndDate   string `hcl:"end_date,optional"`
 	Repo      *Repo  `hcl:"repo,block"`
 	Tasks     []Task `hcl:"task,block"`
+	// MCPs are MCP servers defined once for this schedule's agents to
+	// use by name (mcp_servers).
+	MCPs []MCP `hcl:"mcp,block" json:",omitempty"`
 	// AgentTasks is the first-class schedule-level `agent "X" { ... }` HCL
 	// block — folded into Tasks immediately after parse (see parse.go's
 	// ParseFile). It's a parse-time intermediate and never serialized:
@@ -187,6 +194,10 @@ type Agent struct {
 	// names from different servers don't collide). Servers shut down
 	// when the run ends.
 	MCPs []MCP `hcl:"mcp,block"`
+	// MCPServers names mcp blocks defined once on the schedule or at the
+	// top level, for agents that share a server. Resolved into MCPs when
+	// the config loads (Config.resolveMCPServers).
+	MCPServers []string `hcl:"mcp_servers,optional" json:",omitempty"`
 	// MaxTurns is the hard cap on agent loop iterations. 0 means default
 	// (1 if no tools, 30 otherwise).
 	MaxTurns int `hcl:"max_turns,optional"`
@@ -237,17 +248,18 @@ type AgentTask struct {
 	MaxParallel       int            `hcl:"max_parallel,optional"`
 
 	// Flattened Agent fields — identical semantics to the Agent struct.
-	Provider  string   `hcl:"provider,optional"`
-	Prompt    string   `hcl:"prompt,optional"`
-	Model     string   `hcl:"model,optional"`
-	System    string   `hcl:"system,optional"`
-	MaxTokens int      `hcl:"max_tokens,optional"`
-	BudgetUSD float64  `hcl:"budget_usd,optional"`
-	Tools     []string `hcl:"tools,optional"`
-	Skills    []string `hcl:"skills,optional"`
-	MCPs      []MCP    `hcl:"mcp,block"`
-	MaxTurns  int      `hcl:"max_turns,optional"`
-	Wallclock string   `hcl:"wallclock,optional"`
+	Provider   string   `hcl:"provider,optional"`
+	Prompt     string   `hcl:"prompt,optional"`
+	Model      string   `hcl:"model,optional"`
+	System     string   `hcl:"system,optional"`
+	MaxTokens  int      `hcl:"max_tokens,optional"`
+	BudgetUSD  float64  `hcl:"budget_usd,optional"`
+	Tools      []string `hcl:"tools,optional"`
+	Skills     []string `hcl:"skills,optional"`
+	MCPs       []MCP    `hcl:"mcp,block"`
+	MCPServers []string `hcl:"mcp_servers,optional"`
+	MaxTurns   int      `hcl:"max_turns,optional"`
+	Wallclock  string   `hcl:"wallclock,optional"`
 }
 
 // ToTask returns the equivalent Task struct, with .Agent populated from the
@@ -264,36 +276,53 @@ func (a AgentTask) ToTask() Task {
 		ForEachExpr:       a.ForEachExpr,
 		MaxParallel:       a.MaxParallel,
 		Agent: &Agent{
-			Provider:  a.Provider,
-			Prompt:    a.Prompt,
-			Model:     a.Model,
-			System:    a.System,
-			MaxTokens: a.MaxTokens,
-			BudgetUSD: a.BudgetUSD,
-			Tools:     a.Tools,
-			Skills:    a.Skills,
-			MCPs:      a.MCPs,
-			MaxTurns:  a.MaxTurns,
-			Wallclock: a.Wallclock,
+			Provider:   a.Provider,
+			Prompt:     a.Prompt,
+			Model:      a.Model,
+			System:     a.System,
+			MaxTokens:  a.MaxTokens,
+			BudgetUSD:  a.BudgetUSD,
+			Tools:      a.Tools,
+			Skills:     a.Skills,
+			MCPs:       a.MCPs,
+			MCPServers: a.MCPServers,
+			MaxTurns:   a.MaxTurns,
+			Wallclock:  a.Wallclock,
 		},
 	}
 }
 
-// MCP is a Model Context Protocol server definition. Cronicle launches the
-// command as a subprocess and speaks JSON-RPC over its stdin/stdout to
-// discover and invoke tools. Each MCP block on an agent contributes its
-// tools to the agent's tool universe, namespaced by the block label
-// (e.g. `mcp "github" {...}` exposes tools as `github__create_issue`).
+// MCP is a Model Context Protocol server definition: a local server that
+// cronicle launches as a subprocess (command, speaking JSON-RPC over
+// stdin/stdout) or a remote one it connects to over HTTP (url). Each MCP
+// block on an agent contributes its tools to the agent's tool universe,
+// namespaced by the block label (e.g. `mcp "github" {...}` exposes tools
+// as `github__create_issue`).
+//
+// An agent can define servers inline, or name ones defined once at the
+// schedule or top level with mcp_servers = ["github"].
 type MCP struct {
 	// Name labels this server in the namespace. Tools from this server
 	// appear to the model as `<Name>__<tool-name>`.
 	Name string `hcl:"name,label"`
-	// Command is the argv used to spawn the server. The first element is
-	// the executable, the rest are arguments. Required and non-empty.
-	Command []string `hcl:"command"`
+	// Command is the argv used to spawn a local server. The first element
+	// is the executable, the rest are arguments. Set this or URL.
+	Command []string `hcl:"command,optional"`
 	// Env is the list of env-var names to forward from cronicle's process
-	// to the server (e.g. ["GITHUB_TOKEN"]). Empty inherits nothing.
+	// to a local server (e.g. ["GITHUB_TOKEN"]). Empty inherits nothing.
 	Env []string `hcl:"env,optional"`
+	// URL is a remote server's endpoint. Set this or Command.
+	URL string `hcl:"url,optional"`
+	// Transport for URL: "streamable" (Streamable HTTP, the default) or
+	// "sse" (the older HTTP+SSE transport).
+	Transport string `hcl:"transport,optional"`
+	// Headers are sent with every request to URL, typically auth:
+	// { Authorization = "Bearer $secret.TOKEN" }. $secret.NAME resolves
+	// when the run starts; values are never logged.
+	Headers map[string]string `hcl:"headers,optional"`
+	// Tools limits the agent to these of the server's tools (names as the
+	// server lists them). Empty means all of them.
+	Tools []string `hcl:"tools,optional"`
 }
 
 // Repo is the structure that defines a git repository
@@ -475,9 +504,20 @@ func (task *Task) Validate() error {
 			if !isValidToolNamePart(m.Name) {
 				return fmt.Errorf("agent mcp %q: name must match ^[a-zA-Z0-9_-]+$", m.Name)
 			}
-			if len(m.Command) == 0 {
-				return fmt.Errorf("agent mcp %q: command is required", m.Name)
+			if err := m.validate(); err != nil {
+				return err
 			}
+		}
+		seen := map[string]bool{}
+		for _, m := range task.Agent.MCPs {
+			if seen[m.Name] {
+				return fmt.Errorf("agent mcp %q is defined twice (inline and in mcp_servers?)", m.Name)
+			}
+			seen[m.Name] = true
+		}
+		if len(task.Agent.MCPServers) > 0 {
+			return fmt.Errorf("task %q: mcp_servers names %s, but no mcp block with that name is defined in its schedule or at the top level",
+				task.Name, strings.Join(task.Agent.MCPServers, ", "))
 		}
 		if task.Agent.MaxTurns < 0 {
 			return errors.New("agent max_turns must be >= 0")
@@ -535,6 +575,11 @@ func (conf *Config) Validate() error {
 		}
 	}
 
+	for _, m := range conf.MCPs {
+		if err := m.validate(); err != nil {
+			return err
+		}
+	}
 	scheduleNameCount := make(map[string]int)
 	for _, schedule := range conf.Schedules {
 		if schedule.Timezone != "" {
@@ -559,6 +604,11 @@ func (conf *Config) Validate() error {
 		if err := schedule.validateForEach(); err != nil {
 			return err
 		}
+		for _, m := range schedule.MCPs {
+			if err := m.validate(); err != nil {
+				return fmt.Errorf("schedule %q: %w", schedule.Name, err)
+			}
+		}
 		scheduleNameCount[schedule.Name]++
 	}
 
@@ -573,6 +623,7 @@ func (conf *Config) Validate() error {
 // PropigateTaskProperties pushes schedule.Name, schedule.Repo and the repo path down to the task values.
 // It also populates task.Git.ReferenceName with task.Branch or HEAD.
 func (conf *Config) PropigateTaskProperties(croniclePath string) {
+	conf.resolveMCPServers()
 	for i := range conf.Schedules {
 		if conf.Schedules[i].Timezone == "" {
 			conf.Schedules[i].Timezone = conf.Timezone
@@ -808,4 +859,79 @@ func (schedule *Schedule) validateForEach() error {
 		}
 	}
 	return nil
+}
+
+// validate checks one mcp block on its own: a local server (command) or
+// a remote one (url), with only the fields that kind uses.
+func (m MCP) validate() error {
+	if !isValidToolNamePart(m.Name) {
+		return fmt.Errorf("mcp %q: name must match ^[a-zA-Z0-9_-]+$", m.Name)
+	}
+	switch {
+	case len(m.Command) == 0 && m.URL == "":
+		return fmt.Errorf("mcp %q: set command (a local server) or url (a remote one)", m.Name)
+	case len(m.Command) > 0 && m.URL != "":
+		return fmt.Errorf("mcp %q: set command or url, not both", m.Name)
+	case m.URL != "":
+		if !strings.HasPrefix(m.URL, "https://") && !strings.HasPrefix(m.URL, "http://") {
+			return fmt.Errorf("mcp %q: url must start with https:// or http://", m.Name)
+		}
+		if len(m.Env) > 0 {
+			return fmt.Errorf("mcp %q: env forwards variables to a local server; a url server takes headers instead", m.Name)
+		}
+		if m.Transport != "" && m.Transport != "streamable" && m.Transport != "sse" {
+			return fmt.Errorf("mcp %q: transport must be \"streamable\" (the default) or \"sse\"", m.Name)
+		}
+	default:
+		if m.Transport != "" || len(m.Headers) > 0 {
+			return fmt.Errorf("mcp %q: transport and headers apply to a url server, not a command", m.Name)
+		}
+	}
+	seen := map[string]bool{}
+	for _, t := range m.Tools {
+		if t == "" || seen[t] {
+			return fmt.Errorf("mcp %q: tools lists %q twice or empty", m.Name, t)
+		}
+		seen[t] = true
+	}
+	return nil
+}
+
+// resolveMCPServers copies each mcp block an agent names in mcp_servers
+// into its MCPs: the schedule's definition if there is one, else the
+// top-level one. Names that match neither stay in MCPServers, and
+// Validate reports them. The copy keeps a schedule's JSON payload
+// self-contained for workers.
+func (conf *Config) resolveMCPServers() {
+	for i := range conf.Schedules {
+		sch := &conf.Schedules[i]
+		for j := range sch.Tasks {
+			a := sch.Tasks[j].Agent
+			if a == nil || len(a.MCPServers) == 0 {
+				continue
+			}
+			var missing []string
+			for _, name := range a.MCPServers {
+				if m, ok := findMCP(sch.MCPs, name); ok {
+					a.MCPs = append(a.MCPs, m)
+				} else if m, ok := findMCP(conf.MCPs, name); ok {
+					a.MCPs = append(a.MCPs, m)
+				} else {
+					missing = append(missing, name)
+				}
+			}
+			a.MCPServers = missing
+		}
+	}
+}
+
+func findMCP(list []MCP, name string) (MCP, bool) {
+	for _, m := range list {
+		if m.Name == name {
+			m.Command = append([]string(nil), m.Command...)
+			m.Tools = append([]string(nil), m.Tools...)
+			return m, true
+		}
+	}
+	return MCP{}, false
 }

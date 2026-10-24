@@ -1,0 +1,189 @@
+package cronicle
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// remoteMCPServer serves an MCP server with tools echo and wipe over
+// Streamable HTTP and the older SSE transport, behind a bearer-token check.
+func remoteMCPServer(t *testing.T, token string) (streamableURL, sseURL string) {
+	t.Helper()
+	newServer := func(*http.Request) *mcpsdk.Server {
+		s := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "test", Version: "1"}, nil)
+		type in struct {
+			Text string `json:"text"`
+		}
+		mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "echo", Description: "echo text back"},
+			func(_ context.Context, _ *mcpsdk.CallToolRequest, a in) (*mcpsdk.CallToolResult, any, error) {
+				return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "echo: " + a.Text}}}, nil, nil
+			})
+		mcpsdk.AddTool(s, &mcpsdk.Tool{Name: "wipe", Description: "delete everything"},
+			func(_ context.Context, _ *mcpsdk.CallToolRequest, _ in) (*mcpsdk.CallToolResult, any, error) {
+				t.Error("wipe must not be callable when filtered out")
+				return &mcpsdk.CallToolResult{}, nil, nil
+			})
+		return s
+	}
+	auth := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", auth(mcpsdk.NewStreamableHTTPHandler(newServer, nil)))
+	mux.Handle("/sse", auth(mcpsdk.NewSSEHandler(newServer, nil)))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv.URL + "/mcp", srv.URL + "/sse"
+}
+
+func TestRemoteMCP_StreamableAndSSE(t *testing.T) {
+	streamable, sse := remoteMCPServer(t, "t0k")
+	for _, m := range []MCP{
+		{Name: "svc", URL: streamable},
+		{Name: "svc", URL: sse, Transport: "sse"},
+	} {
+		m.Headers = map[string]string{"Authorization": "Bearer t0k"}
+		m.Tools = []string{"echo"}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		handles, tools, err := LaunchMCPServers(ctx, []MCP{m}, nil, nil)
+		if err != nil {
+			cancel()
+			t.Fatalf("%s: launch: %v", m.URL, err)
+		}
+		if len(tools) != 1 || tools[0].Name() != "svc__echo" {
+			t.Errorf("%s: tools filter should leave only svc__echo, got %d", m.URL, len(tools))
+		}
+		out, isErr := tools[0].Execute(ctx, json.RawMessage(`{"text":"hi"}`))
+		if isErr || !strings.Contains(out, "echo: hi") {
+			t.Errorf("%s: call: %q %v", m.URL, out, isErr)
+		}
+		for _, h := range handles {
+			_ = h.Close()
+		}
+		cancel()
+	}
+}
+
+func TestRemoteMCP_Failures(t *testing.T) {
+	streamable, _ := remoteMCPServer(t, "t0k")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, _, err := LaunchMCPServers(ctx, []MCP{{Name: "svc", URL: streamable,
+		Headers: map[string]string{"Authorization": "Bearer wrong"}}}, nil, nil); err == nil {
+		t.Error("a rejected token must fail the launch")
+	}
+	_, _, err := LaunchMCPServers(ctx, []MCP{{Name: "svc", URL: streamable,
+		Headers: map[string]string{"Authorization": "Bearer t0k"}, Tools: []string{"echoo"}}}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), `"echoo", which the server doesn't offer (it offers: echo, wipe)`) {
+		t.Errorf("a misspelled tool should fail, naming what's offered: %v", err)
+	}
+}
+
+func TestMCP_HeaderSecrets(t *testing.T) {
+	cleanup := setupSecretStore(t, map[string]string{"SVC_TOKEN": "t0k"})
+	defer cleanup()
+	task := Task{Name: "a", Agent: &Agent{MCPs: []MCP{{Name: "svc", URL: "https://x/${path}",
+		Headers: map[string]string{"Authorization": "Bearer $secret.SVC_TOKEN"}}}}, Path: "p"}
+	mcps, err := task.resolveMCPs(strings.NewReplacer("${path}", "mcp"))
+	if err != nil || mcps[0].Headers["Authorization"] != "Bearer t0k" || mcps[0].URL != "https://x/mcp" {
+		t.Errorf("resolved: %+v %v", mcps, err)
+	}
+	if task.Agent.MCPs[0].Headers["Authorization"] != "Bearer $secret.SVC_TOKEN" {
+		t.Error("resolving must not write the secret back into the config")
+	}
+	task.Agent.MCPs[0].Headers["Authorization"] = "Bearer $secret.MISSING"
+	if _, err := task.resolveMCPs(strings.NewReplacer()); err == nil || !strings.Contains(err.Error(), "MISSING") {
+		t.Errorf("a missing header secret must fail, by name: %v", err)
+	}
+}
+
+func TestMCP_SharedDefinitionsAndValidation(t *testing.T) {
+	conf, err := parseConfig(t, `
+mcp "github" {
+  url     = "https://api.example.com/mcp/"
+  headers = { Authorization = "Bearer $secret.GITHUB_TOKEN" }
+  tools   = ["get_issue"]
+}
+schedule "s" {
+  mcp "github" {
+    url = "https://schedule.example.com/mcp/"
+  }
+  mcp "fs" {
+    command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "${path}"]
+  }
+  agent "a" {
+    prompt      = "hi"
+    mcp_servers = ["github", "fs"]
+    mcp "local" {
+      command = ["./server"]
+    }
+  }
+}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := conf.Schedules[0].TaskMap()["a"].Agent
+	var names []string
+	for _, m := range got.MCPs {
+		names = append(names, m.Name+"="+m.URL+strings.Join(m.Command, " "))
+	}
+	want := "local=./server github=https://schedule.example.com/mcp/ fs=npx -y @modelcontextprotocol/server-filesystem ${path}"
+	if strings.Join(names, " ") != want {
+		t.Errorf("resolved servers:\n got %s\nwant %s (a schedule's definition wins over the top level)", strings.Join(names, " "), want)
+	}
+
+	for body, want := range map[string]string{
+		`agent "a" {
+		  prompt = "hi"
+		  mcp_servers = ["nope"]
+		}`: `mcp_servers names nope, but no mcp block`,
+		`mcp "x" {
+		  command = ["s"]
+		}
+		agent "a" {
+		  prompt = "hi"
+		  mcp_servers = ["x"]
+		  mcp "x" {
+		    command = ["t"]
+		  }
+		}`: `defined twice`,
+		`mcp "x" {
+		  command = ["s"]
+		  url = "https://h/"
+		}`: `command or url, not both`,
+		`mcp "x" {
+		}`: `set command`,
+		`mcp "x" {
+		  url = "https://h/"
+		  env = ["A"]
+		}`: `takes headers instead`,
+		`mcp "x" {
+		  url = "https://h/"
+		  transport = "ws"
+		}`: `transport must be`,
+		`mcp "x" {
+		  command = ["s"]
+		  headers = { A = "b" }
+		}`: `apply to a url server`,
+		`mcp "x" {
+		  url = "ftp://h/"
+		}`: `url must start with`,
+	} {
+		if _, err := parseConfig(t, "schedule \"s\" {\n"+body+"\n}"); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("want error %q, got %v\n%s", want, err, body)
+		}
+	}
+}

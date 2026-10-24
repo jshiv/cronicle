@@ -247,6 +247,11 @@ heartbeat      = "@every 5m"          // optional: how often to log "alive" (def
 config_refresh = "@every 1s"          // optional: how often to check the config for changes
 repos          = ["https://github.com/org/team-schedules.git"]   // optional: see Repos
 
+mcp "github" {                        // optional: an MCP server agents share by name
+  url     = "https://api.githubcopilot.com/mcp/"   // (also allowed inside a schedule)
+  headers = { Authorization = "Bearer $secret.GITHUB_TOKEN" }
+}
+
 schedule "name" {
   cron       = "0 6 * * *"       // cron, "@every 10m", "@hourly", "@once", or "" (exec/API only)
   timezone   = "UTC"             // optional
@@ -284,10 +289,16 @@ schedule "name" {
     wallclock  = "5m"                               // stop the run after this long
     env        = ["ANTHROPIC_API_KEY=$secret.ANTHROPIC_API_KEY"]
 
-    mcp "github" {                                  // MCP server, started for this run
-      command = ["npx", "-y", "@modelcontextprotocol/server-github"]
-      env     = ["GITHUB_TOKEN"]                    // env var names to pass through
+    mcp "fs" {                                      // local MCP server, started for this run
+      command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "${path}"]
+      env     = ["SOME_VAR"]                        // env var names to pass through
     }
+    mcp "linear" {                                  // remote MCP server
+      url     = "https://mcp.linear.app/mcp"        // transport = "sse" for older servers
+      headers = { Authorization = "Bearer $secret.LINEAR_TOKEN" }
+      tools   = ["list_issues", "create_comment"]   // only these of its tools (default: all)
+    }
+    mcp_servers = ["github"]                        // shared mcp blocks, by name (below)
   }
 }
 ```

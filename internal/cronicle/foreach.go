@@ -472,6 +472,10 @@ func (task *Task) eachFields() []string {
 		fields = append(fields, task.Agent.Prompt, task.Agent.System)
 		for _, m := range task.Agent.MCPs {
 			fields = append(fields, m.Command...)
+			fields = append(fields, m.URL)
+			for _, v := range m.Headers {
+				fields = append(fields, v)
+			}
 		}
 	}
 	if task.Repo != nil {

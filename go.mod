@@ -18,7 +18,7 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/mattn/go-isatty v0.0.22
 	github.com/mitchellh/go-homedir v1.1.0
-	github.com/modelcontextprotocol/go-sdk v1.6.0
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/onsi/ginkgo v1.14.2
 	github.com/onsi/gomega v1.34.1
 	github.com/openai/openai-go/v3 v3.61.0
@@ -100,6 +100,7 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
 	modernc.org/libc v1.72.0 // indirect
