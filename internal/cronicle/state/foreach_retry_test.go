@@ -36,6 +36,7 @@ func forEachRun(t *testing.T) *Store {
 	applyLine(t, s, `{"time":"2026-05-10T12:00:02Z","entry_type":"shell_run","run_id":"R1","schedule":"prs","task":"review[12]","exit":0,"success":true}`)
 	applyLine(t, s, `{"time":"2026-05-10T12:00:02Z","entry_type":"shell_run","run_id":"R1","schedule":"prs","task":"review[15]","exit":1,"success":false}`)
 	applyLine(t, s, `{"time":"2026-05-10T12:00:03Z","entry_type":"shell_run","run_id":"R1","schedule":"prs","task":"report[12]","exit":0,"success":true}`)
+	applyLine(t, s, `{"time":"2026-05-10T12:00:03Z","entry_type":"task_dep_failed","run_id":"R1","schedule":"prs","task":"report[15]","failed_dependency":"review[15]"}`)
 	applyLine(t, s, `{"time":"2026-05-10T12:00:03Z","entry_type":"for_each_complete","run_id":"R1","schedule":"prs","task":"review","success":false}`)
 	applyLine(t, s, `{"time":"2026-05-10T12:00:04Z","entry_type":"schedule_complete","run_id":"R1","schedule":"prs","success":false}`)
 	if err := s.Ack("R1", "W_A", false, "review[15] failed"); err != nil {
@@ -88,8 +89,15 @@ func TestTaskExpanded_RecordsItemsAndRows(t *testing.T) {
 		_ = s.db.QueryRow(`SELECT status FROM tasks WHERE run_id = 'R1' AND name = ?`, name).Scan(&st)
 		return st
 	}
-	if got := status("report[15]"); got != StatusQueued {
-		t.Errorf("report[15] = %q, want a queued row from the expansion", got)
+	var queued int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE run_id = 'R1' AND name LIKE 'review[%' `).Scan(&queued)
+	if queued != 2 {
+		t.Errorf("want a row per review item, got %d", queued)
+	}
+	var why string
+	_ = s.db.QueryRow(`SELECT error FROM tasks WHERE run_id = 'R1' AND name = 'report[15]'`).Scan(&why)
+	if got := status("report[15]"); got != StatusSkipped || why != "upstream review[15] failed" {
+		t.Errorf("report[15] = %q (%q), want skipped because review[15] failed", got, why)
 	}
 	if got := status("review"); got != StatusFailed {
 		t.Errorf("review = %q, want failed after for_each_complete", got)

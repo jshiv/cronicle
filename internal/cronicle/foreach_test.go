@@ -84,6 +84,11 @@ func TestForEach_ParseErrors(t *testing.T) {
 		  command = ["echo", each.item] }`, `only each.key and each.value`},
 		{`task "a" { for_each = 3
 		  command = ["echo"] }`, `needs a map, object, or list of strings`},
+		{`task "a" { for_each = ["k"]
+		  command = ["echo"] }
+		  task "b" { depends = ["a[k]"]
+		  command = ["echo"] }`, `depend on the for_each task "a" instead`},
+		{`task "a[1]" { command = ["echo"] }`, `names can't contain [ or ]`},
 	} {
 		// The cases are written compactly; open each block on its own line.
 		body := strings.ReplaceAll(strings.ReplaceAll(tc.body, `" { `, "\" {\n"), "] }", "]\n}")
@@ -172,7 +177,6 @@ func TestForEach_Instance(t *testing.T) {
 		Path:         "/c/.cronicle/repos/r.git/s/review",
 		CroniclePath: "/c",
 		ForEach:      &ForEach{Source: "list"},
-		Agent:        nil,
 	}
 	inst, err := tmpl.instance(ForEachItem{Key: "org/x", Value: json.RawMessage(`{"sha":"a1"}`)})
 	if err != nil {
@@ -181,24 +185,48 @@ func TestForEach_Instance(t *testing.T) {
 	if inst.Name != "review[org/x]" || inst.ForEach != nil || inst.forEachOf != "review" {
 		t.Errorf("instance identity: %+v", inst)
 	}
-	if strings.Join(inst.Command, " ") != "review org/x" {
-		t.Errorf("command: %q", inst.Command)
+	if got := inst.fillEach(inst.Command[1]); got != "org/x" {
+		t.Errorf("fillEach: %q", got)
 	}
-	env := strings.Join(inst.Env, "|")
-	if env != `SHA=a1|EACH_KEY=org/x|EACH_VALUE={"sha":"a1"}` {
+	if env := strings.Join(inst.eachEnv(inst.Env), "|"); env != `SHA=a1|EACH_KEY=org/x|EACH_VALUE={"sha":"a1"}` {
 		t.Errorf("env: %s", env)
+	}
+	if got := inst.rerunLine([]string{"sh", "-c", "echo $EACH_KEY"}); got != `EACH_KEY=org/x EACH_VALUE='{"sha":"a1"}' sh -c 'echo $EACH_KEY'` {
+		t.Errorf("rerun line must set the item's env: %s", got)
 	}
 	if inst.Path != "/c/.cronicle/repos/r.git/s/review[org_x]" {
 		t.Errorf("each item needs its own checkout, named safely: %s", inst.Path)
 	}
-	if tmpl.Command[1] != "${each.key}" {
-		t.Error("instance mutated the for_each task")
+	if tmpl.fillEach("${each.key}") != "${each.key}" || tmpl.rerunLine([]string{"ls"}) != "ls" {
+		t.Error("a task that isn't an item must be left alone")
 	}
+	if _, err := tmpl.instance(ForEachItem{Key: "k", Value: json.RawMessage(`{}`)}); err == nil {
+		t.Error("an item missing a field the task reads should fail when built")
+	}
+}
 
-	agent := Task{Name: "a", Agent: &Agent{Prompt: "Review PR ${each.key}", MCPs: []MCP{{Name: "m", Command: []string{"srv", "${each.key}"}}}}}
-	ai, _ := agent.instance(ForEachItem{Key: "7", Value: json.RawMessage(`"7"`)})
-	if ai.Agent.Prompt != "Review PR 7" || ai.Agent.MCPs[0].Command[1] != "7" || agent.Agent.Prompt != "Review PR ${each.key}" {
-		t.Errorf("agent instance: %+v", ai.Agent)
+// TestForEach_ItemTextIsNotExpanded: an item's value goes in last, after
+// ${date}-style tokens and $secret.NAME references are resolved, so text
+// that looks like either reaches the task literally.
+func TestForEach_ItemTextIsNotExpanded(t *testing.T) {
+	cleanup := setupSecretStore(t, map[string]string{"TOKEN": "s3cret"})
+	defer cleanup()
+	captureLog(t)
+	tmpl := Task{
+		Name:    "show",
+		Command: []string{"sh", "-c", `printf '%s|%s|%s' "$0" "$EACH_VALUE" "$V"`, "${each.value}"},
+		Env:     []string{"V=${each.value}", "T=$secret.TOKEN"},
+		Path:    t.TempDir(),
+		ForEach: &ForEach{},
+	}
+	inst, err := tmpl.instance(ForEachItem{Key: "k", Value: json.RawMessage(`"$secret.TOKEN ${date}"`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := inst.Exec(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))
+	want := "$secret.TOKEN ${date}|$secret.TOKEN ${date}|$secret.TOKEN ${date}"
+	if res.Stdout != want {
+		t.Errorf("item text was expanded:\n got %q\nwant %q (err %v)", res.Stdout, want, res.Error)
 	}
 }
 

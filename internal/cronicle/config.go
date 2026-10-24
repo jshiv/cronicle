@@ -140,10 +140,10 @@ type Task struct {
 	// should treat as "no prior run / full backfill".
 	LastRun time.Time
 
-	// forEachOf and eachKey are set on the tasks a for_each task expands
-	// into: the for_each task's name and this item's key.
+	// forEachOf and eachItem are set on the tasks a for_each task expands
+	// into: the for_each task's name and this task's item.
 	forEachOf string
-	eachKey   string
+	eachItem  *ForEachItem
 }
 
 // Agent is the configuration structure that defines an LLM agent invocation.
@@ -549,6 +549,10 @@ func (conf *Config) Validate() error {
 			if task.Name == "" {
 				return ErrTaskNameEmpty
 			}
+			// name[key] is how for_each items are named.
+			if strings.ContainsAny(task.Name, "[]") {
+				return fmt.Errorf("task %q: names can't contain [ or ]; those mark for_each items", task.Name)
+			}
 		}
 		if err := schedule.validateForEach(); err != nil {
 			return err
@@ -792,6 +796,14 @@ func (schedule *Schedule) validateForEach() error {
 		case src.ForEach != nil:
 			return fmt.Errorf("task %q: for_each source %q is itself a for_each task; a source must be a plain task",
 				t.Name, src.Name)
+		}
+	}
+	for _, t := range schedule.Tasks {
+		for _, d := range t.Depends {
+			if base, _, ok := splitInstanceName(d); ok {
+				return fmt.Errorf("task %q: depends on %q; depend on the for_each task %q instead "+
+					"(a for_each task over the same source pairs with it item by item)", t.Name, d, base)
+			}
 		}
 	}
 	return nil

@@ -435,47 +435,32 @@ func jsonField(raw json.RawMessage, fields []string) (string, error) {
 	return string(b), err
 }
 
-// instance builds the task for one item: named name[key], with each.*
-// filled into its command, env, and agent text, and the item exported as
-// EACH_KEY / EACH_VALUE. Returns the instance and any error filling it
-// (a missing field), which fails that item alone.
+// instance builds the task for one item, named name[key]. Its each.*
+// placeholders stay in place until it runs (fillEach), so an item's text
+// is inserted after ${date}-style tokens and $secret.NAME references are
+// resolved, and can't be mistaken for either. The returned error is the
+// first placeholder this item can't fill (a missing field), which fails
+// that item alone.
 func (task Task) instance(item ForEachItem) (Task, error) {
 	inst := task
 	inst.Name = instanceName(task.Name, item.Key)
 	inst.ForEach = nil
 	inst.forEachOf = task.Name
-	inst.eachKey = item.Key
+	inst.eachItem = &item
 
-	var firstErr error
-	fill := func(s string) string {
-		out, err := substituteEach(s, item)
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
-		return out
-	}
-	fillAll := func(in []string) []string {
-		if in == nil {
-			return nil
-		}
-		out := make([]string, len(in))
-		for i, s := range in {
-			out[i] = fill(s)
-		}
-		return out
-	}
-	inst.Command = fillAll(task.Command)
-	inst.Env = append(fillAll(task.Env), "EACH_KEY="+item.Key, "EACH_VALUE="+eachValueText(item.Value))
+	fields := append(append([]string(nil), task.Command...), task.Env...)
 	if task.Agent != nil {
-		a := *task.Agent
-		a.Prompt = fill(a.Prompt)
-		a.System = fill(a.System)
-		a.MCPs = make([]MCP, len(task.Agent.MCPs))
-		for i, m := range task.Agent.MCPs {
-			m.Command = fillAll(m.Command)
-			a.MCPs[i] = m
+		fields = append(fields, task.Agent.Prompt, task.Agent.System)
+		for _, m := range task.Agent.MCPs {
+			fields = append(fields, m.Command...)
 		}
-		inst.Agent = &a
+	}
+	var firstErr error
+	for _, f := range fields {
+		if _, err := substituteEach(f, item); err != nil {
+			firstErr = err
+			break
+		}
 	}
 	// A task with its own repo checkout gets one per item, so parallel
 	// items never share (and fight over) a working tree.
@@ -483,6 +468,41 @@ func (task Task) instance(item ForEachItem) (Task, error) {
 		inst.Path = filepath.Join(filepath.Dir(task.Path), fileSafeName(inst.Name))
 	}
 	return inst, firstErr
+}
+
+// fillEach fills each.* placeholders in s for an item; other tasks get s
+// back unchanged. Call it last, on text already otherwise resolved.
+func (task *Task) fillEach(s string) string {
+	if task.eachItem == nil {
+		return s
+	}
+	out, _ := substituteEach(s, *task.eachItem) // checked when the item was built
+	return out
+}
+
+// eachEnv fills each.* in an item's resolved env and adds EACH_KEY and
+// EACH_VALUE.
+func (task *Task) eachEnv(env []string) []string {
+	if task.eachItem == nil {
+		return env
+	}
+	out := make([]string, 0, len(env)+2)
+	for _, e := range env {
+		out = append(out, task.fillEach(e))
+	}
+	return append(out, "EACH_KEY="+task.eachItem.Key, "EACH_VALUE="+eachValueText(task.eachItem.Value))
+}
+
+// rerunLine is the pasteable command for a failed shell task. An item's
+// line sets EACH_KEY and EACH_VALUE first, so a script reading them
+// reruns the same way.
+func (task *Task) rerunLine(cmd []string) string {
+	line := shellQuote(cmd)
+	if task.eachItem == nil {
+		return line
+	}
+	return "EACH_KEY=" + shellQuoteArg(task.eachItem.Key) +
+		" EACH_VALUE=" + shellQuoteArg(eachValueText(task.eachItem.Value)) + " " + line
 }
 
 // eachValueText is EACH_VALUE: a string item as itself, anything else as

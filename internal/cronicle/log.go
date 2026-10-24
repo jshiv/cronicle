@@ -1051,7 +1051,12 @@ func renderShellRunFooter(out io.Writer, r slog.Record) error {
 	durationMs := attrInt64(r, "duration_ms")
 	transcript := attrString(r, "transcript")
 	var b bytes.Buffer
-	WriteShellRunFooter(&b, attrString(r, "task"), attrString(r, "command"), exit, durationMs, transcript)
+	// A for_each item's rerun sets EACH_KEY / EACH_VALUE before the command.
+	rerun := attrString(r, "rerun")
+	if rerun == "" {
+		rerun = attrString(r, "command")
+	}
+	WriteShellRunFooter(&b, attrString(r, "task"), rerun, exit, durationMs, transcript)
 	_, err := out.Write(b.Bytes())
 	return err
 }

@@ -351,11 +351,20 @@ for-expression, as above. `for_each` can also be a literal, such as
   agent's `prompt` and `system`.
 - A string fills in as itself; anything else fills in as JSON. The value
   goes into the argument as plain text and is never evaluated.
+- Item text is filled in last, after `${date}`-style placeholders and
+  `$secret.NAME` references are resolved, so an item containing
+  `$secret.TOKEN` or `${date}` reaches the task unchanged.
 - Each item also gets `EACH_KEY` and `EACH_VALUE` environment variables.
   Inside `sh -c` scripts, use `"$EACH_KEY"` rather than `${each.key}`:
   values put into a script's text are run as shell code.
+- Items are named `review[12]` in the DAG, logs and run state. A failed
+  item's `↻ rerun` line sets `EACH_KEY` and `EACH_VALUE` before the
+  command, so it reruns the same way. Because of this naming, task names
+  can't contain `[` or `]`.
 
 **Dependencies.**
+- `depends` names whole tasks (`depends = ["review"]`), never items
+  (`"review[12]"`).
 - A `for_each` task waits on its source automatically.
 - Two `for_each` tasks over the same source that depend on each other
   pair up by key.

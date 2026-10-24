@@ -39,6 +39,9 @@ type Event struct {
 	// schedule_complete
 	TaskCount int `json:"task_count,omitempty"`
 
+	// task_dep_failed: the upstream task whose failure skipped this one
+	FailedDependency string `json:"failed_dependency,omitempty"`
+
 	// task_expanded: the for_each collection as JSON [{key, value}, …]
 	ForEachItems string `json:"for_each_items,omitempty"`
 

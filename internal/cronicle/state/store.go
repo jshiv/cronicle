@@ -497,6 +497,13 @@ func (s *Store) foldEvent(tx *sql.Tx, e Event) error {
 		return s.applyTaskTerminal(tx, e, "agent")
 	case "schedule_complete":
 		return s.applyScheduleComplete(tx, e)
+	case "task_dep_failed":
+		// Never ran because an upstream task failed: terminal, so the
+		// row doesn't sit at queued after the run ends.
+		if e.Error == "" && e.FailedDependency != "" {
+			e.Error = "upstream " + e.FailedDependency + " failed"
+		}
+		return s.applyTaskSkipped(tx, e)
 	case "task_expanded":
 		return s.applyTaskExpanded(tx, e)
 	case "for_each_complete":
