@@ -1526,42 +1526,14 @@ func formatToolInput(toolName, raw string) string {
 			return n
 		}
 	case "git":
-		// Render `git <command> <key arg>` so the stream reads naturally:
-		// e.g. `→ git: log limit=20`, `→ git: commit "msg…"`.
+		// Render the call the way it would be typed at a shell, e.g.
+		// `→ git: log -n 20`, `→ git: diff origin/main..HEAD -- calc.py`,
+		// `→ git: show origin/main:calc.py`.
 		cmd, _ := args["command"].(string)
-		sub, _ := args["args"].(map[string]any)
 		if cmd == "" {
 			return raw
 		}
-		switch cmd {
-		case "log", "status", "push":
-			if sub == nil || len(sub) == 0 {
-				return cmd
-			}
-		case "branch":
-			if name, ok := sub["name"].(string); ok && name != "" {
-				return cmd + " " + name
-			}
-		case "commit":
-			if msg, ok := sub["message"].(string); ok && msg != "" {
-				return cmd + " " + truncate(escapeControl(msg), 60)
-			}
-		case "diff":
-			if sub == nil {
-				return cmd
-			}
-			from, _ := sub["from"].(string)
-			to, _ := sub["to"].(string)
-			if from != "" && to != "" {
-				return cmd + " " + from + ".." + to
-			}
-			return cmd
-		}
-		// Fallback: cmd plus a compact JSON of args.
-		if b, err := json.Marshal(sub); err == nil && len(b) > 2 {
-			return cmd + " " + truncate(string(b), 60)
-		}
-		return cmd
+		return gitCallSummary(cmd, args["args"])
 	}
 	// MCP tools (server__tool) — show the args as compact JSON, but trim
 	// to keep the line readable. Generic since tool schemas vary widely.
@@ -2142,4 +2114,51 @@ func formatDuration(ms int64) string {
 		return fmt.Sprintf("%dms", ms)
 	}
 	return fmt.Sprintf("%.1fs", float64(ms)/1000)
+}
+
+// gitCallSummary renders a git tool call like the git command it stands
+// for. Unknown argument shapes fall back to compact JSON.
+func gitCallSummary(cmd string, rawArgs any) string {
+	sub, _ := rawArgs.(map[string]any)
+	str := func(k string) string { v, _ := sub[k].(string); return v }
+	parts := []string{cmd}
+	switch cmd {
+	case "status":
+	case "log":
+		if n, ok := sub["limit"].(float64); ok && n > 0 {
+			parts = append(parts, fmt.Sprintf("-n %d", int(n)))
+		}
+	case "diff":
+		switch from, to := str("from"), str("to"); {
+		case from != "" && to != "":
+			parts = append(parts, from+".."+to)
+		case from != "":
+			parts = append(parts, from)
+		case to != "":
+			parts = append(parts, "HEAD.."+to)
+		}
+		if p := str("path"); p != "" {
+			parts = append(parts, "--", p)
+		}
+	case "show":
+		ref := str("ref")
+		if ref == "" {
+			ref = "HEAD"
+		}
+		if p := str("path"); p != "" {
+			ref += ":" + p
+		}
+		parts = append(parts, ref)
+	case "branch":
+		parts = append(parts, str("name"))
+	case "commit":
+		parts = append(parts, "-m", strconv.Quote(truncate(escapeControl(str("message")), 60)))
+	case "push":
+		parts = append(parts, str("remote"), str("branch"))
+	default:
+		if b, err := json.Marshal(sub); err == nil && len(b) > 2 {
+			parts = append(parts, truncate(string(b), 60))
+		}
+	}
+	return strings.Join(strings.Fields(strings.Join(parts, " ")), " ")
 }

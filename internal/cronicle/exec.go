@@ -703,11 +703,17 @@ func (task *Task) workspaceNote() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("## Workspace\n\nYour working directory is " + task.Path)
+	b.WriteString("## Workspace\n\nYour working directory is " + task.Path + ".")
 	if ref := task.checkoutRef(); ref != "" {
-		b.WriteString(", a git checkout of " + redactGitURL(task.Repo.URL) + " at " + ref)
+		b.WriteString(" It is a git checkout at " + ref)
+		// A remote URL says where the code came from. A local path is
+		// left out: models open it thinking it's the workspace.
+		if u := task.Repo.URL; strings.Contains(u, "://") || strings.Contains(u, "@") {
+			b.WriteString(", cloned from " + redactGitURL(u))
+		}
+		b.WriteString(".")
 	}
-	b.WriteString(". The bash tool starts there, and text_editor and git paths are relative to it, so refer to files by relative path (`src/app.py`, not an absolute one).")
+	b.WriteString(" The bash tool starts there, and text_editor and git paths are relative to it, so refer to files by relative path (`src/app.py`, not an absolute one).")
 	if task.ScratchDir != "" {
 		b.WriteString(" Files to hand to other tasks in this run go in " + task.ScratchDir + ".")
 	}

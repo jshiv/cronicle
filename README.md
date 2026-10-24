@@ -846,6 +846,7 @@ Subcommands:
 | `status` | List tracked changes (porcelain-style summary) |
 | `log` | Recent commits in `<sha> <subject>` form (default 10, max 200) |
 | `diff` | Unified diff. `from`/`to` are refs (branch, hash, `HEAD~N`); default is HEAD vs working tree |
+| `show` | A file as it is at a ref (`ref`, `path`: e.g. the base branch's version), or a commit's author, message and changed files |
 | `branch` | Create + switch to a new branch from current HEAD |
 | `commit` | Stage all worktree changes and commit |
 | `push` | Push current branch using the same auth as the task's `repo` block |
@@ -859,7 +860,7 @@ agent {
 }
 ```
 
-In the pretty stream, git calls render as `→ git: <subcommand> <key arg>`:
+In the pretty stream, git calls render the way they'd be typed, e.g. `→ git: log -n 5` or `→ git: show origin/main:calc.py`:
 
 ```
 │ → git: log

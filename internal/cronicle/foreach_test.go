@@ -693,7 +693,7 @@ func TestAgentWorkspaceNote(t *testing.T) {
 	note := inst.workspaceNote()
 	for _, want := range []string{
 		"/c/.cronicle/repos/org/app.git/prs/review/12",
-		"a git checkout of https://github.com/org/app.git at commit a1b2c3d4e5",
+		"It is a git checkout at commit a1b2c3d4e5, cloned from https://github.com/org/app.git.",
 	} {
 		if !strings.Contains(note, want) {
 			t.Errorf("note missing %q:\n%s", want, note)
@@ -761,5 +761,49 @@ func TestFrameHeader_GitSection(t *testing.T) {
 	want := "╭─ show  shell · s\n│ $ cat hello.txt\n├─ git ──────────────────\n│ clone https://x/r.git\n│ checkout commit 1a2b3c4\n├────────────────────────\n"
 	if b.String() != want {
 		t.Errorf("got\n%s\nwant\n%s", b.String(), want)
+	}
+}
+
+func TestAgentWorkspaceNote_LocalRepoURL(t *testing.T) {
+	task := Task{Name: "r", CroniclePath: "/c", Path: "/c/.cronicle/repos/src/app/s/r",
+		Repo: &Repo{URL: "/src/app", Commit: "abc1234"}}
+	if note := task.workspaceNote(); strings.Contains(note, "/src/app,") || strings.Contains(note, "cloned from") {
+		t.Errorf("a local repo path must not be offered as a place to look:\n%s", note)
+	}
+}
+
+func TestGitTool_Show(t *testing.T) {
+	g := &GitTool{Workspace: scratchRepo(t)}
+	run := func(input string) (string, bool) {
+		return g.Execute(context.Background(), json.RawMessage(input))
+	}
+	if out, isErr := run(`{"command":"show","args":{"ref":"HEAD~1","path":"hello.txt"}}`); isErr || out != "first version\n" {
+		t.Errorf("file at a ref: %q %v", out, isErr)
+	}
+	if out, isErr := run(`{"command":"show","args":{"path":"hello.txt"}}`); isErr || out != "second version\n" {
+		t.Errorf("file at HEAD (not the dirty worktree): %q %v", out, isErr)
+	}
+	out, isErr := run(`{"command":"show"}`)
+	if isErr || !strings.Contains(out, "Update hello.txt") || !strings.Contains(out, "hello.txt | +1 -1") {
+		t.Errorf("commit details: %q %v", out, isErr)
+	}
+	if _, isErr := run(`{"command":"show","args":{"path":"nope.txt"}}`); !isErr {
+		t.Error("a missing file should be an error")
+	}
+}
+
+func TestGitCallSummary(t *testing.T) {
+	for want, call := range map[string]map[string]any{
+		"log -n 1":                          {"command": "log", "args": map[string]any{"limit": 1.0}},
+		"log":                               {"command": "log"},
+		"diff origin/main..HEAD -- calc.py": {"command": "diff", "args": map[string]any{"from": "origin/main", "to": "HEAD", "path": "calc.py"}},
+		"show origin/main:calc.py":          {"command": "show", "args": map[string]any{"ref": "origin/main", "path": "calc.py"}},
+		"show HEAD":                         {"command": "show"},
+		`commit -m "fix it"`:                {"command": "commit", "args": map[string]any{"message": "fix it"}},
+		"push origin main":                  {"command": "push", "args": map[string]any{"remote": "origin", "branch": "main"}},
+	} {
+		if got := gitCallSummary(call["command"].(string), call["args"]); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
 	}
 }

@@ -6,6 +6,7 @@
 //   status — list tracked changes (porcelain-style summary)
 //   log    — recent commits (oneline by default)
 //   diff   — unified diff: working tree vs HEAD, or two refs
+//   show   — a file as it is at a ref, or a commit's details
 //   branch — create + switch to a new branch from HEAD
 //   commit — stage all + commit with a message
 //   push   — push current branch using the same auth as the task's repo
@@ -93,7 +94,7 @@ func (g *GitTool) Definition() anthropic.ToolUnionParam {
 				Properties: map[string]any{
 					"command": map[string]any{
 						"type":        "string",
-						"description": "One of: status, log, diff, branch, commit, push.",
+						"description": "One of: status, log, diff, show, branch, commit, push.",
 					},
 					"args": map[string]any{
 						"type":        "object",
@@ -112,11 +113,12 @@ Subcommands and their args:
   status                                     -> list tracked changes
   log    {limit?: int}                       -> recent commits, default 10
   diff   {from?: ref, to?: ref, path?: str}  -> unified diff. Defaults: from=HEAD, to=worktree
+  show   {ref?: ref, path?: str}             -> with path: the file's contents at ref (e.g. the base branch's version, ref="origin/main"); without: the commit's author, date, message, and changed files. ref defaults to HEAD
   branch {name: str}                         -> create+switch to a new branch from current HEAD
   commit {message: str, author?: str, email?: str}  -> stage all changes + commit
   push   {remote?: str, branch?: str}        -> push current branch. remote defaults to "origin"
 
-Read-only ops (status/log/diff) work in any cronicle clone. push needs the task to have a repo block so the same auth as the original clone is reused.`
+Read-only ops (status/log/diff/show) work in any cronicle clone. push needs the task to have a repo block so the same auth as the original clone is reused.`
 
 // Execute dispatches to the named subcommand. Errors return isErr=true with
 // a one-line message; success returns the human-readable output the model
@@ -130,7 +132,7 @@ func (g *GitTool) Execute(ctx context.Context, input json.RawMessage) (string, b
 		return fmt.Sprintf("Error: invalid git input: %v", err), true
 	}
 	if args.Command == "" {
-		return "Error: git command required (one of: status, log, diff, branch, commit, push)", true
+		return "Error: git command required (one of: status, log, diff, show, branch, commit, push)", true
 	}
 	repo, err := git.PlainOpen(g.Workspace)
 	if err != nil {
@@ -143,6 +145,8 @@ func (g *GitTool) Execute(ctx context.Context, input json.RawMessage) (string, b
 		return g.log(repo, args.Args)
 	case "diff":
 		return g.diff(repo, args.Args)
+	case "show":
+		return g.show(repo, args.Args)
 	case "branch":
 		return g.branch(repo, args.Args)
 	case "commit":
@@ -224,6 +228,62 @@ func (g *GitTool) log(repo *git.Repository, raw json.RawMessage) (string, bool) 
 	}
 	if count == 0 {
 		return "(no commits)", false
+	}
+	return strings.TrimRight(sb.String(), "\n"), false
+}
+
+// maxShowBytes caps a file returned by show, like bash output is capped.
+const maxShowBytes = 200 * 1024
+
+// show returns a file's contents at a ref (path given), or a commit's
+// details: hash, author, date, message, and the files it changed.
+func (g *GitTool) show(repo *git.Repository, raw json.RawMessage) (string, bool) {
+	var a struct {
+		Ref  string `json:"ref"`
+		Path string `json:"path"`
+	}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &a)
+	}
+	if a.Ref == "" {
+		a.Ref = "HEAD"
+	}
+	h, err := repo.ResolveRevision(plumbing.Revision(a.Ref))
+	if err != nil {
+		return fmt.Sprintf("Error: resolve %q: %v", a.Ref, err), true
+	}
+	c, err := repo.CommitObject(*h)
+	if err != nil {
+		return fmt.Sprintf("Error: commit %s: %v", h, err), true
+	}
+	if a.Path != "" {
+		f, err := c.File(filepath.ToSlash(filepath.Clean(a.Path)))
+		if err != nil {
+			return fmt.Sprintf("Error: %s at %s: %v", a.Path, a.Ref, err), true
+		}
+		if bin, _ := f.IsBinary(); bin {
+			return fmt.Sprintf("(%s at %s is a binary file, %d bytes)", a.Path, a.Ref, f.Size), false
+		}
+		body, err := f.Contents()
+		if err != nil {
+			return fmt.Sprintf("Error: read %s: %v", a.Path, err), true
+		}
+		if len(body) > maxShowBytes {
+			body = body[:maxShowBytes] + fmt.Sprintf("\n… truncated, %d bytes total", f.Size)
+		}
+		return body, false
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "commit %s\nAuthor: %s <%s>\nDate:   %s\n\n", c.Hash, c.Author.Name, c.Author.Email,
+		c.Author.When.Format(time.RFC1123Z))
+	for _, line := range strings.Split(strings.TrimRight(c.Message, "\n"), "\n") {
+		sb.WriteString("    " + line + "\n")
+	}
+	if stats, err := c.Stats(); err == nil && len(stats) > 0 {
+		sb.WriteString("\n")
+		for _, st := range stats {
+			fmt.Fprintf(&sb, " %s | +%d -%d\n", st.Name, st.Addition, st.Deletion)
+		}
 	}
 	return strings.TrimRight(sb.String(), "\n"), false
 }
