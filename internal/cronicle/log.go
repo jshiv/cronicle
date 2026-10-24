@@ -715,6 +715,8 @@ func (p *stdoutPrettyHandler) Handle(_ context.Context, r slog.Record) error {
 		return betweenBlocks(p.out, r, renderScheduleComplete)
 	case "task_skipped", "task_canceled", "task_dep_failed":
 		return betweenBlocks(p.out, r, renderTaskNotice)
+	case "task_expanded", "for_each_complete", "task_error":
+		return betweenBlocks(p.out, r, renderForEach)
 	case "agent_run_start", "shell_run_start",
 		"agent_run_streamed", "shell_run_streamed",
 		"stdout_chunk", "stderr_chunk",
@@ -796,6 +798,8 @@ func (p *liveSinkPrettyHandler) handle(r slog.Record) error {
 		return renderScheduleComplete(p.out, r)
 	case "task_skipped", "task_canceled", "task_dep_failed":
 		return renderTaskNotice(p.out, r)
+	case "task_expanded", "for_each_complete", "task_error":
+		return renderForEach(p.out, r)
 	case "stdout_chunk":
 		return renderStdoutChunk(p.out, r, false)
 	case "stderr_chunk":
@@ -1047,7 +1051,12 @@ func renderShellRunFooter(out io.Writer, r slog.Record) error {
 	durationMs := attrInt64(r, "duration_ms")
 	transcript := attrString(r, "transcript")
 	var b bytes.Buffer
-	WriteShellRunFooter(&b, attrString(r, "task"), attrString(r, "command"), exit, durationMs, transcript)
+	// A for_each item's rerun sets EACH_KEY / EACH_VALUE before the command.
+	rerun := attrString(r, "rerun")
+	if rerun == "" {
+		rerun = attrString(r, "command")
+	}
+	WriteShellRunFooter(&b, attrString(r, "task"), rerun, exit, durationMs, transcript)
 	_, err := out.Write(b.Bytes())
 	return err
 }
@@ -1638,7 +1647,16 @@ func renderScheduleStart(out io.Writer, r slog.Record) error {
 	b.WriteByte('\n')
 
 	if len(tasks) > 0 {
-		writeDAGTree(&b, tasks, dependsMap(tasks, attrStrings(r, "depends")), "  ")
+		// A for_each task is drawn as name[*]: it runs once per item.
+		labels := map[string]string{}
+		if fe := attrStrings(r, "for_each"); len(fe) == len(tasks) {
+			for i, t := range tasks {
+				if fe[i] != "" {
+					labels[t] = t + "[*]"
+				}
+			}
+		}
+		writeDAGTree(&b, tasks, dependsMap(tasks, attrStrings(r, "depends")), labels, "  ")
 	}
 	b.WriteByte('\n')
 
@@ -1669,7 +1687,7 @@ func dependsMap(tasks, depends []string) map[string][]string {
 // siblings keep declaration order. Unknown deps (tasks filtered out of an
 // exec) are annotated, not drawn; cycles are guarded so a bad config can't
 // hang the renderer.
-func writeDAGTree(b *bytes.Buffer, tasks []string, deps map[string][]string, indent string) {
+func writeDAGTree(b *bytes.Buffer, tasks []string, deps map[string][]string, labels map[string]string, indent string) {
 	dim := color.New(color.Faint).SprintFunc()
 
 	order := make(map[string]int, len(tasks))
@@ -1741,7 +1759,11 @@ func writeDAGTree(b *bytes.Buffer, tasks []string, deps map[string][]string, ind
 			}
 			b.WriteString(dim(prefix + conn))
 		}
-		b.WriteString(n)
+		if l, ok := labels[n]; ok {
+			b.WriteString(l)
+		} else {
+			b.WriteString(n)
+		}
 
 		// Fan-in (or an unknown dep): list everything this task waits on.
 		if ds := deps[n]; len(ds) > 1 || (len(ds) == 1 && ds[0] != parent[n]) {
@@ -1840,6 +1862,61 @@ func renderTaskNotice(out io.Writer, r slog.Record) error {
 
 	_, err := out.Write(b.Bytes())
 	return err
+}
+
+// renderForEach renders the for_each lifecycle: a task expanding into its
+// items, all of its items finishing, or a task failing before it could
+// run (a bad collection, or an item missing a field the task reads).
+//
+//	⋔ review  3 items from list_prs: 12, 15, 20
+//	⋔ review  done · 3 items · 1 failed
+//	■ review failed  for_each: output of list_prs is not JSON
+func renderForEach(out io.Writer, r slog.Record) error {
+	mark := shellAccent.color().SprintFunc()
+	red := color.New(color.FgRed).SprintFunc()
+	dim := color.New(color.Faint).SprintFunc()
+	task := attrString(r, "task")
+
+	var b bytes.Buffer
+	switch entryType(r) {
+	case "task_expanded":
+		count := int(attrInt64(r, "count"))
+		from := ""
+		if src := attrString(r, "source"); src != "" {
+			from = " from " + src
+		}
+		if attrBool(r, "recorded") {
+			from = " recorded by the original run"
+		}
+		b.WriteString(mark("⋔ ") + task)
+		if count == 0 {
+			b.WriteString(dim("  no items" + from + ", nothing to run"))
+			break
+		}
+		b.WriteString(dim("  " + pluralize(count, "item", "items") + from + ": " + elide(attrStrings(r, "keys"), 10)))
+	case "for_each_complete":
+		parts := []string{"done", pluralize(int(attrInt64(r, "items")), "item", "items")}
+		b.WriteString(mark("⋔ ") + task + dim("  "+strings.Join(parts, " · ")))
+		if failed := attrInt64(r, "failed"); failed > 0 {
+			b.WriteString(dim(" · ") + red(fmt.Sprintf("%d failed", failed)))
+		}
+	case "task_error":
+		b.WriteString(red("■ ") + task + red(" failed"))
+		if msg, _, _ := strings.Cut(attrString(r, "error"), "\n"); msg != "" {
+			b.WriteString(dim("  " + msg))
+		}
+	}
+	b.WriteString("\n\n")
+	_, err := out.Write(b.Bytes())
+	return err
+}
+
+// elide joins up to n items, then says how many more there are.
+func elide(items []string, n int) string {
+	if len(items) <= n {
+		return strings.Join(items, ", ")
+	}
+	return strings.Join(items[:n], ", ") + fmt.Sprintf(", … %d more", len(items)-n)
 }
 
 // renderStdoutChunk writes one line of streaming task output. The slog

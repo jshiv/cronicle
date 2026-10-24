@@ -277,6 +277,153 @@ Independent tasks (no shared dependencies) are unaffected — if task A
 fails, task B still runs if it doesn't depend on A.
 ```
 
+### `for_each`: one task per item
+
+`for_each` runs a task once per item of a collection, Terraform style.
+The collection usually comes from an upstream task's output, so the
+work can be discovered at run time: list the open pull requests, then
+review each one as its own task, with its own logs, status, retries and
+rerun line.
+
+```hcl
+schedule "prs" {
+  cron = "0 * * * *"
+
+  // Prints JSON: [{"number": 12, "headRefOid": "a1b2…"}, …]
+  task "list_prs" {
+    command = ["gh", "pr", "list", "--json", "number,headRefOid"]
+  }
+
+  // One task per PR: review[12], review[15], …
+  task "review" {
+    for_each = { for pr in task.list_prs.output : pr.number => pr }
+    command  = ["./review.sh", each.key, each.value.headRefOid]
+  }
+
+  // Same collection, so report[12] waits only on review[12].
+  task "report" {
+    for_each = { for pr in task.list_prs.output : pr.number => pr }
+    depends  = ["review"]
+    command  = ["./report.sh", each.key]
+  }
+
+  // A plain task waits for every item, failed or not.
+  task "summary" {
+    depends             = ["report"]
+    continue_on_failure = true
+    command             = ["./summary.sh"]
+  }
+}
+```
+
+```
+◆ prs  12:00:00 · 4 tasks · run 20261024T120000Z-1a2b3c4d
+  list_prs
+  └─ review[*]
+     └─ report[*]
+        └─ summary
+
+╭─ list_prs  shell · prs
+…
+⋔ review  3 items from list_prs: 12, 15, 20
+⋔ report  3 items from list_prs: 12, 15, 20
+╭─ review[12]  shell · prs
+│ $ ./review.sh 12 a1b2c3
+…
+⊘ report[15] skipped  upstream review[15] failed
+⋔ review  done · 3 items · 1 failed
+```
+
+**The collection** follows Terraform's `for_each` rules exactly.
+`task.<name>.output` is that task's stdout, parsed as JSON. The
+`for_each` expression is HCL, so it can reach into the output
+(`task.list.output.items`) or reshape it. The result must be one of:
+- **a map or object:** one item per key, in sorted key order.
+  `each.value` is the key's value.
+- **a set of strings:** one item per element, in sorted order, with
+  `each.key` and `each.value` both the string.
+
+A list is not a set: it has an order and can repeat values. So, as in
+Terraform, a list is rejected until you convert it. Use
+`toset(task.list.output)` for a list of strings, which drops duplicates
+and sorts. For a list of objects, build a map with a for expression:
+`{ for pr in task.list.output : pr.number => pr }`. Literals work the
+same way: `toset(["us", "eu"])`, or
+`{ us = "us-east-1", eu = "eu-west-1" }`.
+
+The expression can call Terraform's pure built-in functions, with the
+same names and behavior:
+- **collections:** `merge`, `keys`, `values`, `lookup`, `concat`,
+  `flatten`, `distinct`, `range`, `zipmap`, `setunion`, `setsubtract`,
+  `setintersection`, `setproduct`, `slice`, `sort`, `reverse`, `length`,
+  `contains`, `element`, `compact`, `coalesce`, `chunklist`
+- **conversion:** `toset`, `tolist`, `tomap`, `tostring`, `tonumber`,
+  `tobool`
+- **strings:** `format`, `formatlist`, `join`, `split`, `replace`,
+  `regex`, `regexall`, `lower`, `upper`, `title`, `trim*`, `substr`,
+  `chomp`, `indent`, `strrev`
+- **numbers:** `abs`, `ceil`, `floor`, `max`, `min`, `pow`, `log`,
+  `parseint`, `signum`
+- **encoding and errors:** `jsondecode`, `jsonencode`, `csvdecode`,
+  `try`, `can`
+
+Functions that read files, call the network, or hash aren't included.
+For example:
+
+```hcl
+for_each = merge(
+  { main = { sha = "HEAD" } },
+  { for pr in task.list_prs.output : pr.number => pr },
+)
+for_each = toset([for i in range(3) : tostring(i)])   # "0", "1", "2"
+```
+
+**Inside the task.**
+- `each.key` and `each.value` (with fields: `each.value.sha`,
+  `each.value["head-sha"]`) can be used in `command`, `env`, and an
+  agent's `prompt` and `system`.
+- A string fills in as itself; anything else fills in as JSON. The value
+  goes into the argument as plain text and is never evaluated.
+- Item text is filled in last, after `${date}`-style placeholders and
+  `$secret.NAME` references are resolved, so an item containing
+  `$secret.TOKEN` or `${date}` reaches the task unchanged.
+- Each item also gets `EACH_KEY` and `EACH_VALUE` environment variables.
+  Inside `sh -c` scripts, use `"$EACH_KEY"` rather than `${each.key}`:
+  values put into a script's text are run as shell code.
+- Items are named by key, like `review[12]`, in the DAG, logs and run state. A failed
+  item's `↻ rerun` line sets `EACH_KEY` and `EACH_VALUE` before the
+  command, so it reruns the same way. Because of this naming, task names
+  can't contain `[` or `]`.
+
+**Dependencies.**
+- `depends` names whole tasks (`depends = ["review"]`), never items
+  (`"review[12]"`).
+- A `for_each` task waits on its source automatically.
+- Two `for_each` tasks over the same source that depend on each other
+  pair up by key.
+- Any other task that depends on a `for_each` task waits for all of its
+  items. Without `continue_on_failure`, it's skipped if any item failed.
+- A failed item only blocks the tasks that depend on that item.
+
+**Limits and outcomes.**
+- `max_parallel = N` caps how many of a task's items run at once.
+- One expansion can hold at most 1,000 items.
+- An empty collection is a successful no-op ("no items, nothing to
+  run").
+- Bad output fails the `for_each` task with the reason: not JSON, the
+  wrong shape, duplicate keys, or a missing field.
+
+**Retries.** Each expansion is recorded with the run.
+`POST /v1/runs/{id}/retry-failed`, and retrying one item
+(`/v1/runs/{id}/tasks/review[15]/retry`), rerun the recorded items that
+didn't succeed. They don't ask the source again, so a retry never
+quietly works on a different set. A full `POST /v1/runs/{id}/retry`
+reruns everything, including the source.
+
+`cronicle exec --task review` expands a static collection, but one read
+from another task's output needs that task in the run. Run the whole
+schedule instead.
+
 
 ### `retry` (optional)
 Number of retries and time to wait between.

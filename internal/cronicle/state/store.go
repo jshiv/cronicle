@@ -10,6 +10,7 @@ package state
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -322,6 +323,7 @@ func (s *Store) migrate() error {
 		{8, schemaSQL_v8, nil},
 		{9, schemaSQL_v9, nil},
 		{10, schemaSQL_v10, s.migrateV10Idempotent},
+		{11, schemaSQL_v11, nil},
 	}
 	for _, step := range steps {
 		if current >= step.v {
@@ -495,6 +497,22 @@ func (s *Store) foldEvent(tx *sql.Tx, e Event) error {
 		return s.applyTaskTerminal(tx, e, "agent")
 	case "schedule_complete":
 		return s.applyScheduleComplete(tx, e)
+	case "task_dep_failed":
+		// Never ran because an upstream task failed: terminal, so the
+		// row doesn't sit at queued after the run ends.
+		if e.Error == "" && e.FailedDependency != "" {
+			e.Error = "upstream " + e.FailedDependency + " failed"
+		}
+		return s.applyTaskSkipped(tx, e)
+	case "task_expanded":
+		return s.applyTaskExpanded(tx, e)
+	case "for_each_complete":
+		// A for_each task's row finishes when all of its items have.
+		return s.applyTaskTerminal(tx, e, "for_each")
+	case "task_error":
+		// Failed before it could run: a bad for_each collection, or an
+		// item missing a field its command reads.
+		return s.applyTaskTerminal(tx, e, "")
 	case "trigger":
 		// Pre-state: a trigger arrived but the run hasn't started executing
 		// yet. Insert a placeholder row so /v1/runs?status=queued works.
@@ -526,6 +544,50 @@ func (s *Store) applyTaskSkipped(tx *sql.Tx, e Event) error {
 	)
 	if err != nil {
 		return fmt.Errorf("applyTaskSkipped: %w", err)
+	}
+	return nil
+}
+
+// applyTaskExpanded records a for_each task's items and marks its row
+// running until for_each_complete lands.
+func (s *Store) applyTaskExpanded(tx *sql.Tx, e Event) error {
+	items := e.ForEachItems
+	if items == "" {
+		items = "[]"
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO task_expansions(run_id, task, items) VALUES (?, ?, ?)
+		ON CONFLICT (run_id, task) DO UPDATE SET items = excluded.items`,
+		e.RunID, e.Task, items,
+	); err != nil {
+		return fmt.Errorf("applyTaskExpanded: %w", err)
+	}
+	// One queued row per item, so items show (and can be canceled)
+	// before they start.
+	var parsed []struct {
+		Key string `json:"key"`
+	}
+	_ = json.Unmarshal([]byte(items), &parsed)
+	for _, it := range parsed {
+		if _, err := tx.Exec(`
+			INSERT INTO tasks(run_id, name, status) VALUES (?, ?, ?)
+			ON CONFLICT (run_id, name) DO NOTHING`,
+			e.RunID, e.Task+"["+it.Key+"]", StatusQueued,
+		); err != nil {
+			return fmt.Errorf("applyTaskExpanded: item row: %w", err)
+		}
+	}
+	ts := e.Time.UTC().Format(time.RFC3339Nano)
+	if _, err := tx.Exec(`
+		INSERT INTO tasks(run_id, name, status, started_at, kind)
+		VALUES (?, ?, ?, ?, 'for_each')
+		ON CONFLICT(run_id, name) DO UPDATE SET
+		    status = CASE WHEN tasks.status = 'canceled' THEN tasks.status ELSE excluded.status END,
+		    started_at = COALESCE(tasks.started_at, excluded.started_at),
+		    kind = excluded.kind`,
+		e.RunID, e.Task, StatusRunning, ts,
+	); err != nil {
+		return fmt.Errorf("applyTaskExpanded: task row: %w", err)
 	}
 	return nil
 }

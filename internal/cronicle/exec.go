@@ -160,8 +160,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 	if len(task.Command) > 0 {
 		cmd := make([]string, len(task.Command))
 		for i, s := range task.Command {
-			s = r.Replace(s)
-			cmd[i] = s
+			cmd[i] = task.fillEach(r.Replace(s))
 		}
 
 		streaming := IsStreamingPretty()
@@ -219,6 +218,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 		// task.Env stored on the Task struct stays unchanged so HCL
 		// serialization round-trips cleanly.
 		shellEnv, secretErr := resolveEnv(task.Env)
+		shellEnv = task.eachEnv(shellEnv)
 		if secretErr != nil {
 			result = exec.Result{
 				Command:    cmd,
@@ -245,7 +245,7 @@ func (task *Task) Exec(t time.Time) exec.Result {
 
 		if streaming {
 			gw.EndLine()
-			WriteShellRunFooter(sw, task.Name, shellQuote(cmd),
+			WriteShellRunFooter(sw, task.Name, task.rerunLine(cmd),
 				int64(result.ExitStatus), task.lastDurationMs, task.lastTranscript)
 			task.shellStreamed = true
 		}
@@ -274,11 +274,12 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// is findable from /v1/runs/{id} ({run_id}-{task}.jsonl). Fall back to the
 	// timestamp-derived form when running outside the listener (e.g. direct
 	// `cronicle exec` against a local file).
+	// fileSafeName: an item key like "org/repo" must not become a path.
 	var runID string
 	if task.RunID != "" {
-		runID = fmt.Sprintf("%s-%s", task.RunID, task.Name)
+		runID = fmt.Sprintf("%s-%s", task.RunID, fileSafeName(task.Name))
 	} else {
-		runID = fmt.Sprintf("%s-%s-%s", t.UTC().Format("20060102T150405Z"), task.ScheduleName, task.Name)
+		runID = fmt.Sprintf("%s-%s-%s", t.UTC().Format("20060102T150405Z"), fileSafeName(task.ScheduleName), fileSafeName(task.Name))
 	}
 
 	// Skills: load all listed SKILL.md files up-front so a misconfigured
@@ -309,7 +310,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		}
 	}
 
-	system := r.Replace(task.Agent.System)
+	system := task.fillEach(r.Replace(task.Agent.System))
 	if section := FormatAvailableSkillsSection(skills); section != "" {
 		if system != "" {
 			system += "\n\n"
@@ -319,7 +320,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 
 	cfg := agent.Config{
 		Provider:      task.Agent.Provider,
-		Prompt:        r.Replace(task.Agent.Prompt),
+		Prompt:        task.fillEach(r.Replace(task.Agent.Prompt)),
 		System:        system,
 		Model:         task.Agent.Model,
 		MaxTokens:     task.Agent.MaxTokens,
@@ -422,6 +423,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// Task struct so HCL round-trips and so audit logging never gets
 	// plaintext values via that field.
 	resolvedEnv, secretErr := resolveEnv(task.Env)
+	resolvedEnv = task.eachEnv(resolvedEnv)
 	if secretErr != nil {
 		return exec.Result{
 			Command:    []string{"agent", task.Agent.Model},
@@ -468,7 +470,7 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 		mcps[i] = m
 		mcps[i].Command = make([]string, len(m.Command))
 		for j, c := range m.Command {
-			mcps[i].Command[j] = r.Replace(c)
+			mcps[i].Command[j] = task.fillEach(r.Replace(c))
 		}
 	}
 	mcpHandles, mcpTools, mcpErr := LaunchMCPServers(runCtx, mcps, resolvedEnv, toolWriter)
@@ -693,6 +695,9 @@ func (task *Task) Log(res exec.Result) {
 	}
 	if task.lastTranscript != "" {
 		args = append(args, "transcript", task.lastTranscript)
+	}
+	if task.eachItem != nil {
+		args = append(args, "each_key", task.eachItem.Key, "rerun", task.rerunLine(res.Command))
 	}
 
 	if res.Error != nil {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/hashicorp/hcl/v2"
 )
 
 // Config is the configuration structure for the cronicle checker.
@@ -92,11 +94,18 @@ type Task struct {
 	Retry             *Retry   `hcl:"retry,block"`
 	Agent             *Agent   `hcl:"agent,block"`
 	Env               []string `hcl:"env,optional"`
-	Path              string
-	CronicleRepo      *Repo
-	CroniclePath      string
-	Git               Git
-	ScheduleName      string
+	// ForEachExpr is the raw `for_each` attribute. parse.go turns it into
+	// ForEach, which is what the rest of cronicle (and the JSON payload)
+	// uses; see foreach.go.
+	ForEachExpr hcl.Expression `hcl:"for_each,optional" json:"-"`
+	// MaxParallel caps how many of a for_each task's items run at once.
+	MaxParallel  int      `hcl:"max_parallel,optional" json:",omitempty"`
+	ForEach      *ForEach `json:",omitempty"`
+	Path         string
+	CronicleRepo *Repo
+	CroniclePath string
+	Git          Git
+	ScheduleName string
 	// RunID is propagated from the parent Schedule at execution time
 	// (set in dag.go's ExecuteTasks). Threaded into per-task events so
 	// the projection groups them under the right run.
@@ -130,6 +139,11 @@ type Task struct {
 	// both tokens then resolve to the empty string, which a script
 	// should treat as "no prior run / full backfill".
 	LastRun time.Time
+
+	// forEachOf and eachItem are set on the tasks a for_each task expands
+	// into: the for_each task's name and this task's item.
+	forEachOf string
+	eachItem  *ForEachItem
 }
 
 // Agent is the configuration structure that defines an LLM agent invocation.
@@ -211,11 +225,14 @@ type Agent struct {
 // tools, skills, etc.) flattened to the top level. ToTask builds the equivalent
 // Task; Schedule.normalizeAgentTasks appends them to Schedule.Tasks.
 type AgentTask struct {
-	Name    string   `hcl:"name,label"`
-	Depends []string `hcl:"depends,optional"`
-	Repo    *Repo    `hcl:"repo,block"`
-	Retry   *Retry   `hcl:"retry,block"`
-	Env     []string `hcl:"env,optional"`
+	Name              string         `hcl:"name,label"`
+	Depends           []string       `hcl:"depends,optional"`
+	ContinueOnFailure bool           `hcl:"continue_on_failure,optional"`
+	Repo              *Repo          `hcl:"repo,block"`
+	Retry             *Retry         `hcl:"retry,block"`
+	Env               []string       `hcl:"env,optional"`
+	ForEachExpr       hcl.Expression `hcl:"for_each,optional"`
+	MaxParallel       int            `hcl:"max_parallel,optional"`
 
 	// Flattened Agent fields — identical semantics to the Agent struct.
 	Provider  string   `hcl:"provider,optional"`
@@ -236,11 +253,14 @@ type AgentTask struct {
 // scheduler/DAG/exec paths unchanged.
 func (a AgentTask) ToTask() Task {
 	return Task{
-		Name:    a.Name,
-		Depends: a.Depends,
-		Repo:    a.Repo,
-		Retry:   a.Retry,
-		Env:     a.Env,
+		Name:              a.Name,
+		Depends:           a.Depends,
+		ContinueOnFailure: a.ContinueOnFailure,
+		Repo:              a.Repo,
+		Retry:             a.Retry,
+		Env:               a.Env,
+		ForEachExpr:       a.ForEachExpr,
+		MaxParallel:       a.MaxParallel,
 		Agent: &Agent{
 			Provider:  a.Provider,
 			Prompt:    a.Prompt,
@@ -387,6 +407,9 @@ var (
 
 // Validate validates the fields and sets the default values.
 func (task *Task) Validate() error {
+	if err := task.validateForEach(); err != nil {
+		return err
+	}
 	if task.Repo != nil {
 		if task.Repo.Branch != "" && task.Repo.Commit != "" {
 			return ErrBranchAndCommitGiven
@@ -526,6 +549,13 @@ func (conf *Config) Validate() error {
 			if task.Name == "" {
 				return ErrTaskNameEmpty
 			}
+			// name[key] is how for_each items are named.
+			if strings.ContainsAny(task.Name, "[]") {
+				return fmt.Errorf("task %q: names can't contain [ or ]; those mark for_each items", task.Name)
+			}
+		}
+		if err := schedule.validateForEach(); err != nil {
+			return err
 		}
 		scheduleNameCount[schedule.Name]++
 	}
@@ -720,4 +750,61 @@ func (t TaskArray) FilterTasks(taskName string, scheduleName string) TaskArray {
 	}
 
 	return tasks
+}
+
+// validateForEach checks the for_each fields that need no other task:
+// max_parallel only on a for_each task, and each.* only inside one.
+func (task *Task) validateForEach() error {
+	isForEach := task.ForEach != nil || task.forEachOf != ""
+	if task.MaxParallel < 0 {
+		return fmt.Errorf("task %q: max_parallel can't be negative", task.Name)
+	}
+	if task.MaxParallel > 0 && !isForEach {
+		return fmt.Errorf("task %q: max_parallel needs for_each", task.Name)
+	}
+	if isForEach {
+		return nil
+	}
+	fields := append(append([]string(nil), task.Command...), task.Env...)
+	if task.Agent != nil {
+		fields = append(fields, task.Agent.Prompt, task.Agent.System)
+	}
+	for _, f := range fields {
+		if usesEach(f) {
+			return fmt.Errorf("task %q uses each.key / each.value but has no for_each", task.Name)
+		}
+	}
+	return nil
+}
+
+// validateForEach checks each for_each source against the schedule: it
+// must be another task here, and a plain one (an item's output can't feed
+// a second expansion).
+func (schedule *Schedule) validateForEach() error {
+	byName := schedule.TaskMap()
+	for _, t := range schedule.Tasks {
+		if t.ForEach == nil || t.ForEach.Source == "" {
+			continue
+		}
+		src, ok := byName[t.ForEach.Source]
+		switch {
+		case !ok:
+			return fmt.Errorf("task %q: for_each reads task.%s.output, but schedule %q has no task %q",
+				t.Name, t.ForEach.Source, schedule.Name, t.ForEach.Source)
+		case src.Name == t.Name:
+			return fmt.Errorf("task %q: for_each can't read its own output", t.Name)
+		case src.ForEach != nil:
+			return fmt.Errorf("task %q: for_each source %q is itself a for_each task; a source must be a plain task",
+				t.Name, src.Name)
+		}
+	}
+	for _, t := range schedule.Tasks {
+		for _, d := range t.Depends {
+			if base, _, ok := splitInstanceName(d); ok {
+				return fmt.Errorf("task %q: depends on %q; depend on the for_each task %q instead "+
+					"(a for_each task over the same source pairs with it item by item)", t.Name, d, base)
+			}
+		}
+	}
+	return nil
 }

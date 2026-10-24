@@ -59,12 +59,13 @@ func Init(croniclePath string, cloneRepo string, deployKey string, defaultConf C
 	fmt.Println("Init Cronicle: " + slantyedCyan(cronicleFile))
 
 	if fileExists(cronicleFile) {
-		conf, err := GetConfig(cronicleFile)
-		if err != nil {
+		if _, err := GetConfig(cronicleFile); err != nil {
 			os.Exit(1)
 		}
-		hcl := conf.Hcl()
-		fmt.Printf("%s", slantyedCyan(string(hcl.Bytes)))
+		// Show the file as written: re-encoding the parsed config would
+		// drop comments and anything gohcl can't encode, like for_each.
+		src, _ := os.ReadFile(cronicleFile)
+		fmt.Printf("%s", slantyedCyan(string(src)))
 		// CloneRepos(absCroniclePath, conf)
 	} else {
 		MarshallHcl(defaultConf, cronicleFile)

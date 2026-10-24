@@ -580,7 +580,22 @@ func ExecTasks(cronicleFile string, taskName string, scheduleName string, now ti
 	for _, schedule := range schedules {
 		taskMap := schedule.TaskMap()
 		if taskName != "" {
-			if task, ok := taskMap[taskName]; ok {
+			if task, ok := taskMap[taskName]; ok && task.ForEach != nil {
+				// A for_each task expands into its items, which only the
+				// DAG walk does: run it as a one-task schedule. Its depends
+				// don't run, so a collection read from another task's
+				// output fails with a clear "did not run" error.
+				matchedTask = true
+				task.Depends = nil
+				schedule.Tasks = []Task{task}
+				schedule.Now = nowInLoc
+				schedule.RunID = newRunID()
+				schedule.Source = "exec"
+				resolveLastRun(StateStore(), &schedule)
+				if err := schedule.ExecuteTasks(); err != nil {
+					failures = append(failures, fmt.Errorf("schedule %s: %w", schedule.Name, err))
+				}
+			} else if ok {
 				matchedTask = true
 				// Set the schedule-scoped scratch dir so single-task
 				// `cronicle exec --task X` produces the same ${scratch}
