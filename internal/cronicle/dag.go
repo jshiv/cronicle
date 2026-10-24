@@ -435,9 +435,14 @@ func runDAG(spec dagSpec, hooks dagHooks) error {
 			fe := fe
 			n.forEach = &fe
 			// Until it expands, a for_each node waits only on its source;
-			// its other deps are waited on by each item.
+			// its other deps are waited on by each item, so items can pair
+			// with another for_each's. A static collection has nothing to
+			// pair with, so it waits on all its deps and expands (and says
+			// so) when its turn comes rather than at the start of the run.
 			if _, known := spec.deps[fe.source]; known {
 				n.deps = []string{fe.source}
+			} else if fe.source == "" {
+				n.deps = spec.deps[name]
 			}
 		} else {
 			n.deps = spec.deps[name]

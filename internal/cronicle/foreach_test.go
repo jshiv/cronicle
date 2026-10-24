@@ -356,6 +356,20 @@ func TestRunDAG_ForEachEdgeCases(t *testing.T) {
 		t.Errorf("max_parallel=2: err=%v ran=%d maxConcurrent=%d", err, len(f.order), f.maxSeen)
 	}
 
+	// A static collection expands only once its deps are done.
+	f = &fakeRun{}
+	var expandedAfter []string
+	_ = runDAG(dagSpec{
+		deps:    map[string][]string{"first": nil, "each": {"first"}},
+		forEach: map[string]dagForEach{"each": {}},
+	}, dagHooks{run: f.run, expand: func(string) ([]string, error) {
+		expandedAfter = append([]string(nil), f.order...)
+		return []string{"x"}, nil
+	}})
+	if strings.Join(expandedAfter, ",") != "first" || strings.Join(f.order, ",") != "first,each[x]" {
+		t.Errorf("static for_each expanded before its deps: expanded after %v, ran %v", expandedAfter, f.order)
+	}
+
 	// A for_each over a different source waits for every item, not pairs.
 	f = &fakeRun{}
 	_ = runDAG(dagSpec{
