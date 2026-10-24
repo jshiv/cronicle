@@ -101,7 +101,13 @@ func (s *listenServer) taskRetry(w http.ResponseWriter, store state.Backend, run
 		http.Error(w, "retry failed", http.StatusInternalServerError)
 		return
 	}
-	cascade := s.computeCascade(run.Schedule, taskName)
+	// An item of a for_each task (review[12]) cascades like its for_each
+	// task; the store narrows the rerun to that item's key.
+	cascadeFrom := taskName
+	if base, _, ok := splitInstanceName(taskName); ok {
+		cascadeFrom = base
+	}
+	cascade := s.computeCascade(run.Schedule, cascadeFrom)
 	keep := map[string]bool{taskName: true}
 	for _, name := range cascade {
 		keep[name] = true
@@ -290,7 +296,7 @@ func (s *listenServer) computeCascade(scheduleName, task string) []string {
 	}
 	for i := range conf.Schedules {
 		if conf.Schedules[i].Name == scheduleName {
-			return conf.Schedules[i].downstreamTasks(task)
+			return conf.Schedules[i].downstreamOf(task)
 		}
 	}
 	return nil

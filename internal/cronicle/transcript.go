@@ -53,10 +53,10 @@ func writeShellTranscript(runID, scheduleName, taskName, taskPath string, env []
 	}
 	var name string
 	if runID != "" {
-		name = fmt.Sprintf("%s-%s.jsonl", runID, taskName)
+		name = fmt.Sprintf("%s-%s.jsonl", runID, fileSafeName(taskName))
 	} else {
 		name = fmt.Sprintf("%s-%s-%s.jsonl",
-			started.UTC().Format("20060102T150405Z"), scheduleName, taskName)
+			started.UTC().Format("20060102T150405Z"), fileSafeName(scheduleName), fileSafeName(taskName))
 	}
 	p := filepath.Join(runsDir, name)
 	f, err := os.Create(p)

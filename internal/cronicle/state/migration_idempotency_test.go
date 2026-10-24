@@ -23,7 +23,7 @@ func TestMigrate_V10IdempotentOnReRun(t *testing.T) {
 	// First call set up everything to v10. Now simulate a crash-recover
 	// where the version row didn't land: roll the schema_versions row
 	// for v10 back manually, then re-invoke migrate.
-	if _, err := s.db.Exec(`DELETE FROM schema_versions WHERE version = 10`); err != nil {
+	if _, err := s.db.Exec(`DELETE FROM schema_versions WHERE version >= 10`); err != nil {
 		t.Fatalf("simulate partial-migration: %v", err)
 	}
 	if err := s.migrate(); err != nil {

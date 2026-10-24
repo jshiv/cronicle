@@ -311,4 +311,17 @@ ALTER TABLE secrets ADD COLUMN value_ct    BLOB;
 ALTER TABLE secrets ADD COLUMN value_nonce BLOB;
 `
 
-const targetSchemaVersion = 10
+// schemaSQL_v11 records for_each expansions: the collection a for_each
+// task expanded into in a run, as the JSON list of {key, value} items.
+// Retrying the run reads it back so the retry works on the same items
+// rather than discovering a different set.
+const schemaSQL_v11 = `
+CREATE TABLE IF NOT EXISTS task_expansions (
+    run_id TEXT NOT NULL,
+    task   TEXT NOT NULL,
+    items  TEXT NOT NULL,
+    PRIMARY KEY (run_id, task)
+);
+`
+
+const targetSchemaVersion = 11

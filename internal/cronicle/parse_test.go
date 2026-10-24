@@ -64,6 +64,9 @@ var _ = Describe("Parse", func() {
 		var c cronicle.Config
 		err := hclsimple.DecodeFile(p, &cronicle.CommandEvalContext, &c)
 		Expect(err).To(BeNil())
+		// A raw gohcl decode fills an absent for_each with a null
+		// expression; cronicle's own parser (ParseFile) clears it.
+		c.Schedules[0].Tasks[0].ForEachExpr = nil
 		Expect(conf).To(Equal(c))
 		os.RemoveAll(p)
 	})

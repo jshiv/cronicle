@@ -274,11 +274,12 @@ func (task *Task) execAgent(t time.Time, r *strings.Replacer) exec.Result {
 	// is findable from /v1/runs/{id} ({run_id}-{task}.jsonl). Fall back to the
 	// timestamp-derived form when running outside the listener (e.g. direct
 	// `cronicle exec` against a local file).
+	// fileSafeName: an item key like "org/repo" must not become a path.
 	var runID string
 	if task.RunID != "" {
-		runID = fmt.Sprintf("%s-%s", task.RunID, task.Name)
+		runID = fmt.Sprintf("%s-%s", task.RunID, fileSafeName(task.Name))
 	} else {
-		runID = fmt.Sprintf("%s-%s-%s", t.UTC().Format("20060102T150405Z"), task.ScheduleName, task.Name)
+		runID = fmt.Sprintf("%s-%s-%s", t.UTC().Format("20060102T150405Z"), fileSafeName(task.ScheduleName), fileSafeName(task.Name))
 	}
 
 	// Skills: load all listed SKILL.md files up-front so a misconfigured

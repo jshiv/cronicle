@@ -1,6 +1,8 @@
 package cronicle
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -73,10 +75,35 @@ func (schedule Schedule) ExecuteTasks() error {
 	taskMap := schedule.TaskMap()
 
 	deps := make(map[string][]string)
+	// shownDeps is deps as the DAG is drawn: a for_each task's automatic
+	// wait on its source is left out when its own depends already lead there.
+	shownDeps := make(map[string][]string)
 	taskNames := make([]string, 0, len(schedule.Tasks))
+	forEach := make(map[string]dagForEach)
+	sources := make(map[string]bool)
+	forEachAttr := make([]string, 0, len(schedule.Tasks))
 	for _, task := range schedule.Tasks {
 		deps[task.Name] = task.Depends
+		shownDeps[task.Name] = task.Depends
 		taskNames = append(taskNames, task.Name)
+		if fe := task.ForEach; fe != nil {
+			// A for_each task waits on its source even when depends
+			// doesn't say so. Recorded items (a retry) need no source.
+			source := fe.Source
+			if fe.Items == nil && source != "" && !contains(deps[task.Name], source) {
+				deps[task.Name] = append([]string{source}, deps[task.Name]...)
+				if len(task.Depends) == 0 {
+					shownDeps[task.Name] = []string{source}
+				}
+			}
+			forEach[task.Name] = dagForEach{source: source, maxParallel: fe.MaxParallel}
+			if source != "" {
+				sources[source] = true
+			}
+			forEachAttr = append(forEachAttr, "*")
+		} else {
+			forEachAttr = append(forEachAttr, "")
+		}
 	}
 
 	// Ensure tasks know their parent run id so per-task events carry it.
@@ -126,8 +153,11 @@ func (schedule Schedule) ExecuteTasks() error {
 		"clock", now.Format(time.Kitchen),
 		"date", now.Format(time.RFC850),
 		"tasks", taskNames,
-		"depends", dependsAttr(taskNames, deps),
-		"dag", dagString(taskNames, deps),
+		"depends", dependsAttr(taskNames, shownDeps),
+		"dag", dagString(taskNames, shownDeps),
+	}
+	if len(forEach) > 0 {
+		startAttrs = append(startAttrs, "for_each", forEachAttr)
 	}
 	if scratchDir != "" {
 		startAttrs = append(startAttrs, "scratch", scratchDir)
@@ -141,8 +171,20 @@ func (schedule Schedule) ExecuteTasks() error {
 		}
 	}
 
-	walkErr := walkDAG(deps, func(name string) error {
-		task := taskMap[name]
+	// Tasks are looked up by name as the walk reaches them; for_each items
+	// are added as their collections expand. outputs keeps the stdout of
+	// every task a for_each reads.
+	var mu sync.Mutex
+	outputs := make(map[string]string)
+	fillErrs := make(map[string]error)
+	lookup := func(name string) (Task, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return taskMap[name], fillErrs[name]
+	}
+
+	run := func(name string) error {
+		task, fillErr := lookup(name)
 		// Run-pause gate: a POST /v1/runs/{id}/pause may land mid-walk.
 		// Block here before launching the task body. Resume (POST
 		// /v1/runs/{id}/unpause) clears the flag; the poll loop picks
@@ -156,8 +198,9 @@ func (schedule Schedule) ExecuteTasks() error {
 		// (sticky); the walker emits the matching event and returns nil
 		// so downstream cascade entries are also walked-and-skipped.
 		// Cancel takes precedence over skip — if both flags are set,
-		// the cancel record wins.
-		if taskCanceledInRun(schedule.RunID, name) {
+		// the cancel record wins. An item is canceled or skipped along
+		// with its for_each task.
+		if taskCanceledInRun(schedule.RunID, name) || (task.forEachOf != "" && taskCanceledInRun(schedule.RunID, task.forEachOf)) {
 			slog.Info("task canceled",
 				"entry_type", "task_canceled",
 				"run_id", schedule.RunID,
@@ -172,7 +215,11 @@ func (schedule Schedule) ExecuteTasks() error {
 		// records a task_skipped event and treats the node as a
 		// vacuous success so dependents still run. Failing open on
 		// store errors mirrors the schedule-pause gate.
-		if skipped, why := taskIsSkipped(schedule.Name, name); skipped {
+		skipped, why := taskIsSkipped(schedule.Name, name)
+		if !skipped && task.forEachOf != "" {
+			skipped, why = taskIsSkipped(schedule.Name, task.forEachOf)
+		}
+		if skipped {
 			slog.Info("task skipped",
 				"entry_type", "task_skipped",
 				"run_id", schedule.RunID,
@@ -182,16 +229,88 @@ func (schedule Schedule) ExecuteTasks() error {
 			)
 			return nil
 		}
-		_, err := task.Execute(now)
+		if fillErr != nil {
+			logTaskError(schedule, name, fillErr)
+			return fmt.Errorf("%s: %w", name, fillErr)
+		}
+		res, err := task.Execute(now)
+		if err == nil && sources[name] {
+			mu.Lock()
+			outputs[name] = res.Stdout
+			mu.Unlock()
+		}
 		return err
-	}, continueOnFailure, func(node, failedDep string) {
-		slog.Warn("task skipped: upstream dependency failed",
-			"entry_type", "task_dep_failed",
+	}
+
+	expand := func(name string) ([]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		tmpl := taskMap[name]
+		fe := tmpl.ForEach
+		var items []ForEachItem
+		_, inRun := taskMap[fe.Source]
+		_, succeeded := outputs[fe.Source]
+		err := fmt.Errorf("for_each source %s didn't succeed, so there are no items to run", fe.Source)
+		if fe.Items != nil || fe.Source == "" || succeeded || !inRun {
+			items, err = fe.expand(outputs)
+		}
+		if err != nil {
+			logTaskError(schedule, name, err)
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		for _, item := range items {
+			inst, fillErr := tmpl.instance(item)
+			taskMap[inst.Name] = inst
+			if fillErr != nil {
+				fillErrs[inst.Name] = fillErr
+			}
+		}
+		recorded, _ := json.Marshal(items)
+		attrs := []any{
+			"entry_type", "task_expanded",
 			"run_id", schedule.RunID,
 			"schedule", schedule.Name,
-			"task", node,
-			"failed_dependency", failedDep,
-		)
+			"task", name,
+			"source", fe.Source,
+			"count", len(items),
+			"keys", forEachKeys(items),
+			// The full collection, so a retry of this run can reuse it.
+			"for_each_items", string(recorded),
+		}
+		if fe.Items != nil {
+			attrs = append(attrs, "recorded", true)
+		}
+		slog.Info("task expanded", attrs...)
+		return forEachKeys(items), nil
+	}
+
+	walkErr := runDAG(dagSpec{deps: deps, continueOnFailure: continueOnFailure, forEach: forEach, order: taskNames}, dagHooks{
+		run:    run,
+		expand: expand,
+		onDepFailed: func(node, failedDep string) {
+			slog.Warn("task skipped: upstream dependency failed",
+				"entry_type", "task_dep_failed",
+				"run_id", schedule.RunID,
+				"schedule", schedule.Name,
+				"task", node,
+				"failed_dependency", failedDep,
+			)
+		},
+		onForEachDone: func(name string, items, failed int) {
+			level := slog.LevelInfo
+			if failed > 0 {
+				level = slog.LevelWarn
+			}
+			slog.Log(context.Background(), level, "for_each complete",
+				"entry_type", "for_each_complete",
+				"run_id", schedule.RunID,
+				"schedule", schedule.Name,
+				"task", name,
+				"items", items,
+				"failed", failed,
+				"success", failed == 0,
+			)
+		},
 	})
 	durationMs := time.Since(startedAt).Milliseconds()
 
@@ -224,107 +343,336 @@ func (schedule Schedule) ExecuteTasks() error {
 // continueOnFailure[dependent] is true. onDepFailed is called for every
 // skipped dependent with the name of the first failed upstream dependency.
 func walkDAG(deps map[string][]string, fn func(string) error, continueOnFailure map[string]bool, onDepFailed func(node, failedDep string)) error {
-	inDegree := make(map[string]int)
-	dependents := make(map[string][]string)
+	return runDAG(dagSpec{deps: deps, continueOnFailure: continueOnFailure},
+		dagHooks{run: fn, onDepFailed: onDepFailed})
+}
 
-	for node := range deps {
-		if _, ok := inDegree[node]; !ok {
-			inDegree[node] = 0
-		}
-		for _, dep := range deps[node] {
-			inDegree[node]++
-			dependents[dep] = append(dependents[dep], node)
-		}
+// dagSpec is a DAG's static shape. forEach marks the nodes that expand
+// into one node per item once their source finishes (see foreach.go).
+type dagSpec struct {
+	deps              map[string][]string
+	continueOnFailure map[string]bool
+	forEach           map[string]dagForEach
+	// order is declaration order, so ties launch (and log) predictably.
+	order []string
+}
+
+type dagForEach struct {
+	source      string // "" when the items are known up front
+	maxParallel int
+}
+
+// dagHooks are runDAG's callbacks. All but run are called from the
+// walker's own goroutine, one at a time.
+type dagHooks struct {
+	run         func(name string) error
+	onDepFailed func(node, failedDep string)
+	// expand returns a for_each node's item keys; an error fails the node.
+	expand func(name string) ([]string, error)
+	// onForEachDone reports a for_each node finishing: how many items it
+	// had and how many failed or were skipped.
+	onForEachDone func(name string, items, failed int)
+}
+
+type dagNode struct {
+	name              string
+	rank              int // declaration order; an item shares its for_each task's
+	deps              []string
+	dependents        []*dagNode
+	pending           int // unfinished deps
+	continueOnFailure bool
+	forEach           *dagForEach // set until expanded
+	items             []*dagNode  // set once expanded
+	limit             *dagLimit
+	readied           bool
+	finished, failed  bool
+}
+
+// dagLimit is a for_each node's max_parallel, shared by its items.
+type dagLimit struct {
+	max, active int
+	queue       []*dagNode
+}
+
+type dagWalk struct {
+	spec     dagSpec
+	hooks    dagHooks
+	nodes    map[string]*dagNode
+	done     chan dagResult
+	running  int
+	firstErr error
+}
+
+type dagResult struct {
+	node *dagNode
+	err  error
+}
+
+// runDAG walks the DAG. Nodes whose deps are done run concurrently; a
+// for_each node, once its source is done, is replaced in the walk by its
+// items and finishes when they all have.
+func runDAG(spec dagSpec, hooks dagHooks) error {
+	w := &dagWalk{spec: spec, hooks: hooks, nodes: make(map[string]*dagNode, len(spec.deps)), done: make(chan dagResult)}
+	names := make([]string, 0, len(spec.deps))
+	for name := range spec.deps {
+		names = append(names, name)
 	}
+	rank := make(map[string]int, len(spec.order))
+	for i, name := range spec.order {
+		rank[name] = i + 1
+	}
+	sort.Slice(names, func(i, j int) bool {
+		ri, rj := rank[names[i]], rank[names[j]]
+		if ri != rj && ri > 0 && rj > 0 {
+			return ri < rj
+		}
+		return names[i] < names[j]
+	})
 
-	var mu sync.Mutex
-	var firstErr error
-	failed := make(map[string]bool)
-	done := make(chan string, len(deps))
-
-	launch := func(node string) {
-		go func() {
-			if err := fn(node); err != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				failed[node] = true
-				mu.Unlock()
+	for _, name := range names {
+		n := &dagNode{name: name, rank: rank[name], continueOnFailure: spec.continueOnFailure[name]}
+		if fe, ok := spec.forEach[name]; ok {
+			fe := fe
+			n.forEach = &fe
+			// Until it expands, a for_each node waits only on its source;
+			// its other deps are waited on by each item.
+			if _, known := spec.deps[fe.source]; known {
+				n.deps = []string{fe.source}
 			}
-			done <- node
-		}()
-	}
-
-	running := 0
-	for node, degree := range inDegree {
-		if degree == 0 {
-			running++
-			launch(node)
+		} else {
+			n.deps = spec.deps[name]
 		}
+		w.nodes[name] = n
 	}
-
-	for running > 0 {
-		completed := <-done
-		running--
-		for _, dependent := range dependents[completed] {
-			inDegree[dependent]--
-			if inDegree[dependent] == 0 {
-				// Check whether any of this dependent's upstream deps failed.
-				mu.Lock()
-				var failedDep string
-				if !continueOnFailure[dependent] {
-					for _, dep := range deps[dependent] {
-						if failed[dep] {
-							failedDep = dep
-							break
-						}
-					}
-				}
-				if failedDep != "" {
-					// Skip this dependent: mark it failed for cascade and
-					// signal completion without launching a goroutine.
-					failed[dependent] = true
-					mu.Unlock()
-					if onDepFailed != nil {
-						onDepFailed(dependent, failedDep)
-					}
-					running++
-					done <- dependent
-				} else {
-					mu.Unlock()
-					running++
-					launch(dependent)
-				}
+	for _, name := range names {
+		n := w.nodes[name]
+		for _, dep := range n.deps {
+			n.pending++ // an unknown dep never finishes: reported below
+			if d, ok := w.nodes[dep]; ok {
+				d.dependents = append(d.dependents, n)
 			}
 		}
 	}
+	var ready []*dagNode
+	for _, name := range names {
+		if w.nodes[name].pending == 0 {
+			ready = append(ready, w.nodes[name])
+		}
+	}
+	w.makeReady(ready)
 
-	// Cycle detection: any node whose inDegree is still > 0 after the
-	// walk is unreachable — its degree never decremented to zero, which
-	// means it depends on a node that itself was never visited. That
-	// only happens when those nodes form a dependency cycle (or depend
-	// on one). Without this check, a cyclic config would silently
-	// produce a zero-task no-op and return nil. Return the cycle members
-	// so the operator can see exactly what to break.
+	for w.running > 0 {
+		r := <-w.done
+		w.running--
+		if r.err != nil && w.firstErr == nil {
+			w.firstErr = r.err
+		}
+		if l := r.node.limit; l != nil {
+			l.active--
+			if len(l.queue) > 0 {
+				next := l.queue[0]
+				l.queue = l.queue[1:]
+				w.launch(next)
+			}
+		}
+		w.finish(r.node, r.err != nil)
+	}
+
+	// Cycle detection: any node still unfinished after the walk depends on
+	// a node that never ran — only possible when those nodes form a
+	// dependency cycle (or depend on an unknown task). Without this check,
+	// a cyclic config would silently produce a zero-task no-op and return
+	// nil. A cycle is a config-level fault, so it's surfaced ahead of any
+	// task-level firstErr.
 	var unreached []string
-	for node, degree := range inDegree {
-		if degree > 0 {
-			unreached = append(unreached, node)
+	for _, name := range names {
+		if !w.nodes[name].finished {
+			unreached = append(unreached, name)
 		}
 	}
 	if len(unreached) > 0 {
-		sort.Strings(unreached)
-		cycleErr := fmt.Errorf("dependency cycle detected — tasks never executed: %s",
+		return fmt.Errorf("dependency cycle detected — tasks never executed: %s",
 			strings.Join(unreached, ", "))
-		// Cycle is a config-level fault. Surface it ahead of any
-		// task-level firstErr because firstErr can only happen for
-		// tasks outside the cycle, which is downstream noise compared
-		// to the structural problem.
-		return cycleErr
+	}
+	return w.firstErr
+}
+
+// makeReady handles nodes whose deps have all finished. for_each nodes go
+// first: one may pair its items with another's (zip), so that one must be
+// expanded before.
+func (w *dagWalk) makeReady(nodes []*dagNode) {
+	sort.SliceStable(nodes, func(i, j int) bool {
+		fi, fj := nodes[i].forEach != nil, nodes[j].forEach != nil
+		if fi != fj {
+			return fi
+		}
+		return nodes[i].rank < nodes[j].rank
+	})
+	for _, n := range nodes {
+		w.ready(n)
+	}
+}
+
+func (w *dagWalk) ready(n *dagNode) {
+	if n.readied {
+		if n.items != nil && n.pending == 0 && !n.finished {
+			w.finishForEach(n)
+		}
+		return
+	}
+	n.readied = true
+	if !n.continueOnFailure {
+		for _, dep := range n.deps {
+			if d := w.nodes[dep]; d != nil && d.failed {
+				w.skip(n, dep)
+				return
+			}
+		}
+	}
+	if n.forEach != nil {
+		w.expandNode(n)
+		return
+	}
+	if n.limit != nil && n.limit.max > 0 && n.limit.active >= n.limit.max {
+		n.limit.queue = append(n.limit.queue, n)
+		return
+	}
+	w.launch(n)
+}
+
+func (w *dagWalk) skip(n *dagNode, failedDep string) {
+	if w.hooks.onDepFailed != nil {
+		w.hooks.onDepFailed(n.name, failedDep)
+	}
+	w.finish(n, true)
+}
+
+func (w *dagWalk) launch(n *dagNode) {
+	if n.limit != nil {
+		n.limit.active++
+	}
+	w.running++
+	go func() {
+		w.done <- dagResult{node: n, err: w.hooks.run(n.name)}
+	}()
+}
+
+func (w *dagWalk) finish(n *dagNode, failed bool) {
+	n.finished, n.failed = true, failed
+	var ready []*dagNode
+	for _, d := range n.dependents {
+		d.pending--
+		if d.pending == 0 {
+			ready = append(ready, d)
+		}
+	}
+	w.makeReady(ready)
+}
+
+// expandNode replaces a for_each node with its items. Each item waits on
+// the node's own deps, except that a dep on another for_each node over
+// the same source pairs up: report[k] waits only on review[k].
+func (w *dagWalk) expandNode(n *dagNode) {
+	fe := n.forEach
+	var keys []string
+	var err error
+	if w.hooks.expand != nil {
+		keys, err = w.hooks.expand(n.name)
+	}
+	if err != nil {
+		if w.firstErr == nil {
+			w.firstErr = err
+		}
+		n.forEach = nil
+		w.finish(n, true)
+		return
+	}
+	n.forEach = nil
+	n.items = []*dagNode{}
+
+	// Expand same-source for_each deps first so their items exist to pair with.
+	for _, dep := range w.spec.deps[n.name] {
+		if d := w.nodes[dep]; d != nil && d.forEach != nil && d.forEach.source == fe.source && d.pending == 0 {
+			w.ready(d)
+		}
 	}
 
-	return firstErr
+	limit := &dagLimit{max: fe.maxParallel}
+	var ready []*dagNode
+	for _, key := range keys {
+		item := &dagNode{name: instanceName(n.name, key), rank: n.rank, continueOnFailure: n.continueOnFailure, limit: limit}
+		for _, dep := range w.spec.deps[n.name] {
+			if dep == fe.source {
+				continue
+			}
+			d := w.nodes[dep]
+			if d != nil && (d.items != nil || d.forEach != nil) && w.sameSource(dep, fe.source) {
+				// Pair with the matching item. None means it was skipped
+				// (already succeeded in the run being retried).
+				if pair := w.nodes[instanceName(dep, key)]; pair != nil {
+					item.addDep(pair)
+				}
+				continue
+			}
+			item.deps = append(item.deps, dep)
+			if d == nil {
+				item.pending++ // unknown: never finishes, like any unknown dep
+				continue
+			}
+			item.addDep(d)
+		}
+		w.nodes[item.name] = item
+		n.items = append(n.items, item)
+		item.dependents = append(item.dependents, n)
+		n.pending++
+		if item.pending == 0 {
+			ready = append(ready, item)
+		}
+	}
+	if n.pending == 0 {
+		w.finishForEach(n)
+		return
+	}
+	w.makeReady(ready)
+}
+
+func (item *dagNode) addDep(d *dagNode) {
+	if !contains(item.deps, d.name) {
+		item.deps = append(item.deps, d.name)
+	}
+	if !d.finished {
+		item.pending++
+		d.dependents = append(d.dependents, item)
+	}
+}
+
+// sameSource reports whether for_each node name reads source, so its
+// items pair with another's by key. Static collections never pair.
+func (w *dagWalk) sameSource(name, source string) bool {
+	fe, ok := w.spec.forEach[name]
+	return ok && source != "" && fe.source == source
+}
+
+func (w *dagWalk) finishForEach(n *dagNode) {
+	failed := 0
+	for _, it := range n.items {
+		if it.failed {
+			failed++
+		}
+	}
+	if w.hooks.onForEachDone != nil {
+		w.hooks.onForEachDone(n.name, len(n.items), failed)
+	}
+	w.finish(n, failed > 0)
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // scratchDirFor computes the absolute scratch dir for one schedule run.
@@ -390,6 +738,29 @@ func (schedule Schedule) downstreamTasks(root string) []string {
 	return out
 }
 
+// downstreamOf is downstreamTasks for any task name, including an item of
+// a for_each task: review[12]'s downstream is the matching item of each
+// for_each task over the same source (report[12]). Tasks that fan in over
+// every item aren't included — they still run once the other items finish.
+func (schedule Schedule) downstreamOf(name string) []string {
+	base, key, ok := splitInstanceName(name)
+	if !ok {
+		return schedule.downstreamTasks(name)
+	}
+	byName := schedule.TaskMap()
+	src := ""
+	if fe := byName[base].ForEach; fe != nil {
+		src = fe.Source
+	}
+	var out []string
+	for _, d := range schedule.downstreamTasks(base) {
+		if fe := byName[d].ForEach; src != "" && fe != nil && fe.Source == src {
+			out = append(out, instanceName(d, key))
+		}
+	}
+	return out
+}
+
 // dependsAttr encodes each task's dependencies as a comma-joined string,
 // index-aligned with the schedule_start `tasks` attr ("" for a root). A
 // []string survives the worker→runner JSON round-trip (rehydrateRecord)
@@ -417,4 +788,17 @@ func dagString(taskNames []string, deps map[string][]string) string {
 		}
 	}
 	return sb.String()
+}
+
+// logTaskError records a task that failed before it could run (a bad
+// for_each collection, or an item missing a field the task reads).
+func logTaskError(schedule Schedule, task string, err error) {
+	slog.Error("task failed",
+		"entry_type", "task_error",
+		"run_id", schedule.RunID,
+		"schedule", schedule.Name,
+		"task", task,
+		"error", err.Error(),
+		"success", false,
+	)
 }

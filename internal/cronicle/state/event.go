@@ -39,6 +39,9 @@ type Event struct {
 	// schedule_complete
 	TaskCount int `json:"task_count,omitempty"`
 
+	// task_expanded: the for_each collection as JSON [{key, value}, …]
+	ForEachItems string `json:"for_each_items,omitempty"`
+
 	// raw is the serialized JSON record this Event was decoded from. Stored
 	// verbatim in events.payload so /v1/runs/{id}/events can replay the
 	// original line shape — including any fields the typed Event drops.

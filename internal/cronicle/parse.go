@@ -191,7 +191,7 @@ func ParseFile(cronicleFile string, parser *hclparse.Parser) (*Config, hcl.Diagn
 		return nil, diags
 	}
 
-	return decodeConfigBody(file.Body)
+	return decodeConfigBody(file)
 }
 
 // ParseBytes parses an in-memory HCL document into a Config. Used by
@@ -206,13 +206,14 @@ func ParseBytes(src []byte, filename string, parser *hclparse.Parser) (*Config, 
 	if diags.HasErrors() {
 		return nil, diags
 	}
-	return decodeConfigBody(file.Body)
+	return decodeConfigBody(file)
 }
 
 // decodeConfigBody is the common gohcl-decode + AgentTasks-fold path
 // shared by ParseFile and ParseBytes. Keeps the schema-evolution
 // surface in one place.
-func decodeConfigBody(body hcl.Body) (*Config, hcl.Diagnostics) {
+func decodeConfigBody(file *hcl.File) (*Config, hcl.Diagnostics) {
+	body := file.Body
 	// Build a per-decode EvalContext that captures the current process
 	// env. Avoids racing on the package-level CommandEvalContext map
 	// when two cron-tick goroutines refresh the config concurrently.
@@ -222,6 +223,12 @@ func decodeConfigBody(body hcl.Body) (*Config, hcl.Diagnostics) {
 	// during decode — freshEvalContext re-reads os.Environ() every call.
 	ctx := freshEvalContext()
 	var diags hcl.Diagnostics
+	// each.key / each.value decode to placeholder tokens; see foreach.go.
+	each, eachDiags := eachVariable(body)
+	if eachDiags.HasErrors() {
+		return nil, eachDiags
+	}
+	ctx.Variables["each"] = each
 	var conf Config
 	decodeDiags := gohcl.DecodeBody(body, ctx, &conf)
 	diags = append(diags, decodeDiags...)
@@ -239,6 +246,14 @@ func decodeConfigBody(body hcl.Body) (*Config, hcl.Diagnostics) {
 			s.Tasks = append(s.Tasks, at.ToTask())
 		}
 		s.AgentTasks = nil
+		for j := range s.Tasks {
+			t := &s.Tasks[j]
+			fe, feDiags := parseForEach(t.ForEachExpr, file.Bytes, t.MaxParallel)
+			if feDiags.HasErrors() {
+				return &conf, feDiags
+			}
+			t.ForEach, t.ForEachExpr = fe, nil
+		}
 	}
 	return &conf, nil
 }

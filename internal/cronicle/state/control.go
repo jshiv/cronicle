@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -265,8 +266,17 @@ func (s *Store) RetryFailed(runID, newRunID string) (RetryResult, error) {
 	}
 	rows.Close()
 
+	// for_each tasks rerun over the items they had, minus the ones that
+	// already succeeded — not over whatever their source would list now.
+	baked, err := s.bakeExpansions(runID, []byte(payload), func(task string, _ map[string]any, key string) bool {
+		return skipped[task+"["+key+"]"]
+	})
+	if err != nil {
+		return RetryResult{}, err
+	}
+
 	// Patch the payload: filter Tasks, strip stale depends.
-	newPayload, err := filterScheduleTasks([]byte(payload), skipped, newRunID)
+	newPayload, err := filterScheduleTasks(baked, skipped, newRunID)
 	if err != nil {
 		return RetryResult{}, err
 	}
@@ -358,14 +368,35 @@ func (s *Store) RetryTask(runID, taskName string, keep map[string]bool, newRunID
 		return RetryResult{}, fmt.Errorf("RetryTask: task %q not found in run %q", taskName, runID)
 	}
 
-	// Build the skip set from the original payload: anything NOT in
-	// the keep set is filtered out. filterScheduleTasks already handles
-	// the depends-strip pass.
-	skip, droppedList, err := buildSkipFromKeep([]byte(payload), keep)
+	// Retrying one item of a for_each task (review[12]) reruns that item
+	// and its own downstream items; everything else in the original
+	// expansion is left out. Kept for_each tasks reuse their recorded items.
+	var onlyTask, onlyKey, onlySource string
+	if i := strings.IndexByte(taskName, '['); i > 0 && strings.HasSuffix(taskName, "]") {
+		onlyTask, onlyKey = taskName[:i], taskName[i+1:len(taskName)-1]
+		onlySource = payloadForEachSource([]byte(payload), onlyTask)
+		keep[onlyTask] = true
+	}
+	baked, err := s.bakeExpansions(runID, []byte(payload), func(task string, fe map[string]any, key string) bool {
+		if onlyTask == "" {
+			return false
+		}
+		src, _ := fe["Source"].(string)
+		paired := task == onlyTask || (src != "" && src == onlySource)
+		return paired && key != onlyKey
+	})
 	if err != nil {
 		return RetryResult{}, err
 	}
-	newPayload, err := filterScheduleTasks([]byte(payload), skip, newRunID)
+
+	// Build the skip set from the original payload: anything NOT in
+	// the keep set is filtered out. filterScheduleTasks already handles
+	// the depends-strip pass.
+	skip, droppedList, err := buildSkipFromKeep(baked, keep)
+	if err != nil {
+		return RetryResult{}, err
+	}
+	newPayload, err := filterScheduleTasks(baked, skip, newRunID)
 	if err != nil {
 		return RetryResult{}, err
 	}
@@ -557,4 +588,73 @@ func (s *Store) PushControl(workerID string, msg ControlMsg) bool {
 	default:
 		return false
 	}
+}
+
+// bakeExpansions writes the items each for_each task expanded into during
+// runID into that task's ForEach.Items in payload, so a retry works on the
+// original collection. skip(task, forEach, key) marks items to leave out
+// (ForEach.Skip). for_each tasks with no recorded expansion — their source
+// never succeeded — are left to expand afresh. Caller holds s.mu.
+func (s *Store) bakeExpansions(runID string, payload []byte, skip func(task string, forEach map[string]any, key string) bool) ([]byte, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, fmt.Errorf("bakeExpansions: decode: %w", err)
+	}
+	tasks, _ := raw["Tasks"].([]any)
+	changed := false
+	for _, t := range tasks {
+		tm, _ := t.(map[string]any)
+		fe, _ := tm["ForEach"].(map[string]any)
+		if fe == nil {
+			continue
+		}
+		name, _ := tm["Name"].(string)
+		var recorded string
+		err := s.db.QueryRow(`SELECT items FROM task_expansions WHERE run_id = ? AND task = ?`, runID, name).Scan(&recorded)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("bakeExpansions: read %s: %w", name, err)
+		}
+		var items []struct {
+			Key   string          `json:"key"`
+			Value json.RawMessage `json:"value"`
+		}
+		if err := json.Unmarshal([]byte(recorded), &items); err != nil {
+			return nil, fmt.Errorf("bakeExpansions: bad items for %s: %w", name, err)
+		}
+		skipKeys := []string{}
+		for _, it := range items {
+			if skip(name, fe, it.Key) {
+				skipKeys = append(skipKeys, it.Key)
+			}
+		}
+		fe["Items"] = items
+		fe["Skip"] = skipKeys
+		changed = true
+	}
+	if !changed {
+		return payload, nil
+	}
+	return json.Marshal(raw)
+}
+
+// payloadForEachSource returns the for_each source of task in payload.
+func payloadForEachSource(payload []byte, task string) string {
+	var raw struct {
+		Tasks []struct {
+			Name    string
+			ForEach *struct{ Source string }
+		}
+	}
+	if json.Unmarshal(payload, &raw) != nil {
+		return ""
+	}
+	for _, t := range raw.Tasks {
+		if t.Name == task && t.ForEach != nil {
+			return t.ForEach.Source
+		}
+	}
+	return ""
 }
